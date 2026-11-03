@@ -4,6 +4,7 @@ import {
   type AgentRun,
   agentRuns,
   type ContextSkip,
+  localAgentRuns,
   type NewProjectContext,
   type ProjectContext,
   projectContext,
@@ -137,6 +138,13 @@ const CLAIMABLE: readonly RunStatus[] = ['queued', 'starting', 'running', 'tool_
 
 /** The states a lease is held in — the only ones a stale lease can be found in. */
 const LEASED: readonly RunStatus[] = ['starting', 'running', 'tool_error'];
+
+/**
+ * A run on Settings › Usage. `inAgentHome`: the run went to the person's agent home (spec 041), so
+ * their subscription paid, whatever `credential_mode` says. Such runs were never stamped before
+ * spec 043 and kept the column's retired `PLATFORM` default.
+ */
+export type UsageRow = AgentRun & { readonly inAgentHome: boolean; readonly projectName: string };
 
 @Injectable()
 export class RunStore {
@@ -866,14 +874,22 @@ export class RunStore {
     orgId: string,
     userId: string,
     page: { cursor?: string; limit: number },
-  ): Promise<{ nextCursor: string | null; runs: (AgentRun & { projectName: string })[] }> {
+  ): Promise<{ nextCursor: string | null; runs: UsageRow[] }> {
     const after = page.cursor === undefined ? undefined : decodeCursor(page.cursor);
     const rows = await tx
-      .select({ ...getTableColumns(agentRuns), projectName: projects.name })
+      .select({
+        ...getTableColumns(agentRuns),
+        inAgentHome: sql<boolean>`${localAgentRuns.runId} is not null`,
+        projectName: projects.name,
+      })
       .from(agentRuns)
       .innerJoin(
         projects,
         and(eq(projects.orgId, agentRuns.orgId), eq(projects.id, agentRuns.projectId)),
+      )
+      .leftJoin(
+        localAgentRuns,
+        and(eq(localAgentRuns.orgId, agentRuns.orgId), eq(localAgentRuns.runId, agentRuns.id)),
       )
       .where(
         and(

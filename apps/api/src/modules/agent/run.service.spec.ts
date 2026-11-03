@@ -939,12 +939,20 @@ describe('RunService', () => {
   });
 
   describe('usage', () => {
-    it('lists the caller’s own runs and maps what paid, the cost and the CLI default', async () => {
+    it('lists the caller’s own runs and maps what paid, the cost and the CLI default; an agent-home run is the subscription', async () => {
       store.listUsage.mockResolvedValueOnce({
         nextCursor: 'bmV4dA',
         runs: [
-          { ...row({ credentialMode: 'BYOS', model: 'claude' }), projectName: 'P' },
-          { ...row({ costMicros: 0, credentialMode: 'BYOK' }), projectName: 'P' },
+          {
+            ...row({ credentialMode: 'BYOS', model: 'claude' }),
+            inAgentHome: true,
+            projectName: 'P',
+          },
+          {
+            ...row({ costMicros: 0, credentialMode: 'BYOK' }),
+            inAgentHome: false,
+            projectName: 'P',
+          },
           {
             ...row({
               costMicros: 4_200,
@@ -952,8 +960,11 @@ describe('RunService', () => {
               endedAt: new Date(START),
               status: 'succeeded',
             }),
+            inAgentHome: false,
             projectName: 'Q',
           },
+          // An agent-home run from before spec 043, never stamped: the column's PLATFORM default.
+          { ...row({ credentialMode: 'PLATFORM' }), inAgentHome: true, projectName: 'Q' },
         ],
       });
 
@@ -966,6 +977,7 @@ describe('RunService', () => {
         ['subscription', null, null],
         ['api-key', null, 'claude-sonnet-5'],
         ['platform-credits', 4_200, 'claude-sonnet-5'],
+        ['subscription', null, 'claude-sonnet-5'],
       ]);
       expect(page.runs[2]).toMatchObject({
         finishedAt: START,

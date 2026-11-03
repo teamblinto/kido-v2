@@ -35,7 +35,7 @@ import { CredentialResolver, type ResolutionKind } from './byok/credential-resol
 import { RunControl } from './run-control';
 import { RunExecutorRegistry } from './run-executor-registry';
 import { isLeased } from './run-state-machine';
-import { RunStore } from './run-store';
+import { RunStore, type UsageRow } from './run-store';
 import { RunStreamPublisher } from './run-stream-publisher';
 
 /**
@@ -433,7 +433,7 @@ const PAID_WITH: Readonly<Record<AgentRun['credentialMode'], UsagePaidWith>> = {
   PLATFORM: 'platform-credits',
 };
 
-function toUsageRun(run: AgentRun & { projectName: string }): UsageRun {
+function toUsageRun(run: UsageRow): UsageRun {
   return {
     cacheReadTokens: run.cacheReadTokens,
     cacheWriteTokens: run.cacheWriteTokens,
@@ -446,7 +446,7 @@ function toUsageRun(run: AgentRun & { projectName: string }): UsageRun {
     // 041 stores the provider's name for "the CLI's own default"; that is no model id.
     model: (SUBSCRIPTION_PROVIDERS as readonly string[]).includes(run.model) ? null : run.model,
     outputTokens: run.outputTokens,
-    paidWith: PAID_WITH[run.credentialMode],
+    paidWith: run.inAgentHome ? 'subscription' : PAID_WITH[run.credentialMode],
     projectId: run.projectId,
     projectName: run.projectName,
     status: run.status,
