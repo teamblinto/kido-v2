@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  PREVIEW_STAGES,
   authorizePreviewResponseSchema,
   PREVIEW_LABEL_ROTATED,
   previewResponseSchema,
@@ -31,12 +32,21 @@ describe('previewVisibilitySchema', () => {
 describe('previewResponseSchema', () => {
   const base = {
     port: 4173,
+    stage: 'ready',
     url: 'https://abc123-4173.preview.example.com',
     visibility: 'private',
   };
 
   it('accepts a well-formed response', () => {
     expect(previewResponseSchema.safeParse(base).success).toBe(true);
+  });
+
+  it('accepts every start-up stage and refuses an unknown one or none', () => {
+    for (const stage of PREVIEW_STAGES) {
+      expect(previewResponseSchema.safeParse({ ...base, stage }).success).toBe(true);
+    }
+    expect(previewResponseSchema.safeParse({ ...base, stage: 'booting' }).success).toBe(false);
+    expect(previewResponseSchema.safeParse({ ...base, stage: undefined }).success).toBe(false);
   });
 
   it('accepts a null port with an empty url, for a template with no devPort', () => {

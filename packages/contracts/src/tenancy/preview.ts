@@ -12,9 +12,29 @@ export const previewVisibilitySchema = z.enum(['private', 'org', 'public']);
 
 export type PreviewVisibility = z.output<typeof previewVisibilitySchema>;
 
+/**
+ * Where the project's sandbox and dev server are on the way to a servable preview. The web mounts
+ * the preview frame only at `ready`: before that the gateway has no route, so the browser would
+ * meet a refused TLS handshake instead of a page.
+ */
+export const PREVIEW_STAGES = [
+  'no-sandbox',
+  'creating',
+  'installing',
+  'starting',
+  'ready',
+  'asleep',
+  'failed',
+] as const;
+
+export const previewStageSchema = z.enum(PREVIEW_STAGES);
+
+export type PreviewStage = z.output<typeof previewStageSchema>;
+
 /** `GET /api/v1/orgs/:orgId/projects/:projectId/preview`, behind `project:read`. */
 export const previewResponseSchema = z.strictObject({
   port: z.number().int().nullable(),
+  stage: previewStageSchema,
   url: z.string(),
   visibility: previewVisibilitySchema,
 });

@@ -19,9 +19,46 @@ describe('subscription status', () => {
     plan: 'Max',
     provider: 'claude',
     signIn: { expiresAt: AT, url: URL_OK },
+    models: null,
     state: 'awaiting-sign-in',
     updatedAt: AT,
+    usage: null,
   } as const;
+
+  it('carries the models and limits the CLI reported, and refuses a window it does not know', () => {
+    const reported = {
+      ...status,
+      models: [
+        {
+          description: 'Opus 5.5 · Best for everyday, complex tasks',
+          id: 'default',
+          label: 'Default',
+        },
+        { description: null, id: 'claude-fable-5-1', label: 'Fable 5.1' },
+      ],
+      usage: {
+        checkedAt: AT,
+        windows: [
+          { kind: 'session', resetsAt: '2026-11-03T17:50:00.540171+00:00', utilization: 59 },
+          { kind: 'weekly', resetsAt: null, utilization: 31 },
+        ],
+      },
+    };
+    expect(subscriptionStatusSchema.safeParse(reported).success).toBe(true);
+    const window = { kind: 'monthly', resetsAt: null, utilization: 1 };
+    expect(
+      subscriptionStatusSchema.safeParse({
+        ...reported,
+        usage: { checkedAt: AT, windows: [window] },
+      }).success,
+    ).toBe(false);
+    expect(
+      subscriptionStatusSchema.safeParse({
+        ...reported,
+        models: [{ description: null, id: 'opus --dangerously-skip', label: 'x' }],
+      }).success,
+    ).toBe(false);
+  });
 
   it('parses the design shape and the list', () => {
     expect(subscriptionStatusSchema.parse(status)).toEqual(status);

@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { localAgentModelSchema } from './provider';
+
 /**
  * The cloud subscription agent (spec 041): a person's own Claude Code, signed in by them through
  * Anthropic's flow, running in a private per-person sandbox ("agent home") as a hosted companion.
@@ -75,9 +77,46 @@ export const subscriptionStateSchema = z.enum(SUBSCRIPTION_STATES);
 
 export type SubscriptionState = z.output<typeof subscriptionStateSchema>;
 
+/** A model the connected subscription's CLI offers, as its own `initialize` listed it. */
+export const subscriptionModelSchema = z.strictObject({
+  description: z.string().max(200).nullable(),
+  /** What `createRun`'s `model` takes (`default`, `opus`, a full id…). */
+  id: localAgentModelSchema,
+  label: z.string().trim().min(1).max(200),
+});
+
+export type SubscriptionModel = z.output<typeof subscriptionModelSchema>;
+
+/** `session` is the CLI's five-hour window; the weekly ones are its seven-day windows. */
+export const SUBSCRIPTION_USAGE_WINDOWS = [
+  'session',
+  'weekly',
+  'weekly-opus',
+  'weekly-sonnet',
+] as const;
+
+export const subscriptionUsageWindowSchema = z.strictObject({
+  kind: z.enum(SUBSCRIPTION_USAGE_WINDOWS),
+  resetsAt: z.iso.datetime({ offset: true }).nullable(),
+  /** Percent of the window used, 0–100, as the CLI's `get_usage` reported it. */
+  utilization: z.number().min(0).max(100),
+});
+
+export type SubscriptionUsageWindow = z.output<typeof subscriptionUsageWindowSchema>;
+
+/** The subscription's own limits, from the CLI's `get_usage` (which sends no model request). */
+export const subscriptionUsageSchema = z.strictObject({
+  checkedAt: z.iso.datetime(),
+  windows: z.array(subscriptionUsageWindowSchema).max(20),
+});
+
+export type SubscriptionUsage = z.output<typeof subscriptionUsageSchema>;
+
 /** `GET /me/subscriptions`' entry, and the answer to `connect`. */
 export const subscriptionStatusSchema = z.strictObject({
   message: z.string().max(500).nullable(),
+  /** Null until the agent home has reported them once; never a hard-coded list. */
+  models: z.array(subscriptionModelSchema).max(100).nullable(),
   /** The plan's display name when the CLI states one; never an account identifier. */
   plan: z.string().max(100).nullable(),
   provider: subscriptionProviderSchema,
@@ -86,6 +125,8 @@ export const subscriptionStatusSchema = z.strictObject({
     .nullable(),
   state: subscriptionStateSchema,
   updatedAt: z.iso.datetime(),
+  /** Null until reported, or when the CLI cannot state its limits. */
+  usage: subscriptionUsageSchema.nullable(),
 });
 
 export type SubscriptionStatus = z.output<typeof subscriptionStatusSchema>;

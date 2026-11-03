@@ -70,8 +70,14 @@ export const createRunRequestSchema = z
 
 export type CreateRunRequest = z.output<typeof createRunRequestSchema>;
 
-/** `POST …/runs/:runId/input`, behind `project:agent.run`; the run must be `awaiting_input`. */
-export const runInputRequestSchema = z.strictObject({ message: runText });
+/**
+ * `POST …/runs/:runId/input`, behind `project:agent.run`; the run must be `awaiting_input`.
+ * `model` switches the model from this answer on; absent, the run keeps the one it had.
+ */
+export const runInputRequestSchema = z.strictObject({
+  message: runText,
+  model: localAgentModelSchema.optional(),
+});
 
 export type RunInputRequest = z.output<typeof runInputRequestSchema>;
 

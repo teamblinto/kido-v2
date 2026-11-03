@@ -86,6 +86,15 @@ export {
   providerOf,
 } from './agent/models';
 export {
+  USAGE_PAID_WITH,
+  type UsagePaidWith,
+  type UsageRun,
+  type UsageRunListResponse,
+  usagePaidWithSchema,
+  usageRunListResponseSchema,
+  usageRunSchema,
+} from './agent/usage';
+export {
   STREAM_EVENT_TYPES,
   STREAM_HEARTBEAT,
   STREAM_RETRY_MS,
@@ -298,6 +307,13 @@ export {
   type SubscriptionRunTarget,
   type SubscriptionState,
   type SubscriptionStatus,
+  type SubscriptionModel,
+  type SubscriptionUsage,
+  type SubscriptionUsageWindow,
+  SUBSCRIPTION_USAGE_WINDOWS,
+  subscriptionModelSchema,
+  subscriptionUsageSchema,
+  subscriptionUsageWindowSchema,
   companionAuthCommandSchema,
   companionAuthEventSchema,
   localAgentDeviceKindSchema,
@@ -633,8 +649,11 @@ export {
 } from './tenancy/org';
 export {
   PREVIEW_LABEL_ROTATED,
+  PREVIEW_STAGES,
   type AuthorizePreviewResponse,
   type PreviewResponse,
+  type PreviewStage,
+  previewStageSchema,
   type PreviewVisibility,
   type RotatePreviewResponse,
   type SandboxCallbackRequest,

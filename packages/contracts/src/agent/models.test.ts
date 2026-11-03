@@ -11,7 +11,7 @@ import {
 
 const model = {
   available: true,
-  credentialMode: 'PLATFORM',
+  credentialMode: 'BYOS',
   description: 'd',
   id: 'x',
   name: 'X',
@@ -25,15 +25,22 @@ describe('catalogueModelSchema / modelCatalogueResponseSchema', () => {
     expect(catalogueModelSchema.safeParse({ ...model, extra: 1 }).success).toBe(false);
   });
 
-  it('refuses an unknown provider or credential mode', () => {
+  it('refuses an unknown provider or credential mode, and retired platform credits', () => {
     expect(catalogueModelSchema.safeParse({ ...model, provider: 'google' }).success).toBe(false);
     expect(catalogueModelSchema.safeParse({ ...model, credentialMode: 'OWN' }).success).toBe(false);
-  });
-
-  it('requires at least one model', () => {
-    expect(modelCatalogueResponseSchema.safeParse({ default: 'x', models: [] }).success).toBe(
+    expect(catalogueModelSchema.safeParse({ ...model, credentialMode: 'PLATFORM' }).success).toBe(
       false,
     );
+    expect(catalogueModelSchema.safeParse({ ...model, alternativeMode: 'PLATFORM' }).success).toBe(
+      false,
+    );
+  });
+
+  it('accepts an empty catalogue with no default: nothing can pay for a run yet', () => {
+    expect(modelCatalogueResponseSchema.safeParse({ default: null, models: [] }).success).toBe(
+      true,
+    );
+    expect(modelCatalogueResponseSchema.safeParse({ default: '', models: [] }).success).toBe(false);
   });
 });
 

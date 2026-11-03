@@ -12,9 +12,12 @@ export const catalogueModelSchema = z.strictObject({
   /** False only for a BYOK provider whose key is `needs_reauth`. */
   available: z.boolean(),
   /** What `credential: 'organisation'` would use instead of a limited subscription (spec 032). */
-  alternativeMode: z.enum(['PLATFORM', 'BYOK']).optional(),
-  /** What a run on this model would be recorded as, for the caller (BYOS since spec 032). */
-  credentialMode: z.enum(['PLATFORM', 'BYOK', 'BYOS']),
+  alternativeMode: z.literal('BYOK').optional(),
+  /**
+   * What a run on this model would be recorded as, for the caller (BYOS since spec 032). Platform
+   * credits are retired: an entry exists only when a subscription or a key can pay for it.
+   */
+  credentialMode: z.enum(['BYOK', 'BYOS']),
   description: z.string().min(1),
   id: z.string().min(1),
   /** A BYOS entry while the caller's subscription is limited (spec 032, research R11). */
@@ -28,9 +31,13 @@ export const catalogueModelSchema = z.strictObject({
 
 export type CatalogueModel = z.output<typeof catalogueModelSchema>;
 
+/**
+ * Empty, with `default: null`, when the organisation has no key and the caller no linked
+ * subscription: the web then offers to connect one instead of a model.
+ */
 export const modelCatalogueResponseSchema = z.strictObject({
-  default: z.string().min(1),
-  models: z.array(catalogueModelSchema).min(1),
+  default: z.string().min(1).nullable(),
+  models: z.array(catalogueModelSchema),
 });
 
 export type ModelCatalogueResponse = z.output<typeof modelCatalogueResponseSchema>;
@@ -44,7 +51,7 @@ export type CatalogueEntry = Omit<
 // The OpenAI ids are research R3's curated pair, verified against `models.list()` at T048.
 export const MODEL_CATALOGUE: readonly CatalogueEntry[] = [
   {
-    description: 'Most capable · uses credits faster',
+    description: 'Most capable · for complex work',
     id: 'claude-opus-5',
     name: 'Claude Opus 5',
     provider: 'anthropic',
