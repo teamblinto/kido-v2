@@ -779,6 +779,51 @@ describe('Preview grant exchange (e2e)', () => {
         }
       });
 
+      it("the preview read answers each start-up stage from the row and the dev server's report, waking nothing", async () => {
+        const { orgId, owner, projectId } = world.alpha;
+        const read = async () =>
+          (
+            await http(app)
+              .get(`/api/v1/orgs/${orgId}/projects/${projectId}/preview`)
+              .set('Cookie', owner.cookie)
+              .expect(200)
+          ).body as { stage: string };
+        const reported = (state: string) => ({
+          ports: { [DEV_PORT]: { observedAt: new Date().toISOString(), state } },
+        });
+        const since = await mark();
+        try {
+          await setSandbox({ ports: {}, transition: 'creating', transitionSince: new Date() });
+          expect((await read()).stage).toBe('creating');
+          await setSandbox({ transition: null, transitionSince: null });
+          expect((await read()).stage).toBe('starting');
+          await setSandbox(reported('starting'));
+          expect((await read()).stage).toBe('starting');
+          await setSandbox(reported('failed'));
+          expect((await read()).stage).toBe('failed');
+          await setSandbox(reported('listening'));
+          expect(await read()).toMatchObject({
+            port: DEV_PORT,
+            stage: 'ready',
+            url: `https://${hostOf(await labelOf(orgId, projectId))}`,
+          });
+          await hibernate();
+          expect((await read()).stage).toBe('asleep');
+          // Beta's project has never had a sandbox; its owner reads it through its own org.
+          const beta = world.beta;
+          const betaRead = await http(app)
+            .get(`/api/v1/orgs/${beta.orgId}/projects/${beta.projectId}/preview`)
+            .set('Cookie', beta.owner.cookie)
+            .expect(200);
+          expect(betaRead.body).toMatchObject({ port: DEV_PORT, stage: 'no-sandbox' });
+          // A read is never the wake trigger the broker's resolve is.
+          expect(await resumeOps(since)).toEqual([]);
+        } finally {
+          await setSandbox({ ports: {} });
+          await restore();
+        }
+      });
+
       it('an unauthorised visitor against a hibernated label triggers no resume', async () => {
         const label = await labelOf(world.alpha.orgId, world.alpha.projectId);
         const since = await mark();

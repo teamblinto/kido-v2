@@ -9,7 +9,7 @@ import {
   type ProjectTemplate,
   type RotatePreviewResponse,
 } from '@repo/contracts';
-import { projects } from '@repo/db';
+import { projects, sandboxes } from '@repo/db';
 import { and, eq, isNull } from 'drizzle-orm';
 
 import { CLOCK, type ClockPort } from '../../../common/clock/clock.port';
@@ -33,10 +33,13 @@ import {
 } from '../dto/preview.dto';
 import { GrantService } from '../grant.service';
 import { PreviewError } from '../preview.errors';
+import { previewStage } from '../preview-stage';
 
 /**
  * A project's preview as its readers see it (spec 017 US1, contracts § 2): the URL the gateway
- * serves it on, the port the template declares, and who may reach it. The row is a schema read
+ * serves it on, the port the template declares, who may reach it, and its start-up `stage` (the
+ * `sandboxes` row and the dev server's last report, `previewStage`; nothing is woken, so the web
+ * can poll it and mount the frame only at `ready`). The rows are schema reads
  * under the request's tenant transaction — 016's precedent, never another module's repository —
  * because `ProjectService.read` answers the `ProjectSummary` shape, which by design carries no
  * label, template or visibility. The label leaves here only folded into `url`.
@@ -76,7 +79,7 @@ export class PreviewController {
     @Param('projectId') projectId: string,
   ): Promise<PreviewResponse> {
     const row = await this.row(orgId, projectId);
-    return this.answer(row.template, row.previewLabel, row.previewVisibility);
+    return this.answer(orgId, projectId, row.template, row.previewLabel, row.previewVisibility);
   }
 
   @Post('rotate')
@@ -110,7 +113,7 @@ export class PreviewController {
       type: 'project.preview-label.rotated',
     });
 
-    const { port, url } = this.answer(row.template, label, row.previewVisibility);
+    const { port, url } = this.link(row.template, label);
     return { port, status: PREVIEW_LABEL_ROTATED, url };
   }
 
@@ -142,7 +145,7 @@ export class PreviewController {
       });
     }
 
-    return this.answer(row.template, row.previewLabel, visibility);
+    return this.answer(orgId, projectId, row.template, row.previewLabel, visibility);
   }
 
   /** The live row, or the one not-found every route here answers. */
@@ -159,11 +162,22 @@ export class PreviewController {
     return row;
   }
 
-  private answer(
+  private async answer(
+    orgId: string,
+    projectId: string,
     template: string | null,
     label: string,
     visibility: PreviewResponse['visibility'],
-  ): PreviewResponse {
+  ): Promise<PreviewResponse> {
+    const sandbox = await this.tenant.tx.query.sandboxes.findFirst({
+      columns: { lostAt: true, ports: true, state: true, transition: true, workspaceRoot: true },
+      where: and(eq(sandboxes.orgId, orgId), eq(sandboxes.projectId, projectId)),
+    });
+    const { port, url } = this.link(template, label);
+    return { port, stage: previewStage(sandbox, port), url, visibility };
+  }
+
+  private link(template: string | null, label: string): Pick<PreviewResponse, 'port' | 'url'> {
     const port = this.devPort(template);
     const host = `${label}-${String(port)}.${this.domain}`;
     // The local gateway (`pnpm dev:gateway`) speaks plain HTTP on its own port, as the authorize
@@ -172,7 +186,7 @@ export class PreviewController {
       this.gatewayPort === undefined
         ? `https://${host}`
         : `http://${host}:${String(this.gatewayPort)}`;
-    return { port: port ?? null, url: port === undefined ? '' : url, visibility };
+    return { port: port ?? null, url: port === undefined ? '' : url };
   }
 
   /** The same reading `RouteBrokerService.devPort` makes: no template or no `devPort` is no port. */

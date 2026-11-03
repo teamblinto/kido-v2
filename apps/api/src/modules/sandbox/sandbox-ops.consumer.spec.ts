@@ -760,6 +760,24 @@ describe('SandboxOpsConsumer', () => {
           expect(uploadsTo(SANDBOX_PROJECT_ENV_PATH)).toHaveLength(1);
         });
 
+        it('clears the last start’s dev server reports on resume, so a hibernated listening never reads as ready', async () => {
+          const { id } = await seedRow(
+            {
+              hibernatedAt: new Date(),
+              ports: { 3000: { observedAt: '2026-11-03T10:00:00.000Z', state: 'listening' } },
+              state: 'hibernated',
+              transition: 'resuming',
+              transitionSince: new Date(),
+            },
+            'stopped',
+          );
+
+          await process({ leaseEpoch: 1, op: 'resume', orgId, sandboxId: id });
+
+          expect(launches()).toHaveLength(1);
+          expect(await projectRow(id)).toMatchObject({ ports: {}, state: 'active' });
+        });
+
         it('delivers the callback token alone to a project on python, which declares no dev server', async () => {
           const { daytonaId, id } = await seedRow({
             projectId: pythonProjectId,

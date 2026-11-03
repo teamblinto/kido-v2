@@ -371,7 +371,14 @@ export class SandboxOpsConsumer extends EventConsumer<
     );
     await this.deliverProjectEnv(target);
 
-    if (dev !== undefined) await this.launchDevServer(target, dev, workspaceRoot);
+    if (dev !== undefined) {
+      // The last start's reports name a dev server this start does not have (a hibernated
+      // `listening` would read as `ready` until the new `starting` lands, and the preview stage
+      // would send the web to a frame nothing serves). Cleared before the launch, so every report
+      // from here on is this start's.
+      await this.settleProject(target, { ports: {} });
+      await this.launchDevServer(target, dev, workspaceRoot);
+    }
   }
 
   /**

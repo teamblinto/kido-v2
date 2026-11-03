@@ -41,12 +41,30 @@ const NEW_LABEL = 'c4ca4238a0b923820dcc509a6f75849b';
 const NOW = new Date('2026-09-18T10:00:00.000Z');
 const caller = { userId: '33333333-3333-4333-8333-333333333333' } as AuthenticatedUser;
 
-function build(row: Record<string, unknown> | undefined, devPort?: string, cfg = config) {
+/** A settled sandbox whose dev server last reported `state` on `port`. */
+const reported = (port: number, state: string) => ({
+  lostAt: null,
+  ports: { [port]: { observedAt: NOW.toISOString(), state } },
+  state: 'active',
+  transition: null,
+  workspaceRoot: '/home/daytona/workspace',
+});
+
+function build(
+  row: Record<string, unknown> | undefined,
+  devPort?: string,
+  cfg = config,
+  sandbox: Record<string, unknown> | undefined = undefined,
+) {
   const findFirst = vi.fn().mockResolvedValue(row);
   const get = vi.fn().mockReturnValue({ manifest: { devPort } });
   const where = vi.fn().mockResolvedValue(undefined);
   const set = vi.fn().mockReturnValue({ where });
-  const tx = { query: { projects: { findFirst } }, update: vi.fn().mockReturnValue({ set }) };
+  const sandboxes = { findFirst: vi.fn().mockResolvedValue(sandbox) };
+  const tx = {
+    query: { projects: { findFirst }, sandboxes },
+    update: vi.fn().mockReturnValue({ set }),
+  };
   const rotatePreviewLabel = vi.fn().mockResolvedValue({ label: NEW_LABEL, previousLabel: LABEL });
   const record = vi.fn().mockResolvedValue(undefined);
   const append = vi.fn().mockResolvedValue(undefined);
@@ -59,26 +77,45 @@ function build(row: Record<string, unknown> | undefined, devPort?: string, cfg =
     { now: () => NOW },
     cfg,
   );
-  return { append, controller, findFirst, get, record, rotatePreviewLabel, set, tx };
+  return { append, controller, findFirst, get, record, rotatePreviewLabel, sandboxes, set, tx };
 }
 
 describe('PreviewController', () => {
   it('reads the row on the request transaction and answers the url from the label and devPort', async () => {
-    const { controller, findFirst, get } = build(
+    const { controller, findFirst, get, sandboxes } = build(
       { previewLabel: LABEL, previewVisibility: 'org', template: 'vite-react' },
       '5173',
+      config,
+      reported(5173, 'listening'),
     );
 
     const body = await controller.read(ORG, PROJECT);
 
     expect(findFirst).toHaveBeenCalledTimes(1);
+    expect(sandboxes.findFirst).toHaveBeenCalledTimes(1);
     expect(get).toHaveBeenCalledWith('vite-react');
     expect(previewResponseSchema.parse(body)).toEqual(body);
     expect(body).toEqual({
       port: 5173,
+      stage: 'ready',
       url: `https://${LABEL}-5173.preview.example.test`,
       visibility: 'org',
     });
+  });
+
+  it('answers the stage from the sandbox row and the dev server report, so the url exists before it serves', async () => {
+    const project = { previewLabel: LABEL, previewVisibility: 'org', template: 'vite-react' };
+    const stageOf = async (sandbox: Record<string, unknown> | undefined) =>
+      (await build(project, '3000', config, sandbox).controller.read(ORG, PROJECT)).stage;
+
+    expect(await stageOf(undefined)).toBe('no-sandbox');
+    expect(await stageOf({ ...reported(3000, 'listening'), transition: 'creating' })).toBe(
+      'creating',
+    );
+    expect(await stageOf({ ...reported(3000, 'starting') })).toBe('starting');
+    expect(await stageOf({ ...reported(3000, 'failed') })).toBe('failed');
+    expect(await stageOf({ ...reported(3000, 'listening'), state: 'hibernated' })).toBe('asleep');
+    expect(await stageOf(reported(3000, 'listening'))).toBe('ready');
   });
 
   it('answers the local gateway over plain HTTP on its port when PREVIEW_GATEWAY_PORT is set', async () => {
@@ -94,22 +131,24 @@ describe('PreviewController', () => {
 
     await expect(controller.read(ORG, PROJECT)).resolves.toEqual({
       port: 3000,
+      stage: 'no-sandbox',
       url: `http://${LABEL}-3000.forge-preview.localhost:3200`,
       visibility: 'public',
     });
   });
 
-  it('answers port null and an empty url when the template declares no devPort', async () => {
-    const { controller } = build({
-      previewLabel: LABEL,
-      previewVisibility: 'private',
-      template: 'vite-react',
-    });
+  it('answers port null, an empty url and no-sandbox when the template declares no devPort', async () => {
+    const { controller } = build(
+      { previewLabel: LABEL, previewVisibility: 'private', template: 'vite-react' },
+      undefined,
+      config,
+      reported(3000, 'listening'),
+    );
 
     const body = await controller.read(ORG, PROJECT);
 
     expect(previewResponseSchema.parse(body)).toEqual(body);
-    expect(body).toEqual({ port: null, url: '', visibility: 'private' });
+    expect(body).toEqual({ port: null, stage: 'no-sandbox', url: '', visibility: 'private' });
   });
 
   it('treats a project without a template as one without a port', async () => {
@@ -121,6 +160,7 @@ describe('PreviewController', () => {
 
     await expect(controller.read(ORG, PROJECT)).resolves.toEqual({
       port: null,
+      stage: 'no-sandbox',
       url: '',
       visibility: 'public',
     });
@@ -140,13 +180,15 @@ describe('PreviewController', () => {
 
 describe('PreviewController.rotate', () => {
   it('rotates through ProjectService, then audits and enqueues the event on the same handle (FR-040)', async () => {
-    const { append, controller, record, rotatePreviewLabel, tx } = build(
+    const { append, controller, record, rotatePreviewLabel, sandboxes, tx } = build(
       { previewLabel: LABEL, previewVisibility: 'org', template: 'vite-react' },
       '5173',
     );
 
     const body = await controller.rotate(caller, ORG, PROJECT);
 
+    // The rotate answer carries no stage, so it costs no sandbox read.
+    expect(sandboxes.findFirst).not.toHaveBeenCalled();
     expect(rotatePreviewLabel).toHaveBeenCalledWith({ orgId: ORG, projectId: PROJECT }, tx);
     expect(record).toHaveBeenCalledWith(tx, {
       action: 'preview.label-rotated',
@@ -184,6 +226,8 @@ describe('PreviewController.setVisibility', () => {
     const { append, controller, record, set, tx } = build(
       { previewLabel: LABEL, previewVisibility: 'private', template: 'vite-react' },
       '5173',
+      config,
+      reported(5173, 'starting'),
     );
 
     const body = await controller.setVisibility(caller, ORG, PROJECT, { visibility: 'public' });
@@ -200,6 +244,7 @@ describe('PreviewController.setVisibility', () => {
     expect(previewResponseSchema.parse(body)).toEqual(body);
     expect(body).toEqual({
       port: 5173,
+      stage: 'starting',
       url: `https://${LABEL}-5173.preview.example.test`,
       visibility: 'public',
     });
@@ -214,7 +259,7 @@ describe('PreviewController.setVisibility', () => {
 
     await expect(
       controller.setVisibility(caller, ORG, PROJECT, { visibility: 'org' }),
-    ).resolves.toEqual({ port: null, url: '', visibility: 'org' });
+    ).resolves.toEqual({ port: null, stage: 'no-sandbox', url: '', visibility: 'org' });
     expect(tx.update).not.toHaveBeenCalled();
     expect(record).not.toHaveBeenCalled();
   });
