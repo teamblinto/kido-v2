@@ -1,0 +1,7 @@
+{
+  "extends": "./tsconfig.json",
+  // `**/*.mjs` keeps `modules/sandbox/dev-supervisor.mjs` out of the emit: it must reach `dist/`
+  // byte for byte, as the `nest-cli.json` asset rule copies it, because it is uploaded verbatim
+  // into a sandbox. `tsconfig.json` includes it so it is still typechecked and linted here.
+  "exclude": ["node_modules", "dist", "test", "**/*.mjs", "**/*.spec.ts", "**/*.test.ts"]
+}

@@ -1,0 +1,200 @@
+import { Injectable } from '@nestjs/common';
+import { type NewRepoLink, type RepoLink, schema } from '@repo/db';
+import { and, eq, getTableColumns, isNull, sql } from 'drizzle-orm';
+
+import type { TenantTransaction } from '../../database/database.types';
+
+/** A `repo_links` row with what the contract derives: who linked it, and the last pushed sha. */
+export interface RepoLinkRecord extends RepoLink {
+  readonly lastPushedSha: string | null;
+  readonly linkedByName: string;
+}
+
+/**
+ * The `repo_links` rows (spec 018, data-model.md). One per project (`repo_links_org_id_project_id_key`);
+ * every statement runs on the tenant transaction and names `org_id` itself.
+ */
+@Injectable()
+export class RepoLinkRepository {
+  private query(tx: TenantTransaction) {
+    return tx
+      .select({
+        ...getTableColumns(schema.repoLinks),
+        lastPushedSha: schema.checkpoints.gitSha,
+        linkedByName: schema.users.email,
+      })
+      .from(schema.repoLinks)
+      .innerJoin(schema.users, eq(schema.users.id, schema.repoLinks.linkedBy))
+      .leftJoin(
+        schema.checkpoints,
+        and(
+          eq(schema.checkpoints.orgId, schema.repoLinks.orgId),
+          eq(schema.checkpoints.id, schema.repoLinks.lastPushedCheckpointId),
+        ),
+      );
+  }
+
+  async forProject(
+    tx: TenantTransaction,
+    orgId: string,
+    projectId: string,
+  ): Promise<RepoLinkRecord | undefined> {
+    const [row] = await this.query(tx).where(
+      and(eq(schema.repoLinks.orgId, orgId), eq(schema.repoLinks.projectId, projectId)),
+    );
+
+    return row;
+  }
+
+  /** Whether the project exists under this org, and whether it is archived (`deleted_at`, R7 drift). */
+  async project(
+    tx: TenantTransaction,
+    orgId: string,
+    projectId: string,
+  ): Promise<{ archived: boolean; workspaceId: string } | undefined> {
+    const [row] = await tx
+      .select({
+        archived: sql<boolean>`${schema.projects.deletedAt} is not null`,
+        // Spec 026: an import that fails withdraws its project, and `ProjectService.archive`
+        // addresses a project through the workspace it lives in.
+        workspaceId: schema.projects.workspaceId,
+      })
+      .from(schema.projects)
+      .where(and(eq(schema.projects.orgId, orgId), eq(schema.projects.id, projectId)));
+
+    return row;
+  }
+
+  async insert(tx: TenantTransaction, draft: NewRepoLink): Promise<RepoLink> {
+    const [row] = await tx.insert(schema.repoLinks).values(draft).returning();
+
+    return row!;
+  }
+
+  /** The operations outlive the link with `link_id` null — the FK does it (migration 0024). */
+  async delete(tx: TenantTransaction, orgId: string, id: string): Promise<void> {
+    await tx
+      .delete(schema.repoLinks)
+      .where(and(eq(schema.repoLinks.orgId, orgId), eq(schema.repoLinks.id, id)));
+  }
+
+  /** After a push (or a pull, whose head is by definition pushed): the checkpoint and the remote head. */
+  async setPushed(
+    tx: TenantTransaction,
+    orgId: string,
+    id: string,
+    checkpointId: string,
+    remoteHeadSha: string,
+  ): Promise<void> {
+    await tx
+      .update(schema.repoLinks)
+      .set({ lastPushedCheckpointId: checkpointId, remoteHeadSha })
+      .where(and(eq(schema.repoLinks.orgId, orgId), eq(schema.repoLinks.id, id)));
+  }
+
+  async setRemoteHead(
+    tx: TenantTransaction,
+    orgId: string,
+    id: string,
+    remoteHeadSha: string | null,
+  ): Promise<void> {
+    await tx
+      .update(schema.repoLinks)
+      .set({ remoteHeadSha })
+      .where(and(eq(schema.repoLinks.orgId, orgId), eq(schema.repoLinks.id, id)));
+  }
+
+  /**
+   * The link a delivery names, addressed the way a webhook can address one: by the repository id
+   * and the branch the provider sent, never by a project the delivery does not know (spec 026
+   * contracts/webhook.md § 5 step 5). One row at most — `repo_links_org_id_project_id_key` allows
+   * two projects of one organisation to name the same repository and branch, so the caller takes
+   * every match rather than assuming one.
+   */
+  async forRepoBranch(
+    tx: TenantTransaction,
+    orgId: string,
+    repoId: number,
+    branch: string,
+  ): Promise<{ id: string; projectId: string }[]> {
+    return tx
+      .select({ id: schema.repoLinks.id, projectId: schema.repoLinks.projectId })
+      .from(schema.repoLinks)
+      .where(
+        and(
+          eq(schema.repoLinks.orgId, orgId),
+          eq(schema.repoLinks.repoId, repoId),
+          eq(schema.repoLinks.branch, branch),
+        ),
+      );
+  }
+
+  /**
+   * What a delivery writes, and the whole of it (FR-005, FR-038): one column of spec 018's link,
+   * by `(org, repo_id, branch)`. No column is added and no state is set — a push at GitHub does not
+   * change whether the project is linked, and `remote_head_sha` null is *unknown*, which is exactly
+   * what a deleted branch (`after` all zeroes) leaves behind. Answers how many links moved, which
+   * is what decides the delivery's terminal state.
+   */
+  async setRemoteHeadByRepo(
+    tx: TenantTransaction,
+    orgId: string,
+    repoId: number,
+    branch: string,
+    remoteHeadSha: string | null,
+  ): Promise<number> {
+    const rows = await tx
+      .update(schema.repoLinks)
+      .set({ remoteHeadSha })
+      .where(
+        and(
+          eq(schema.repoLinks.orgId, orgId),
+          eq(schema.repoLinks.repoId, repoId),
+          eq(schema.repoLinks.branch, branch),
+        ),
+      )
+      .returning({ id: schema.repoLinks.id });
+
+    return rows.length;
+  }
+
+  /** R13: links point at a removed connection no longer; they are kept, `disconnected`. */
+  async disconnectAllFor(
+    tx: TenantTransaction,
+    orgId: string,
+    connectionId: string,
+  ): Promise<void> {
+    await tx
+      .update(schema.repoLinks)
+      .set({ connectionId: null, state: 'disconnected' })
+      .where(
+        and(eq(schema.repoLinks.orgId, orgId), eq(schema.repoLinks.connectionId, connectionId)),
+      );
+  }
+
+  /**
+   * R13: a reconnect brings back the disconnected links whose repository owner is the new
+   * account (login compared case-insensitively, as GitHub does). Answers how many came back.
+   */
+  async repointConnection(
+    tx: TenantTransaction,
+    orgId: string,
+    connectionId: string,
+    ownerLogin: string,
+  ): Promise<number> {
+    const rows = await tx
+      .update(schema.repoLinks)
+      .set({ connectionId, state: 'linked' })
+      .where(
+        and(
+          eq(schema.repoLinks.orgId, orgId),
+          eq(schema.repoLinks.state, 'disconnected'),
+          isNull(schema.repoLinks.connectionId),
+          sql`lower(${schema.repoLinks.owner}) = lower(${ownerLogin})`,
+        ),
+      )
+      .returning({ id: schema.repoLinks.id });
+
+    return rows.length;
+  }
+}

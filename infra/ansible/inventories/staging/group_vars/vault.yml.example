@@ -1,0 +1,75 @@
+---
+# Every value the staging inventory takes from ansible-vault, and nothing else.
+#
+# Copy this to `vault.yml` alongside it, fill it in, encrypt it in place with
+# `ansible-vault encrypt vault.yml`, and COMMIT IT. That is the point: the encrypted file is
+# part of the repository, so changing a staging credential is a commit and a converge, never
+# an ssh session and an editor on a node (FR-030, FR-032). The vault password itself is the
+# one thing that is not in the repository — it is held by the same officers who hold the
+# OpenBao unseal shares (runbook § 3).
+#
+# `vault.yml` is NOT in this directory yet because this repository has no staging fleet yet.
+# The plays reference these names, so a converge against an inventory without it fails with
+# "the field 'X' is undefined" — which is the right failure: loud, before anything is
+# written, and naming exactly what is missing.
+
+# --- data pool (data.yml) ---
+vault_openbao_tls_cert: |
+  -----BEGIN CERTIFICATE-----
+  ...real certificate; there is no insecure variant (runbook § 1)...
+  -----END CERTIFICATE-----
+vault_openbao_tls_key: |
+  -----BEGIN PRIVATE KEY-----
+  ...
+  -----END PRIVATE KEY-----
+# `read` on sys/storage/raft/snapshot and nothing else (runbook § 7.2).
+vault_openbao_snapshot_token: s....
+vault_openbao_snapshot_access_key_id: ...
+vault_openbao_snapshot_secret_access_key: ...
+
+# --- app pool (app.yml) ---
+vault_database_url: postgres://forge_app:...@pgbouncer.staging.forge.internal:6432/forge
+vault_database_migration_url: postgres://forge_migrator:...@pgbouncer.staging.forge.internal:6432/forge
+vault_database_url_bypass_rls: postgres://forge_bypass:...@pgbouncer.staging.forge.internal:6432/forge
+# The platform token from runbook § 5.4 — `-period=768h`, `-no-default-policy`, scoped to the
+# two transit endpoints the provider uses.
+vault_openbao_token: s....
+vault_anthropic_api_key: sk-ant-...
+vault_daytona_api_key: ...
+# The object store (spec 018's repository mirror, spec 027's artifacts bucket). The endpoint is
+# shared with the gateway pool; the key pair is the app pool's WRITE key and never reaches it.
+vault_object_store_endpoint: https://<account>.r2.cloudflarestorage.com
+vault_object_store_access_key_id: ...
+vault_object_store_secret_access_key: ...
+# Custom domains (spec 028 R15): a Cloudflare API token with only "SSL and Certificates: Edit" on
+# the SaaS zone. A platform credential for the app pool alone; it never reaches the gateway pool.
+vault_cloudflare_api_token: ...
+
+# --- gateway pool (gateway.yml) ---
+# Public key material only. Nothing on this pool may be a credential to anything that holds
+# data (§ 01, FR-031) — note that there is no database URL and no OpenBao token in this
+# section, and gateway.yml fails the converge if one appears.
+vault_preview_public_jwks: '{"keys":[{"kty":"OKP","crv":"Ed25519","kid":"...","x":"..."}]}'
+vault_gateway_broker_tls_ca: |
+  -----BEGIN CERTIFICATE-----
+  ...
+  -----END CERTIFICATE-----
+vault_gateway_broker_tls_cert: |
+  -----BEGIN CERTIFICATE-----
+  ...
+  -----END CERTIFICATE-----
+vault_gateway_broker_tls_key: |
+  -----BEGIN PRIVATE KEY-----
+  ...
+  -----END PRIVATE KEY-----
+# Deployed sites (spec 027 R11, ask-first item 1). The one credential this pool holds: a
+# READ-ONLY key scoped to the artifacts bucket, which holds only content that is or was served
+# publicly. A separate key from vault_object_store_access_key_id above -- gateway.yml fails the
+# converge if the two ids are equal. With only GetObject, AWS S3 answers 403 for a missing
+# object, so a missing blob shows as 503 rather than 502; add ListBucket on the one bucket if the
+# distinction matters (ADR 053). R2 answers 404 either way.
+vault_artifact_store_read_access_key_id: ...
+vault_artifact_store_read_secret_access_key: ...
+# Custom domains (spec 028 R15): the shared secret the edge adds to every request it forwards for
+# a tenant's hostname, at least 32 characters. Not a Cloudflare credential.
+vault_edge_origin_secret: ...

@@ -1,0 +1,35 @@
+{
+  "name": "@repo/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Preview gateway: verifies signed routes and proxies *.forge-preview.net to sandboxes",
+  "type": "module",
+  "main": "src/main.ts",
+  "files": [
+    "src",
+    "!src/**/*.spec.ts"
+  ],
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env --watch src/main.ts",
+    "lint": "eslint .",
+    "start": "node src/main.ts",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@repo/contracts": "workspace:*",
+    "@repo/types": "workspace:*",
+    "jose": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@repo/eslint-config": "workspace:*",
+    "@repo/typescript-config": "workspace:*",
+    "@types/node": "catalog:",
+    "@vitest/coverage-v8": "catalog:",
+    "eslint": "catalog:",
+    "globals": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}

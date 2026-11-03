@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# {{ ansible_managed }}
+# Rendered from infra/ansible/templates/openbao-snapshot.sh.j2 — the runbook's § 7.1, exactly,
+# run by the timer in § 7.2 and by the post-change handler in infra/ansible/data.yml (FR-020).
+#
+# The snapshot is stored OUTSIDE the deployment it protects: the bucket is a different
+# provider (or at minimum a different account and region) from the data pool, and this script
+# removes the local copy once it has landed. A snapshot kept on the thing it restores is not a
+# backup. It is sealed, not safe — the unseal shares live with people, never in this bucket.
+set -euo pipefail
+
+export BAO_ADDR="https://{{ openbao_internal_name }}:{{ openbao_api_port }}"
+# A token holding only `read` on sys/storage/raft/snapshot — not the platform token, not root
+# (runbook § 7.2).
+BAO_TOKEN="$(cat {{ openbao_snapshot_token_file }})"
+export BAO_TOKEN
+
+reason="${1:-scheduled}"
+stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+snap="{{ openbao_snapshot_dir }}/openbao-${stamp}-${reason}.snap"
+
+cleanup() {
+  # shred rather than rm: the snapshot is the whole encrypted store.
+  shred -u "$snap" "$snap.sha256" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+install -d -m 0700 "{{ openbao_snapshot_dir }}"
+# Served by the leader wherever this runs, so a follower taking it is fine.
+bao operator raft snapshot save "$snap"
+sha256sum "$snap" | tee "$snap.sha256"
+
+dest="s3://${OPENBAO_SNAPSHOT_BUCKET}/{{ forge_environment }}/"
+aws --endpoint-url "${OPENBAO_SNAPSHOT_ENDPOINT}" s3 cp "$snap" "$dest"
+aws --endpoint-url "${OPENBAO_SNAPSHOT_ENDPOINT}" s3 cp "$snap.sha256" "$dest"
+
+echo "openbao snapshot ${stamp} (${reason}) shipped to ${dest}"

@@ -1,0 +1,6 @@
+{
+  "name": "Bad node-api",
+  "description": "Fixture node-api.",
+  "base": "daytonaio/sandbox:0.5.0-slim",
+  "install": "npm ci"
+}

@@ -1,0 +1,13 @@
+# Local-only: lets the containerised worker run real agents. Values come from the git-ignored
+# root .env; Daytona is reached through the host because it is a separate Compose project.
+services:
+  worker:
+    environment:
+      DAYTONA_API_URL: http://host.docker.internal:3100/api
+      DAYTONA_API_KEY: ${DAYTONA_API_KEY:?run infra/daytona bootstrap and copy its key into .env}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+  # The api decides at run-create whether a PLATFORM credential exists (PlatformCredentials), so
+  # without the key here every run is refused 422 "model is not in the organisation's catalogue".
+  api:
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}

@@ -1,0 +1,6 @@
+{
+  "name": "Good python",
+  "description": "Fixture python.",
+  "base": "daytonaio/sandbox:0.5.0-slim",
+  "install": "npm ci"
+}

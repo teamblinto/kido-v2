@@ -1,0 +1,7 @@
+{
+  "name": "Agent home",
+  "description": "A person's private cloud workspace for their own Claude Code (spec 041); never a project template.",
+  "base": "daytonaio/sandbox:0.5.0-slim",
+  "install": "bash install.sh {{AGENT_HOME_CLAUDE_VERSION}}",
+  "installInSession": true
+}

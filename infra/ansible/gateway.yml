@@ -1,0 +1,223 @@
+---
+# The gateway pool (spec 025 · T051 · architecture § 01's node-role table).
+#
+# § 01: "gateway | 2 | 4 vCPU / 8 GB | Preview and deployment gateways. Hardened, no database
+# client, no tenant secrets. Separate from both other pools because it is the only thing that
+# talks to sandbox ingress ports."
+#
+# And § 01's first hard rule: "Nothing that holds a database credential, a platform API key,
+# or a tenant secret runs on a Daytona node or a gateway node. If a feature seems to need one
+# there, the feature is wrong — move the privileged half onto the application pool and expose
+# a narrow, audited broker call instead."
+#
+# So this play runs `forge-gateway` and nothing else, and its environment is credential-free
+# by construction rather than by care:
+#
+#   * `gateway_env` below is the WHOLE environment — there is no merge with the app pool's
+#     env block, no anchor shared with it, and no `forge_app_env` in scope on these hosts.
+#     The two pools have no variable in common to leak through (group_vars/app.yml and
+#     group_vars/gateway.yml are disjoint files, and neither is in group_vars/all.yml).
+#   * every key in it is checked against `gateway_forbidden_env_keys` before the container is
+#     created, so a database URL, a platform API key or a secret-store token added later
+#     fails this play rather than reaching a node.
+#   * every VALUE is checked too, because the dangerous case is the right-looking key holding
+#     a postgres:// URL or a bao token.
+#
+# The gateway reaches the app pool over mTLS to two narrow broker endpoints and verifies
+# preview grants against a PUBLIC JWKS. A public key and a client certificate are not
+# credentials to anything that holds data, which is the whole design (spec 022, § 01).
+#
+# T048 asserts the same property on the rendered environment in infra/deploy.sh. This play is
+# the other half: the assertion here covers a converge that does not go through that script.
+
+- name: Gateway pool — forge-gateway, and no credential of any kind
+  hosts: gateway
+  become: true
+
+  tasks:
+    - name: Refuse anything but a digest for forge-gateway
+      ansible.builtin.assert:
+        that:
+          - forge_gateway_digest is defined
+          - forge_gateway_digest is match('^sha256:[0-9a-f]{64}$')
+        fail_msg: >-
+          forge_gateway_digest must be a full sha256:… digest, not
+          '{{ forge_gateway_digest | default("undefined") }}' (FR-002).
+
+    # --- the credential-free proof ------------------------------------------------------
+
+    - name: Refuse a gateway environment carrying a credential — by key
+      # § 01's hard rule, mechanically. DATABASE_URL, DATABASE_MIGRATION_URL,
+      # DATABASE_URL_BYPASS_RLS, KEK_*, OPENBAO_*, REDIS_*, PLATFORM_API_KEY,
+      # ANTHROPIC_API_KEY, DAYTONA_API_KEY — none of them belong on this pool, and the check
+      # is a prefix match so a new one cannot be introduced under an old family name.
+      ansible.builtin.assert:
+        that:
+          - >-
+            gateway_env.keys() | list
+            | select('match', '^(' ~ gateway_forbidden_env_keys | join('|') ~ ')')
+            | list | length == 0
+        fail_msg: >-
+          The gateway environment carries forbidden keys:
+          {{ gateway_env.keys() | list
+             | select('match', '^(' ~ gateway_forbidden_env_keys | join('|') ~ ')') | list }}.
+          Nothing holding a database credential, a platform API key or a tenant secret runs on
+          a gateway node (§ 01, FR-031). Move the privileged half onto the app pool and expose
+          a broker call.
+
+    - name: Refuse a gateway environment carrying a credential — by value
+      # The key name is the easy half. This catches a connection string or a vault token
+      # smuggled in under an innocent key.
+      ansible.builtin.assert:
+        that:
+          - >-
+            gateway_env.values() | map('string') | list
+            | select('search', gateway_forbidden_env_values) | list | length == 0
+        fail_msg: >-
+          A gateway environment value looks like a credential (a postgres://, redis:// or
+          amqp:// URL, or a bao/vault token). § 01 forbids it on this pool (FR-031).
+
+    - name: Refuse the app pool's object-store write key on the gateway — by name
+      # Spec 027 T096. OBJECT_STORE_* is the app pool's write access to the repos and artifacts
+      # buckets. The gateway reads sites with its own read-only ARTIFACT_STORE_* key.
+      ansible.builtin.assert:
+        that:
+          - >-
+            gateway_env.keys() | list
+            | select('match', '^(' ~ gateway_forbidden_write_env_keys | join('|') ~ ')')
+            | list | length == 0
+        fail_msg: >-
+          The gateway environment carries the app pool's object-store variables:
+          {{ gateway_env.keys() | list
+             | select('match', '^(' ~ gateway_forbidden_write_env_keys | join('|') ~ ')') | list }}.
+          The gateway reads deployed sites with its own read-only ARTIFACT_STORE_* key
+          (spec 027 R11).
+
+    - name: Refuse an artifact read key that is the app pool's write key
+      # Spec 027 T096, the same check infra/deploy.sh makes on the rendered stack. Were the two
+      # one key, this internet-facing pool would hold a credential that can overwrite or delete
+      # every published site and read every repository mirror.
+      ansible.builtin.assert:
+        that:
+          - >-
+            gateway_env.ARTIFACT_STORE_ACCESS_KEY_ID is not defined
+            or gateway_env.ARTIFACT_STORE_ACCESS_KEY_ID | string | length == 0
+            or gateway_env.ARTIFACT_STORE_ACCESS_KEY_ID | string
+               != gateway_app_object_store_access_key_id | string
+        fail_msg: >-
+          The gateway's ARTIFACT_STORE_ACCESS_KEY_ID equals the app pool's
+          OBJECT_STORE_ACCESS_KEY_ID. The gateway's key must be a separate read-only key scoped
+          to the artifacts bucket, never the app pool's write key (spec 027 R11).
+        success_msg: >-
+          The gateway's artifact read key is not the app pool's object-store write key.
+
+    - name: Confirm the gateway has no database client on the node either
+      # "Hardened, no database client" is about the node, not only the environment: a psql on
+      # the box is an invitation to do by hand what the rule forbids by design.
+      ansible.builtin.package:
+        name: '{{ gateway_forbidden_packages }}'
+        state: absent
+
+    # --- forge-gateway ------------------------------------------------------------------
+
+    - name: Create the gateway node's directories
+      ansible.builtin.file:
+        path: '{{ gateway_config_dir }}/mtls'
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
+
+    - name: Install the broker mTLS material
+      # The gateway's identity to the app pool's two broker endpoints. A client certificate,
+      # not a credential to a data store: it authorises exactly the broker calls the app pool
+      # chooses to answer, and every denied east-west attempt is logged (§ 01).
+      ansible.builtin.copy:
+        content: '{{ item.content }}'
+        dest: '{{ gateway_config_dir }}/mtls/{{ item.name }}'
+        owner: root
+        group: root
+        mode: '{{ item.mode }}'
+      loop:
+        - { name: ca.pem, content: '{{ gateway_broker_tls_ca }}', mode: '0644' }
+        - { name: client.pem, content: '{{ gateway_broker_tls_cert }}', mode: '0644' }
+        - { name: client-key.pem, content: '{{ gateway_broker_tls_key }}', mode: '0600' }
+      loop_control:
+        label: '{{ item.name }}'
+      no_log: true
+
+    - name: Run forge-gateway — the only container on this pool
+      community.docker.docker_container:
+        name: gateway
+        image: '{{ forge_gateway_repository }}@{{ forge_gateway_digest }}'
+        restart_policy: unless-stopped
+        networks: [{ name: '{{ gateway_network }}' }]
+        published_ports: '{{ gateway_published_ports }}'
+        # The whole environment, and nothing merged into it.
+        env: '{{ gateway_env }}'
+        volumes:
+          - '{{ gateway_config_dir }}/mtls:/etc/forge/mtls:ro'
+        comparisons:
+          '*': strict
+
+    - name: Run the node exporter
+      community.docker.docker_container:
+        name: node-exporter
+        image: '{{ forge_node_exporter_image }}'
+        restart_policy: unless-stopped
+        networks: [{ name: '{{ gateway_network }}' }]
+        pid_mode: host
+        volumes:
+          - /:/host:ro,rslave
+        command: ['--path.rootfs=/host']
+        comparisons:
+          '*': strict
+
+    - name: Read back the environment the running container actually has
+      # The check above is on what this play intends. This one is on what the node ended up
+      # with, which is what FR-031 is actually about.
+      community.docker.docker_container_info:
+        name: gateway
+      register: gateway_container
+
+    - name: Assert the running gateway holds no credential
+      ansible.builtin.assert:
+        that:
+          - >-
+            gateway_container.container.Config.Env
+            | select('match', '^(' ~ gateway_forbidden_env_keys | join('|') ~ ')')
+            | list | length == 0
+          - >-
+            gateway_container.container.Config.Env
+            | select('search', gateway_forbidden_env_values)
+            | list | length == 0
+          - >-
+            gateway_container.container.Config.Env
+            | select('match', '^(' ~ gateway_forbidden_write_env_keys | join('|') ~ ')')
+            | list | length == 0
+          - >-
+            'ARTIFACT_STORE_ACCESS_KEY_ID=' ~ gateway_app_object_store_access_key_id
+            not in gateway_container.container.Config.Env
+        fail_msg: >-
+          The running gateway container holds a credential in its environment. § 01: nothing
+          that holds a database credential, a platform API key or a tenant secret runs on a
+          gateway node (FR-031).
+        success_msg: >-
+          The running gateway holds no database URL, no platform API key and no secret-store
+          token.
+
+    - name: Assert the gateway pool runs forge-gateway and nothing else
+      community.docker.docker_host_info:
+        containers: true
+      register: gateway_containers
+
+    - name: Confirm the container set matches § 01
+      ansible.builtin.assert:
+        that:
+          - >-
+            gateway_containers.containers
+            | map(attribute='Names') | flatten | map('regex_replace', '^/', '')
+            | sort == ['gateway', 'node-exporter']
+        fail_msg: >-
+          The gateway pool runs forge-gateway and the node exporter. Found:
+          {{ gateway_containers.containers | map(attribute='Names') | flatten | sort }}.

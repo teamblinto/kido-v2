@@ -1,0 +1,22 @@
+# {{ ansible_managed }}
+[Unit]
+Description=OpenBao
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=openbao
+Group=openbao
+ExecStart=/usr/bin/bao server -config={{ openbao_config_dir }}/openbao.hcl
+ExecReload=/bin/kill --signal HUP $MAINPID
+# mlock, so the master key is never paged to disk. disable_mlock = false in the config
+# depends on this capability being granted here.
+AmbientCapabilities=CAP_IPC_LOCK
+CapabilityBoundingSet=CAP_IPC_LOCK
+Restart=on-failure
+RestartSec=5
+KillSignal=SIGINT
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

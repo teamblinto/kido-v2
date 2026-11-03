@@ -1,0 +1,6 @@
+{
+  "name": "Bad vite-react",
+  "description": "Fixture vite-react.",
+  "base": "daytonaio/sandbox:0.5.0-slim",
+  "install": "npm ci"
+}

@@ -1,0 +1,3533 @@
+{
+  "auth": {
+    "type": "noauth"
+  },
+  "event": [
+    {
+      "listen": "prerequest",
+      "script": {
+        "exec": [
+          "// ---------------------------------------------------------------------------",
+          "// Forge API - collection pre-request script.",
+          "//",
+          "// This API does not issue a bearer token. A sign-in returns an opaque session",
+          "// token in a Secure, HttpOnly cookie carrying the __Host- prefix (ADR 001), and",
+          "// every unsafe request must also carry a double-submit CSRF token and an allowed",
+          "// Origin (apps/api/src/common/csrf/csrf.middleware.ts). Postman is not a",
+          "// browser, so this script plays the part of one, in three steps:",
+          "//",
+          "//   1. obtain a CSRF token - the API issues one to any caller that has none;",
+          "//   2. sign in on demand, and keep the session token in the environment;",
+          "//   3. attach Cookie, X-CSRF-Token and Origin to the outgoing request.",
+          "//",
+          "// The tokens travel as an explicit Cookie header rather than through Postman's",
+          "// cookie jar, deliberately. Both cookies are Secure, and while browsers treat",
+          "// http://localhost as a trustworthy origin by special case, Postman gives it no",
+          "// such exemption - a jar-managed session would simply never be sent to a local",
+          "// API over plain HTTP.",
+          "//",
+          "// No secret is read from the collection. Credentials come from userEmail and",
+          "// userPassword in the active environment, and every token captured is written",
+          "// back there - never to a collection variable, which would be exported with the",
+          "// collection itself.",
+          "// ---------------------------------------------------------------------------",
+          "",
+          "var SAFE_METHODS = ['GET', 'HEAD', 'OPTIONS'];",
+          "",
+          "// Routes that resolve without a session. Every one is @Public() in the API, and",
+          "// naming them here is what stops this script signing in before a sign-in - or",
+          "// before a request whose entire point is to be unauthenticated.",
+          "var SESSIONLESS_PATHS = [",
+          "  '/',",
+          "  '/health',",
+          "  '/auth/signup',",
+          "  '/auth/verify',",
+          "  '/auth/verify/resend',",
+          "  '/auth/login',",
+          "  '/auth/logout',",
+          "  '/auth/mfa/challenge',",
+          "  '/auth/password/reset',",
+          "  '/auth/password/reset/confirm'",
+          "];",
+          "",
+          "// The OAuth pair is public too, and carries a path parameter, so it is matched",
+          "// by prefix rather than by equality.",
+          "var SESSIONLESS_PREFIXES = ['/auth/oauth/'];",
+          "",
+          "var config = {",
+          "  appOrigin: required('appOrigin'),",
+          "  baseUrl: required('baseUrl'),",
+          "  csrfCookieName: required('csrfCookieName'),",
+          "  sessionCookieName: required('sessionCookieName')",
+          "};",
+          "",
+          "var method = String(pm.request.method || 'GET').toUpperCase();",
+          "var path = requestPath();",
+          "var needsSession = !isSessionless(path);",
+          "var csrfToken = pm.environment.get('csrfToken');",
+          "var sessionToken = liveSessionToken();",
+          "",
+          "// The fast path is synchronous on purpose: when both tokens are already in hand",
+          "// there is no round trip to wait for, and so no async boundary between deciding",
+          "// on the headers and setting them.",
+          "if (csrfToken && (sessionToken || !needsSession)) {",
+          "  applyAuthHeaders(csrfToken, sessionToken);",
+          "} else {",
+          "  acquire()",
+          "    .then(function (acquired) {",
+          "      applyAuthHeaders(acquired.csrfToken, acquired.sessionToken);",
+          "    })",
+          "    .catch(function (error) {",
+          "      // Reported rather than rethrown, and the request is still sent with",
+          "      // whatever was in hand: the API's own problem+json response says more",
+          "      // about why than a script failure would, and it says it in the response",
+          "      // pane where you are already looking.",
+          "      console.error('[auth] ' + error.message);",
+          "      applyAuthHeaders(pm.environment.get('csrfToken'), pm.environment.get('sessionToken'));",
+          "    });",
+          "}",
+          "",
+          "// --- acquisition -----------------------------------------------------------",
+          "",
+          "async function acquire() {",
+          "  var csrf = csrfToken || (await mintCsrfToken());",
+          "",
+          "  if (!needsSession || sessionToken) {",
+          "    return { csrfToken: csrf, sessionToken: sessionToken };",
+          "  }",
+          "",
+          "  if (String(pm.environment.get('autoSignIn')).toLowerCase() === 'false') {",
+          "    throw new Error(",
+          "      'autoSignIn is false and no live session token is stored. Run \"Authentication / Sign in\", ' +",
+          "        'or set autoSignIn to true.'",
+          "    );",
+          "  }",
+          "",
+          "  return { csrfToken: csrf, sessionToken: await signIn(csrf) };",
+          "}",
+          "",
+          "// The API issues a CSRF token to any caller that presents none, including on the",
+          "// response that refuses them - so any safe route will do, and the cheapest one",
+          "// is the metadata root. It has to be a separate call because the refusal an",
+          "// unsafe request would earn is the thing we are avoiding.",
+          "async function mintCsrfToken() {",
+          "  var response = await send({ method: 'GET', url: config.baseUrl + '/' });",
+          "  var raw = readSetCookie(response, config.csrfCookieName);",
+          "  var token = raw && cookieValue(raw);",
+          "",
+          "  if (!token) {",
+          "    throw new Error(",
+          "      'GET ' +",
+          "        config.baseUrl +",
+          "        '/ did not set a \"' +",
+          "        config.csrfCookieName +",
+          "        '\" cookie (' +",
+          "        summarise(response) +",
+          "        '). Check that baseUrl points at a running API and that csrfCookieName matches its ' +",
+          "        'CSRF_COOKIE_NAME.'",
+          "    );",
+          "  }",
+          "",
+          "  pm.environment.set('csrfToken', token);",
+          "  console.log('[auth] CSRF token issued.');",
+          "",
+          "  return token;",
+          "}",
+          "",
+          "async function signIn(csrf) {",
+          "  var email = pm.environment.get('userEmail');",
+          "  var password = pm.environment.get('userPassword');",
+          "",
+          "  if (!email || !password) {",
+          "    throw new Error(",
+          "      'userEmail or userPassword is empty. Fill both in the active environment - as CURRENT ' +",
+          "        'values, so the password is never written to the exported file. See ' +",
+          "        'apps/api/postman/README.md for how to create a verified account first.'",
+          "    );",
+          "  }",
+          "",
+          "  var response = await send({",
+          "    body: { mode: 'raw', raw: JSON.stringify({ email: email, password: password }) },",
+          "    header: {",
+          "      'Content-Type': 'application/json',",
+          "      Cookie: config.csrfCookieName + '=' + csrf,",
+          "      Origin: config.appOrigin,",
+          "      'X-CSRF-Token': csrf",
+          "    },",
+          "    method: 'POST',",
+          "    url: config.baseUrl + '/auth/login'",
+          "  });",
+          "",
+          "  if (response.code !== 200) {",
+          "    throw new Error('Sign-in as ' + email + ' failed: ' + summarise(response));",
+          "  }",
+          "",
+          "  var raw = readSetCookie(response, config.sessionCookieName);",
+          "  var token = raw && cookieValue(raw);",
+          "",
+          "  if (!token) {",
+          "    throw new Error(",
+          "      'Sign-in returned ' +",
+          "        response.code +",
+          "        ' but set no \"' +",
+          "        config.sessionCookieName +",
+          "        '\" cookie. Check that sessionCookieName matches the API SESSION_COOKIE_NAME.'",
+          "    );",
+          "  }",
+          "",
+          "  storeSession(token, cookieMaxAge(raw));",
+          "",
+          "  var body = json(response) || {};",
+          "",
+          "  // Both arms of a login write a session cookie - what differs is what that",
+          "  // session may do. A pending-MFA session resolves nothing but the challenge",
+          "  // route, so the token is stored (the challenge is bound to it) and the caller",
+          "  // is told what to do next rather than left with an unexplained 401.",
+          "  if (body.status === 'mfa_required') {",
+          "    console.warn(",
+          "      '[auth] Signed in as ' +",
+          "        email +",
+          "        ', but the account requires a second factor. The stored session is half-authenticated: ' +",
+          "        'run \"Multi-factor authentication / Complete MFA challenge\" before anything else.'",
+          "    );",
+          "  } else {",
+          "    if (body.user && body.user.id) {",
+          "      pm.environment.set('currentUserId', body.user.id);",
+          "    }",
+          "",
+          "    console.log('[auth] Signed in as ' + email + '.');",
+          "  }",
+          "",
+          "  return token;",
+          "}",
+          "",
+          "function storeSession(token, ttlSeconds) {",
+          "  pm.environment.set('sessionToken', token);",
+          "  pm.environment.set(",
+          "    'sessionExpiresAt',",
+          "    ttlSeconds ? new Date(Date.now() + ttlSeconds * 1000).toISOString() : ''",
+          "  );",
+          "}",
+          "",
+          "// --- outgoing request ------------------------------------------------------",
+          "",
+          "function applyAuthHeaders(csrf, session) {",
+          "  var jar = [];",
+          "",
+          "  if (session) {",
+          "    jar.push(config.sessionCookieName + '=' + session);",
+          "  }",
+          "",
+          "  if (csrf) {",
+          "    jar.push(config.csrfCookieName + '=' + csrf);",
+          "  }",
+          "",
+          "  if (jar.length > 0) {",
+          "    pm.request.headers.upsert({ key: 'Cookie', value: jar.join('; ') });",
+          "  }",
+          "",
+          "  // Sent on safe requests too, because a browser sends it on cross-origin reads",
+          "  // as well, and the same allowlist backs CORS and the CSRF Origin check.",
+          "  pm.request.headers.upsert({ key: 'Origin', value: config.appOrigin });",
+          "",
+          "  if (csrf && SAFE_METHODS.indexOf(method) === -1) {",
+          "    pm.request.headers.upsert({ key: 'X-CSRF-Token', value: csrf });",
+          "  }",
+          "}",
+          "",
+          "// --- helpers ---------------------------------------------------------------",
+          "",
+          "function required(key) {",
+          "  var value = pm.environment.get(key);",
+          "",
+          "  if (!value) {",
+          "    throw new Error(",
+          "      'The environment variable \"' +",
+          "        key +",
+          "        '\" is not set. Select one of the environments in apps/api/postman/environments, or add ' +",
+          "        'the variable to the one you are using.'",
+          "    );",
+          "  }",
+          "",
+          "  return value;",
+          "}",
+          "",
+          "// Built from the raw path segments rather than from getPath(), so a segment",
+          "// holding {{orgId}} cannot turn into a path this script fails to recognise.",
+          "function requestPath() {",
+          "  var segments = (pm.request.url.path || []).map(String).filter(function (segment) {",
+          "    return segment.length > 0;",
+          "  });",
+          "",
+          "  return '/' + segments.join('/');",
+          "}",
+          "",
+          "function isSessionless(candidate) {",
+          "  if (SESSIONLESS_PATHS.indexOf(candidate) !== -1) {",
+          "    return true;",
+          "  }",
+          "",
+          "  return SESSIONLESS_PREFIXES.some(function (prefix) {",
+          "    return candidate.indexOf(prefix) === 0;",
+          "  });",
+          "}",
+          "",
+          "// Treats an expired token as absent, so the next request re-authenticates",
+          "// instead of spending a round trip discovering a 401.",
+          "function liveSessionToken() {",
+          "  var token = pm.environment.get('sessionToken');",
+          "",
+          "  if (!token) {",
+          "    return undefined;",
+          "  }",
+          "",
+          "  var expiresAt = pm.environment.get('sessionExpiresAt');",
+          "",
+          "  if (expiresAt && Date.parse(expiresAt) <= Date.now()) {",
+          "    pm.environment.unset('sessionToken');",
+          "    pm.environment.unset('sessionExpiresAt');",
+          "    console.log('[auth] Stored session token had expired; signing in again.');",
+          "",
+          "    return undefined;",
+          "  }",
+          "",
+          "  return token;",
+          "}",
+          "",
+          "function send(options) {",
+          "  return new Promise(function (resolve, reject) {",
+          "    pm.sendRequest(options, function (error, response) {",
+          "      if (error) {",
+          "        reject(new Error(String((error && error.message) || error)));",
+          "",
+          "        return;",
+          "      }",
+          "",
+          "      resolve(response);",
+          "    });",
+          "  });",
+          "}",
+          "",
+          "// A response may carry several Set-Cookie headers; only the first segment of",
+          "// each is the name=value pair, the rest are attributes.",
+          "function readSetCookie(response, name) {",
+          "  var prefix = name + '=';",
+          "  var found;",
+          "",
+          "  response.headers.each(function (header) {",
+          "    if (found || String(header.key).toLowerCase() !== 'set-cookie') {",
+          "      return;",
+          "    }",
+          "",
+          "    if (String(header.value).split(';')[0].trim().indexOf(prefix) === 0) {",
+          "      found = String(header.value);",
+          "    }",
+          "  });",
+          "",
+          "  return found;",
+          "}",
+          "",
+          "// An empty value is a deletion, not a token - a sign-out clears the cookie by",
+          "// setting it to nothing with Max-Age=0.",
+          "function cookieValue(raw) {",
+          "  var pair = raw.split(';')[0].trim();",
+          "  var value = pair.slice(pair.indexOf('=') + 1);",
+          "",
+          "  return value.length > 0 ? value : undefined;",
+          "}",
+          "",
+          "function cookieMaxAge(raw) {",
+          "  var match = /(?:^|;)\\s*max-age\\s*=\\s*(\\d+)/i.exec(raw);",
+          "",
+          "  return match ? Number(match[1]) : undefined;",
+          "}",
+          "",
+          "function json(response) {",
+          "  try {",
+          "    return response.json();",
+          "  } catch (error) {",
+          "    return undefined;",
+          "  }",
+          "}",
+          "",
+          "// Errors arrive as application/problem+json (RFC 9457), so the useful part of a",
+          "// failure is the title and the detail, not the status line.",
+          "function summarise(response) {",
+          "  var body = json(response);",
+          "",
+          "  if (body && body.detail) {",
+          "    return response.code + ' ' + (body.title || '') + ' - ' + body.detail;",
+          "  }",
+          "",
+          "  return response.code + ' ' + (response.status || '');",
+          "}"
+        ],
+        "type": "text/javascript"
+      }
+    },
+    {
+      "listen": "test",
+      "script": {
+        "exec": [
+          "// ---------------------------------------------------------------------------",
+          "// Forge API - collection test script. Two invariants that hold for every",
+          "// request in the collection, asserted once here rather than per request.",
+          "// ---------------------------------------------------------------------------",
+          "",
+          "// A revoked, expired or signed-out session is indistinguishable from no session",
+          "// at all, and the API says so with a 401. Dropping the stored token here is what",
+          "// makes the next request re-authenticate on its own.",
+          "if (pm.response.code === 401) {",
+          "  pm.environment.unset('sessionToken');",
+          "  pm.environment.unset('sessionExpiresAt');",
+          "  console.log('[auth] 401 - stored session token discarded; the next request will sign in again.');",
+          "}",
+          "",
+          "// The session token is written to a cookie and to nothing else: not to a body,",
+          "// not to a redirect target, not to a fragment (spec 001, criterion 3). A body",
+          "// that carried it would put it in this client's logs and history, so the",
+          "// collection checks the API's own promise on every response it sees.",
+          "var storedToken = pm.environment.get('sessionToken');",
+          "",
+          "if (storedToken) {",
+          "  pm.test('The response body does not carry the session token', function () {",
+          "    pm.expect(pm.response.text() || '').to.not.include(storedToken);",
+          "  });",
+          "}"
+        ],
+        "type": "text/javascript"
+      }
+    }
+  ],
+  "info": {
+    "_postman_id": "8f3c1d64-2a7b-4e59-9c08-b5d7e1a4f230",
+    "description": "# Forge API\n\nThe NestJS API in `apps/api`, as a collection you can import and send.\n\n## Read this first\n\n**There is no bearer token.** A sign-in returns an opaque session token in a\n`Secure`, `HttpOnly` cookie whose name carries the `__Host-` prefix, and the\nserver keeps the session in Redis (ADR 001). On top of that, **every unsafe\nrequest needs two more things**: a double-submit CSRF token (the `forge_csrf`\ncookie, echoed in `X-CSRF-Token`) and an `Origin` the API allows.\n\nPostman is not a browser, so the **collection pre-request script** plays the part\nof one. On any request that needs it, the script:\n\n1. has a CSRF token issued — `GET /` sets one for any caller that presents none;\n2. signs in with `userEmail` / `userPassword` if no live session token is stored,\n   and captures the token from `Set-Cookie` into the environment;\n3. attaches `Cookie`, `X-CSRF-Token` and `Origin` to the outgoing request.\n\nSo **you never have to run \"Sign in\" by hand**, and no request needs its own auth\nconfiguration. Requests inherit \"No Auth\" because the handshake is not one of\nPostman's built-in schemes.\n\nThe tokens travel as an explicit `Cookie` header rather than through Postman's\ncookie jar. That is deliberate: both cookies are `Secure`, and while browsers\nspecial-case `http://localhost` as a trustworthy origin, Postman does not — a\njar-managed session would never be sent to a local API over plain HTTP.\n\n## Setting up\n\n1. Import an environment from `apps/api/postman/environments` and select it.\n2. Fill in `userEmail` and `userPassword` **as current values**, so they are not\n   written to the file if you export it.\n3. Send anything. The first request that needs a session will sign in for you.\n\nNo account yet? Run **Account bootstrap** in order: sign up, copy the token out\nof the verification link the API prints to its log (`MAIL_PROVIDER=console`), and\nverify. `apps/api/postman/README.md` has the long version.\n\n## Conventions\n\n- Errors are `application/problem+json` (RFC 9457) with a stable `type` URI —\n  `https://forge.dev/problems/<slug>` — plus `title`, `detail`, `instance` and the\n  `requestId` to grep the API log for. Match on the slug, never on the prose.\n- Every unsafe route **accepts** `Idempotency-Key` and none requires one. Where\n  it is most useful, the header is present but disabled.\n- Sensitive lists are throttled per account and per IP with a progressive delay\n  rather than a lockout, and answer `429 rate-limited` with `Retry-After`.\n- The API is versioned in the path. `baseUrl` includes the prefix and version\n  (`/api/v1`), so request paths here start after it.\n",
+    "name": "Forge API",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "description": "Unauthenticated metadata and the readiness probe. Both are `@Public()`, and the metadata root doubles as the cheapest safe request in the API — which is why the pre-request script uses it to have a CSRF token issued.",
+      "item": [
+        {
+          "name": "Service metadata",
+          "request": {
+            "description": "Basic service metadata. Public, and the request the pre-request script sends when the environment holds no CSRF token: the CSRF middleware issues one to any caller that presents none.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                ""
+              ],
+              "raw": "{{baseUrl}}/"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"name\": \"api\",\n  \"status\": \"running\",\n  \"timestamp\": \"2026-08-21T09:14:02.881Z\",\n  \"version\": \"0.1.0\"\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 Running",
+              "originalRequest": {
+                "description": "Basic service metadata. Public, and the request the pre-request script sends when the environment holds no CSRF token: the CSRF middleware issues one to any caller that presents none.",
+                "header": [],
+                "method": "GET",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    ""
+                  ],
+                  "raw": "{{baseUrl}}/"
+                }
+              },
+              "status": "OK"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Every dependency is up', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status).to.eql('ok');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Health",
+          "request": {
+            "description": "Aggregates memory, Postgres and all three Redis roles (session, cache, queue). `200` when every indicator is up, `503` with a `service-unavailable` problem naming the ones that are down — which is also what the API container's own healthcheck polls.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "health"
+              ],
+              "raw": "{{baseUrl}}/health"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"details\": {\n    \"memory_heap\": {\n      \"status\": \"up\"\n    },\n    \"memory_rss\": {\n      \"status\": \"up\"\n    },\n    \"postgres\": {\n      \"status\": \"up\"\n    },\n    \"redis_cache\": {\n      \"status\": \"up\"\n    },\n    \"redis_session\": {\n      \"status\": \"up\"\n    },\n    \"redis_queue\": {\n      \"status\": \"up\"\n    }\n  },\n  \"error\": {},\n  \"info\": {\n    \"memory_heap\": {\n      \"status\": \"up\"\n    },\n    \"memory_rss\": {\n      \"status\": \"up\"\n    },\n    \"postgres\": {\n      \"status\": \"up\"\n    },\n    \"redis_cache\": {\n      \"status\": \"up\"\n    },\n    \"redis_session\": {\n      \"status\": \"up\"\n    },\n    \"redis_queue\": {\n      \"status\": \"up\"\n    }\n  },\n  \"status\": \"ok\"\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 Every indicator up",
+              "originalRequest": {
+                "description": "Aggregates memory, Postgres and all three Redis roles (session, cache, queue). `200` when every indicator is up, `503` with a `service-unavailable` problem naming the ones that are down — which is also what the API container's own healthcheck polls.",
+                "header": [],
+                "method": "GET",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "health"
+                  ],
+                  "raw": "{{baseUrl}}/health"
+                }
+              },
+              "status": "OK"
+            },
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"detail\": \"the api cannot serve traffic: postgres, redis_session, redis_cache, redis_queue are down\",\n  \"indicators\": {\n    \"memory_heap\": \"up\",\n    \"memory_rss\": \"up\",\n    \"postgres\": \"down\",\n    \"redis_cache\": \"down\",\n    \"redis_session\": \"down\",\n    \"redis_queue\": \"down\"\n  },\n  \"instance\": \"/api/v1/health\",\n  \"requestId\": \"01JZ8Q2H7YV3M4N5P6R7S8T9UV\",\n  \"status\": 503,\n  \"title\": \"Service Unavailable\",\n  \"type\": \"https://forge.dev/problems/service-unavailable\"\n}",
+              "code": 503,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/problem+json; charset=utf-8"
+                }
+              ],
+              "name": "503 Dependencies down",
+              "originalRequest": {
+                "description": "Aggregates memory, Postgres and all three Redis roles (session, cache, queue). `200` when every indicator is up, `503` with a `service-unavailable` problem naming the ones that are down — which is also what the API container's own healthcheck polls.",
+                "header": [],
+                "method": "GET",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "health"
+                  ],
+                  "raw": "{{baseUrl}}/health"
+                }
+              },
+              "status": "Service Unavailable"
+            }
+          ]
+        }
+      ],
+      "name": "Service"
+    },
+    {
+      "description": "Run these once, in order, to get an account the rest of the collection can sign in as.\n\nWith `MAIL_PROVIDER=console` — the default, and refused on anything but a local deployment — the API prints each mail to stdout instead of sending it. Copy the `token` query parameter out of the printed link in the API terminal and into the matching environment variable.",
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Signup accepted', function () {",
+                  "  pm.response.to.have.status(202);",
+                  "  pm.expect(pm.response.json().status).to.eql('pending-verification');",
+                  "});",
+                  "",
+                  "console.log(",
+                  "  '[bootstrap] Read the verification link from the API log (MAIL_PROVIDER=console prints it) ' +",
+                  "    'and put its token query parameter in the verificationToken environment variable.'",
+                  ");"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Sign up",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+            },
+            "description": "Registers an account and mails a verification link.\n\n`202` with `{ \"status\": \"pending-verification\" }` **whether or not the address already has an account** — an address that does gets an \"account exists\" mail instead, and the response is identical either way so the endpoint is not an account oracle. So a `202` here is not evidence the account is new.\n\nThe password must be at least 12 characters, and is additionally checked server-side for strength (`password-too-weak`), breach membership (`password-breached`) and reuse of personal information (`password-uses-personal-information`).",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "description": "Only needed when the API runs with TURNSTILE_SECRET_KEY set. With it unset — every developer machine — the guard is inert and this header is ignored.",
+                "disabled": true,
+                "key": "cf-turnstile-response",
+                "value": "{{turnstileToken}}"
+              },
+              {
+                "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                "disabled": true,
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "signup"
+              ],
+              "raw": "{{baseUrl}}/auth/signup"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"status\": \"pending-verification\"\n}",
+              "code": 202,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "202 Pending verification",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+                },
+                "description": "Registers an account and mails a verification link.\n\n`202` with `{ \"status\": \"pending-verification\" }` **whether or not the address already has an account** — an address that does gets an \"account exists\" mail instead, and the response is identical either way so the endpoint is not an account oracle. So a `202` here is not evidence the account is new.\n\nThe password must be at least 12 characters, and is additionally checked server-side for strength (`password-too-weak`), breach membership (`password-breached`) and reuse of personal information (`password-uses-personal-information`).",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "description": "Only needed when the API runs with TURNSTILE_SECRET_KEY set. With it unset — every developer machine — the guard is inert and this header is ignored.",
+                    "disabled": true,
+                    "key": "cf-turnstile-response",
+                    "value": "{{turnstileToken}}"
+                  },
+                  {
+                    "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                    "disabled": true,
+                    "key": "Idempotency-Key",
+                    "value": "{{idempotencyKey}}"
+                  }
+                ],
+                "method": "POST",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "signup"
+                  ],
+                  "raw": "{{baseUrl}}/auth/signup"
+                }
+              },
+              "status": "Accepted"
+            },
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"detail\": \"That password appears in a known breach corpus. Choose one you have not used elsewhere.\",\n  \"instance\": \"/api/v1/auth/signup\",\n  \"requestId\": \"01JZ8Q2H7YV3M4N5P6R7S8T9UV\",\n  \"status\": 422,\n  \"title\": \"Password Breached\",\n  \"type\": \"https://forge.dev/problems/password-breached\"\n}",
+              "code": 422,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/problem+json; charset=utf-8"
+                }
+              ],
+              "name": "422 Password breached",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+                },
+                "description": "Registers an account and mails a verification link.\n\n`202` with `{ \"status\": \"pending-verification\" }` **whether or not the address already has an account** — an address that does gets an \"account exists\" mail instead, and the response is identical either way so the endpoint is not an account oracle. So a `202` here is not evidence the account is new.\n\nThe password must be at least 12 characters, and is additionally checked server-side for strength (`password-too-weak`), breach membership (`password-breached`) and reuse of personal information (`password-uses-personal-information`).",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "description": "Only needed when the API runs with TURNSTILE_SECRET_KEY set. With it unset — every developer machine — the guard is inert and this header is ignored.",
+                    "disabled": true,
+                    "key": "cf-turnstile-response",
+                    "value": "{{turnstileToken}}"
+                  },
+                  {
+                    "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                    "disabled": true,
+                    "key": "Idempotency-Key",
+                    "value": "{{idempotencyKey}}"
+                  }
+                ],
+                "method": "POST",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "signup"
+                  ],
+                  "raw": "{{baseUrl}}/auth/signup"
+                }
+              },
+              "status": "Unprocessable Entity"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Address verified', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status).to.eql('verified');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Verify email",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"token\": \"{{verificationToken}}\"\n}"
+            },
+            "description": "Confirms the address with the token from the mailed link. Single use, hashed at rest, and good for `EMAIL_VERIFICATION_TTL_SECONDS` (24 hours by default).\n\nFailure modes are distinct on purpose: `token-invalid`, `token-expired`, `token-already-used`, and `verification-address-changed` when the address was changed after the link was sent.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "verify"
+              ],
+              "raw": "{{baseUrl}}/auth/verify"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"status\": \"verified\"\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 Verified",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"token\": \"{{verificationToken}}\"\n}"
+                },
+                "description": "Confirms the address with the token from the mailed link. Single use, hashed at rest, and good for `EMAIL_VERIFICATION_TTL_SECONDS` (24 hours by default).\n\nFailure modes are distinct on purpose: `token-invalid`, `token-expired`, `token-already-used`, and `verification-address-changed` when the address was changed after the link was sent.",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "method": "POST",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "verify"
+                  ],
+                  "raw": "{{baseUrl}}/auth/verify"
+                }
+              },
+              "status": "OK"
+            }
+          ]
+        },
+        {
+          "name": "Resend verification",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"email\": \"{{userEmail}}\"\n}"
+            },
+            "description": "Sends a fresh verification link if the address is awaiting one. `202` regardless, for the same reason signup answers the same way for both cases.\n\nThrottled per address (3 in 15 minutes by default) and, more loosely, per IP; over the burst the answer is `429 rate-limited` with `Retry-After`.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "verify",
+                "resend"
+              ],
+              "raw": "{{baseUrl}}/auth/verify/resend"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "Account bootstrap"
+    },
+    {
+      "description": "Sign in, resolve the caller, sign out.\n\n**You do not have to run \"Sign in\" by hand.** Any request in this collection that needs a session will sign in on demand using `userEmail` and `userPassword`, and store the token in the environment. Run it explicitly to re-authenticate, to switch accounts, or to read the response.",
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Signed in', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "});",
+                  "",
+                  "pm.test('The token is in the cookie, not the body', function () {",
+                  "  pm.expect(pm.response.json()).to.not.have.property('token');",
+                  "});",
+                  "",
+                  "// This response replaces the session cookie the pre-request script sent, so the",
+                  "// token in the environment is stale from here on unless it is captured.",
+                  "var raw;",
+                  "",
+                  "pm.response.headers.each(function (header) {",
+                  "  var prefix = pm.environment.get('sessionCookieName') + '=';",
+                  "",
+                  "  if (!raw && String(header.key).toLowerCase() === 'set-cookie') {",
+                  "    if (String(header.value).split(';')[0].trim().indexOf(prefix) === 0) {",
+                  "      raw = String(header.value);",
+                  "    }",
+                  "  }",
+                  "});",
+                  "",
+                  "if (raw) {",
+                  "  var pair = raw.split(';')[0].trim();",
+                  "  var token = pair.slice(pair.indexOf('=') + 1);",
+                  "  var maxAge = /(?:^|;)\\s*max-age\\s*=\\s*(\\d+)/i.exec(raw);",
+                  "",
+                  "  if (token) {",
+                  "    pm.environment.set('sessionToken', token);",
+                  "    pm.environment.set(",
+                  "      'sessionExpiresAt',",
+                  "      maxAge ? new Date(Date.now() + Number(maxAge[1]) * 1000).toISOString() : ''",
+                  "    );",
+                  "    console.log('[auth] Session token captured from Set-Cookie.');",
+                  "  }",
+                  "}",
+                  "",
+                  "var body = pm.response.json();",
+                  "",
+                  "if (body.status === 'mfa_required') {",
+                  "  console.warn(",
+                  "    '[auth] This account requires a second factor. The captured session is half-authenticated: ' +",
+                  "      'run \"Complete MFA challenge\" next.'",
+                  "  );",
+                  "} else if (body.user) {",
+                  "  pm.environment.set('currentUserId', body.user.id);",
+                  "  pm.environment.set('userEmail', body.user.email);",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Sign in",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+            },
+            "description": "Exchanges an email and password for a session cookie. The token is in the `Set-Cookie` header and **nowhere else** — never in the body, so a client that logs responses does not log credentials.\n\nTwo arms, both of which write a session cookie:\n\n- `{ \"user\": { … } }` — signed in.\n- `{ \"status\": \"mfa_required\" }` — the cookie is a half-authenticated session that resolves nothing but the MFA challenge route. Follow with **Complete MFA challenge**.\n\nAn unverified address is refused with `email-not-verified`; bad credentials get a deliberately indistinguishable `401 unauthorized`. Repeated failures earn a progressive delay per account and per IP rather than a lockout.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "login"
+              ],
+              "raw": "{{baseUrl}}/auth/login"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"user\": {\n    \"email\": \"dev@forge.test\",\n    \"emailVerified\": true,\n    \"id\": \"5f2a1c74-6b9e-4a0f-8d31-2c7e9b4a1f60\",\n    \"mfaEnabled\": false\n  }\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 Signed in",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+                },
+                "description": "Exchanges an email and password for a session cookie. The token is in the `Set-Cookie` header and **nowhere else** — never in the body, so a client that logs responses does not log credentials.\n\nTwo arms, both of which write a session cookie:\n\n- `{ \"user\": { … } }` — signed in.\n- `{ \"status\": \"mfa_required\" }` — the cookie is a half-authenticated session that resolves nothing but the MFA challenge route. Follow with **Complete MFA challenge**.\n\nAn unverified address is refused with `email-not-verified`; bad credentials get a deliberately indistinguishable `401 unauthorized`. Repeated failures earn a progressive delay per account and per IP rather than a lockout.",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "method": "POST",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "login"
+                  ],
+                  "raw": "{{baseUrl}}/auth/login"
+                }
+              },
+              "status": "OK"
+            },
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"status\": \"mfa_required\"\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 Second factor required",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+                },
+                "description": "Exchanges an email and password for a session cookie. The token is in the `Set-Cookie` header and **nowhere else** — never in the body, so a client that logs responses does not log credentials.\n\nTwo arms, both of which write a session cookie:\n\n- `{ \"user\": { … } }` — signed in.\n- `{ \"status\": \"mfa_required\" }` — the cookie is a half-authenticated session that resolves nothing but the MFA challenge route. Follow with **Complete MFA challenge**.\n\nAn unverified address is refused with `email-not-verified`; bad credentials get a deliberately indistinguishable `401 unauthorized`. Repeated failures earn a progressive delay per account and per IP rather than a lockout.",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "method": "POST",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "login"
+                  ],
+                  "raw": "{{baseUrl}}/auth/login"
+                }
+              },
+              "status": "OK"
+            },
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"detail\": \"Those credentials do not match an account.\",\n  \"instance\": \"/api/v1/auth/login\",\n  \"requestId\": \"01JZ8Q2H7YV3M4N5P6R7S8T9UV\",\n  \"status\": 401,\n  \"title\": \"Unauthorized\",\n  \"type\": \"https://forge.dev/problems/unauthorized\"\n}",
+              "code": 401,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/problem+json; charset=utf-8"
+                }
+              ],
+              "name": "401 Credentials rejected",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"email\": \"{{userEmail}}\",\n  \"password\": \"{{userPassword}}\"\n}"
+                },
+                "description": "Exchanges an email and password for a session cookie. The token is in the `Set-Cookie` header and **nowhere else** — never in the body, so a client that logs responses does not log credentials.\n\nTwo arms, both of which write a session cookie:\n\n- `{ \"user\": { … } }` — signed in.\n- `{ \"status\": \"mfa_required\" }` — the cookie is a half-authenticated session that resolves nothing but the MFA challenge route. Follow with **Complete MFA challenge**.\n\nAn unverified address is refused with `email-not-verified`; bad credentials get a deliberately indistinguishable `401 unauthorized`. Repeated failures earn a progressive delay per account and per IP rather than a lockout.",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "method": "POST",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "login"
+                  ],
+                  "raw": "{{baseUrl}}/auth/login"
+                }
+              },
+              "status": "Unauthorized"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('The session resolves to an account', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().user).to.have.property('id');",
+                  "});",
+                  "",
+                  "pm.environment.set('currentUserId', pm.response.json().user.id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Current user",
+          "request": {
+            "description": "Resolves the account the current session belongs to — what a single-page app calls on first paint to find out whether the cookie it kept is still live.\n\nA caller without a session gets `401`, not a `200` carrying `null`: signed-out is a status code, not a body. The collection test script treats that `401` as a signal and discards the stored token, so the next request signs in again.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "me"
+              ],
+              "raw": "{{baseUrl}}/auth/me"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"user\": {\n    \"email\": \"dev@forge.test\",\n    \"emailVerified\": true,\n    \"id\": \"5f2a1c74-6b9e-4a0f-8d31-2c7e9b4a1f60\",\n    \"mfaEnabled\": false\n  }\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 Current user",
+              "originalRequest": {
+                "description": "Resolves the account the current session belongs to — what a single-page app calls on first paint to find out whether the cookie it kept is still live.\n\nA caller without a session gets `401`, not a `200` carrying `null`: signed-out is a status code, not a body. The collection test script treats that `401` as a signal and discards the stored token, so the next request signs in again.",
+                "header": [],
+                "method": "GET",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "me"
+                  ],
+                  "raw": "{{baseUrl}}/auth/me"
+                }
+              },
+              "status": "OK"
+            },
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"detail\": \"This request requires a signed-in session.\",\n  \"instance\": \"/api/v1/auth/me\",\n  \"requestId\": \"01JZ8Q2H7YV3M4N5P6R7S8T9UV\",\n  \"status\": 401,\n  \"title\": \"Unauthorized\",\n  \"type\": \"https://forge.dev/problems/unauthorized\"\n}",
+              "code": 401,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/problem+json; charset=utf-8"
+                }
+              ],
+              "name": "401 No live session",
+              "originalRequest": {
+                "description": "Resolves the account the current session belongs to — what a single-page app calls on first paint to find out whether the cookie it kept is still live.\n\nA caller without a session gets `401`, not a `200` carrying `null`: signed-out is a status code, not a body. The collection test script treats that `401` as a signal and discards the stored token, so the next request signs in again.",
+                "header": [],
+                "method": "GET",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "me"
+                  ],
+                  "raw": "{{baseUrl}}/auth/me"
+                }
+              },
+              "status": "Unauthorized"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Signed out', function () {",
+                  "  pm.response.to.have.status(204);",
+                  "});",
+                  "",
+                  "pm.environment.unset('sessionToken');",
+                  "pm.environment.unset('sessionExpiresAt');",
+                  "console.log('[auth] Signed out; stored session token discarded.');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Sign out",
+          "request": {
+            "description": "Revokes the current session and clears its cookie. `204`, always: signing out is idempotent, and it is `@Public()` so a caller whose session already expired is not left holding a cookie the response declined to clear.\n\nThe test below drops the stored token, so the next request that needs one signs in again.",
+            "header": [],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "logout"
+              ],
+              "raw": "{{baseUrl}}/auth/logout"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "Authentication"
+    },
+    {
+      "description": "TOTP enrolment, the sign-in challenge, and step-up re-authentication.\n\nCodes come from an authenticator app, so `totpCode` has to be set by hand and is only valid for one 30-second step. Set it immediately before sending.",
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Enrolment started', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().otpauthUri).to.be.a('string');",
+                  "});",
+                  "",
+                  "pm.environment.set('otpauthUri', pm.response.json().otpauthUri);",
+                  "console.log('[mfa] Scan the otpauthUri environment variable, then set totpCode and confirm.');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Begin TOTP enrolment",
+          "request": {
+            "description": "Starts an enrolment and returns the provisioning URI to render as a QR code. Shown once and never re-readable; the enrolment is inert until confirmed and expires after `MFA_ENROLMENT_TTL_SECONDS` (10 minutes).",
+            "header": [],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "mfa",
+                "totp"
+              ],
+              "raw": "{{baseUrl}}/auth/mfa/totp"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"otpauthUri\": \"otpauth://totp/Forge:dev@forge.test?secret=JBSWY3DPEHPK3PXP&issuer=Forge&algorithm=SHA1&digits=6&period=30\"\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 Enrolment started",
+              "originalRequest": {
+                "description": "Starts an enrolment and returns the provisioning URI to render as a QR code. Shown once and never re-readable; the enrolment is inert until confirmed and expires after `MFA_ENROLMENT_TTL_SECONDS` (10 minutes).",
+                "header": [],
+                "method": "POST",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "mfa",
+                    "totp"
+                  ],
+                  "raw": "{{baseUrl}}/auth/mfa/totp"
+                }
+              },
+              "status": "OK"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Ten recovery codes were issued', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().recoveryCodes).to.have.lengthOf(10);",
+                  "});",
+                  "",
+                  "// Kept because this response is the only time the API will ever show them.",
+                  "pm.environment.set('recoveryCode', pm.response.json().recoveryCodes[0]);",
+                  "console.warn('[mfa] Recovery codes are shown once. Save them from the response body now.');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Confirm TOTP enrolment",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"code\": \"{{totpCode}}\"\n}"
+            },
+            "description": "Confirms the enrolment and returns ten one-time recovery codes. They are hashed at rest and **displayed here and never again** — the test script keeps the first one in `recoveryCode` so the challenge route can be exercised without the authenticator app.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "mfa",
+                "totp",
+                "confirm"
+              ],
+              "raw": "{{baseUrl}}/auth/mfa/totp/confirm"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"recoveryCodes\": [\n    \"4f8c-2a17-9de3\",\n    \"7b1e-6c40-8fa2\",\n    \"0d93-5e72-1bc8\",\n    \"a26f-3941-7ed5\",\n    \"c81b-0f65-4a29\",\n    \"5e70-8d13-6bf4\",\n    \"92af-4c08-3d71\",\n    \"1c65-7b2e-950a\",\n    \"e307-1a84-2fc6\",\n    \"6ba9-5d31-0e87\"\n  ]\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 Enrolment confirmed",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"code\": \"{{totpCode}}\"\n}"
+                },
+                "description": "Confirms the enrolment and returns ten one-time recovery codes. They are hashed at rest and **displayed here and never again** — the test script keeps the first one in `recoveryCode` so the challenge route can be exercised without the authenticator app.",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "method": "POST",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "mfa",
+                    "totp",
+                    "confirm"
+                  ],
+                  "raw": "{{baseUrl}}/auth/mfa/totp/confirm"
+                }
+              },
+              "status": "OK"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Challenge completed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().user).to.have.property('id');",
+                  "});",
+                  "",
+                  "// This response replaces the session cookie the pre-request script sent, so the",
+                  "// token in the environment is stale from here on unless it is captured.",
+                  "var raw;",
+                  "",
+                  "pm.response.headers.each(function (header) {",
+                  "  var prefix = pm.environment.get('sessionCookieName') + '=';",
+                  "",
+                  "  if (!raw && String(header.key).toLowerCase() === 'set-cookie') {",
+                  "    if (String(header.value).split(';')[0].trim().indexOf(prefix) === 0) {",
+                  "      raw = String(header.value);",
+                  "    }",
+                  "  }",
+                  "});",
+                  "",
+                  "if (raw) {",
+                  "  var pair = raw.split(';')[0].trim();",
+                  "  var token = pair.slice(pair.indexOf('=') + 1);",
+                  "  var maxAge = /(?:^|;)\\s*max-age\\s*=\\s*(\\d+)/i.exec(raw);",
+                  "",
+                  "  if (token) {",
+                  "    pm.environment.set('sessionToken', token);",
+                  "    pm.environment.set(",
+                  "      'sessionExpiresAt',",
+                  "      maxAge ? new Date(Date.now() + Number(maxAge[1]) * 1000).toISOString() : ''",
+                  "    );",
+                  "    console.log('[auth] Session token captured from Set-Cookie.');",
+                  "  }",
+                  "}",
+                  "",
+                  "pm.environment.set('currentUserId', pm.response.json().user.id);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Complete MFA challenge",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"code\": \"{{totpCode}}\"\n}"
+            },
+            "description": "Completes a sign-in that answered `mfa_required`, with either a TOTP code or a recovery code. `@Public()`, and not a hole: the challenge is bound to the half-authenticated session cookie, so nobody can answer anybody else's.\n\n**This route rotates the session cookie** — the half-authenticated token is spent and a full session replaces it. The test script captures the new one.\n\nThe challenge lives for `MFA_CHALLENGE_TTL_SECONDS` (5 minutes) and tolerates `MFA_CHALLENGE_MAX_ATTEMPTS` wrong codes (5) before the password has to be presented again.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "mfa",
+                "challenge"
+              ],
+              "raw": "{{baseUrl}}/auth/mfa/challenge"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Step-up window open', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status).to.eql('stepped-up');",
+                  "});",
+                  "",
+                  "console.log('[mfa] Step-up is good for about five minutes. Send the sensitive request now.');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Step up",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"code\": \"{{totpCode}}\"\n}"
+            },
+            "description": "Re-proves the second factor on a session that is already signed in, opening the window that `@StepUp()` routes require. Good for `MFA_STEP_UP_TTL_SECONDS` (5 minutes), stamped on this device rather than on the account, and the session is deliberately **not** rotated — there is no privilege change to rotate for.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "mfa",
+                "step-up"
+              ],
+              "raw": "{{baseUrl}}/auth/mfa/step-up"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"status\": \"stepped-up\"\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 Stepped up",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"code\": \"{{totpCode}}\"\n}"
+                },
+                "description": "Re-proves the second factor on a session that is already signed in, opening the window that `@StepUp()` routes require. Good for `MFA_STEP_UP_TTL_SECONDS` (5 minutes), stamped on this device rather than on the account, and the session is deliberately **not** rotated — there is no privilege change to rotate for.",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "method": "POST",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "mfa",
+                    "step-up"
+                  ],
+                  "raw": "{{baseUrl}}/auth/mfa/step-up"
+                }
+              },
+              "status": "OK"
+            }
+          ]
+        },
+        {
+          "name": "Disable TOTP",
+          "request": {
+            "description": "Removes the authenticator app and its recovery codes.\n\nThe one route in the collection carrying `@StepUp()`: a session is not enough, a second factor presented in the last few minutes is. Without one the answer is `403 step-up-required` — run **Step up** first.",
+            "header": [],
+            "method": "DELETE",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "mfa",
+                "totp"
+              ],
+              "raw": "{{baseUrl}}/auth/mfa/totp"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"status\": \"mfa-disabled\"\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 MFA disabled",
+              "originalRequest": {
+                "description": "Removes the authenticator app and its recovery codes.\n\nThe one route in the collection carrying `@StepUp()`: a session is not enough, a second factor presented in the last few minutes is. Without one the answer is `403 step-up-required` — run **Step up** first.",
+                "header": [],
+                "method": "DELETE",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "mfa",
+                    "totp"
+                  ],
+                  "raw": "{{baseUrl}}/auth/mfa/totp"
+                }
+              },
+              "status": "OK"
+            },
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"detail\": \"This change needs a second factor presented in the last few minutes. Re-authenticate and retry.\",\n  \"instance\": \"/api/v1/auth/mfa/totp\",\n  \"requestId\": \"01JZ8Q2H7YV3M4N5P6R7S8T9UV\",\n  \"status\": 403,\n  \"title\": \"Step Up Required\",\n  \"type\": \"https://forge.dev/problems/step-up-required\"\n}",
+              "code": 403,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/problem+json; charset=utf-8"
+                }
+              ],
+              "name": "403 Step-up required",
+              "originalRequest": {
+                "description": "Removes the authenticator app and its recovery codes.\n\nThe one route in the collection carrying `@StepUp()`: a session is not enough, a second factor presented in the last few minutes is. Without one the answer is `403 step-up-required` — run **Step up** first.",
+                "header": [],
+                "method": "DELETE",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "mfa",
+                    "totp"
+                  ],
+                  "raw": "{{baseUrl}}/auth/mfa/totp"
+                }
+              },
+              "status": "Forbidden"
+            }
+          ]
+        }
+      ],
+      "name": "Multi-factor authentication"
+    },
+    {
+      "description": "Changing a password from inside a session, and resetting one from outside it.",
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Password changed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status).to.eql('password-changed');",
+                  "});",
+                  "",
+                  "// The auto sign-in reads userPassword, and the value it holds is now the *old*",
+                  "// password. Carried over here so the next sign-in is not a puzzle.",
+                  "var replacement = pm.environment.get('newPassword');",
+                  "",
+                  "if (replacement) {",
+                  "  pm.environment.set('userPassword', replacement);",
+                  "  console.log('[auth] userPassword updated to the new password. Other devices were signed out.');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Change password",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"currentPassword\": \"{{userPassword}}\",\n  \"newPassword\": \"{{newPassword}}\"\n}"
+            },
+            "description": "Replaces the password and signs **every other device** out, leaving this one signed in. The wrong current password is `current-password-incorrect`, distinct from the policy refusals the new one can earn.\n\nSet `newPassword` before sending. The test script warns to carry it over into `userPassword`, because the auto sign-in reads that variable and the old value stops working the moment this succeeds.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "password",
+                "change"
+              ],
+              "raw": "{{baseUrl}}/auth/password/change"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Reset request accepted', function () {",
+                  "  pm.response.to.have.status(202);",
+                  "});",
+                  "",
+                  "console.log(",
+                  "  '[bootstrap] Copy the token from the reset link in the API log into the resetToken ' +",
+                  "    'environment variable.'",
+                  ");"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Request password reset",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"email\": \"{{userEmail}}\"\n}"
+            },
+            "description": "Mails a reset link. `202` with the same body for an address that has an account and one that does not — the status line must not answer the question either, which is why it is not a `200`.\n\nThrottled tightly per address (3 in 15 minutes) and loosely per IP: the mail goes to a mailbox the caller has not proved they own, so an unthrottled endpoint here is an amplifier aimed at whoever owns the address somebody typed.\n\nThe token is good for `PASSWORD_RESET_TTL_SECONDS` — 30 minutes, much shorter than a verification link, because until it is spent it *is* the account.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "description": "Only needed when the API runs with TURNSTILE_SECRET_KEY set. With it unset — every developer machine — the guard is inert and this header is ignored.",
+                "disabled": true,
+                "key": "cf-turnstile-response",
+                "value": "{{turnstileToken}}"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "password",
+                "reset"
+              ],
+              "raw": "{{baseUrl}}/auth/password/reset"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Password reset', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status).to.eql('password-reset');",
+                  "});",
+                  "",
+                  "var replacement = pm.environment.get('newPassword');",
+                  "",
+                  "if (replacement) {",
+                  "  pm.environment.set('userPassword', replacement);",
+                  "}",
+                  "",
+                  "// Every session the account held is gone, including whatever this environment",
+                  "// was holding.",
+                  "pm.environment.unset('sessionToken');",
+                  "pm.environment.unset('sessionExpiresAt');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Confirm password reset",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"password\": \"{{newPassword}}\",\n  \"token\": \"{{resetToken}}\"\n}"
+            },
+            "description": "Chooses a new password with the token from a reset link, and revokes every session the account had. Single use: a second attempt with the same token is `token-already-used`.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "password",
+                "reset",
+                "confirm"
+              ],
+              "raw": "{{baseUrl}}/auth/password/reset/confirm"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "Password"
+    },
+    {
+      "description": "Provider sign-in. Both routes are browser redirects rather than JSON, so they are here to be read and copied more than to be sent from Postman.\n\nA provider is configured only when **both** halves of its pair are set (`GITHUB_OAUTH_CLIENT_ID` / `GITHUB_OAUTH_CLIENT_SECRET`, or the Google pair); neither means disabled, and the routes answer `oauth-provider-not-configured`.\n\n**Turn off Postman's *Automatically follow redirects*** (Settings ▸ General) before sending either one, or Postman will chase the `Location` into the provider and you will not see the redirect being tested.",
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Redirected to the provider', function () {",
+                  "  pm.response.to.have.status(302);",
+                  "  pm.expect(pm.response.headers.get('location')).to.be.a('string');",
+                  "});",
+                  "",
+                  "pm.test('The redirect is not cacheable', function () {",
+                  "  pm.expect(pm.response.headers.get('cache-control')).to.include('no-store');",
+                  "});",
+                  "",
+                  "console.log('[oauth] Location: ' + pm.response.headers.get('location'));"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Start provider sign-in",
+          "request": {
+            "description": "Mints a single-use `state`, stores the pending flow for `OAUTH_STATE_TTL_SECONDS` (10 minutes), and answers `302` with a `Location` at the provider. `Cache-Control: no-store`, because the `Location` carries the `state` and a shared cache would hand one caller's pending flow to the next.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "oauth",
+                "{{oauthProvider}}"
+              ],
+              "raw": "{{baseUrl}}/auth/oauth/{{oauthProvider}}"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Redirected back into the app', function () {",
+                  "  pm.response.to.have.status(303);",
+                  "});",
+                  "",
+                  "// This response replaces the session cookie the pre-request script sent, so the",
+                  "// token in the environment is stale from here on unless it is captured.",
+                  "var raw;",
+                  "",
+                  "pm.response.headers.each(function (header) {",
+                  "  var prefix = pm.environment.get('sessionCookieName') + '=';",
+                  "",
+                  "  if (!raw && String(header.key).toLowerCase() === 'set-cookie') {",
+                  "    if (String(header.value).split(';')[0].trim().indexOf(prefix) === 0) {",
+                  "      raw = String(header.value);",
+                  "    }",
+                  "  }",
+                  "});",
+                  "",
+                  "if (raw) {",
+                  "  var pair = raw.split(';')[0].trim();",
+                  "  var token = pair.slice(pair.indexOf('=') + 1);",
+                  "  var maxAge = /(?:^|;)\\s*max-age\\s*=\\s*(\\d+)/i.exec(raw);",
+                  "",
+                  "  if (token) {",
+                  "    pm.environment.set('sessionToken', token);",
+                  "    pm.environment.set(",
+                  "      'sessionExpiresAt',",
+                  "      maxAge ? new Date(Date.now() + Number(maxAge[1]) * 1000).toISOString() : ''",
+                  "    );",
+                  "    console.log('[auth] Session token captured from Set-Cookie.');",
+                  "  }",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Provider callback",
+          "request": {
+            "description": "Spends the `state`, exchanges the code, establishes a session and redirects to `APP_URL` with `303 See Other`.\n\nThere is deliberately no `returnTo`: a callback that redirected somewhere the caller supplied would be an open redirector attached to a sign-in. The session token is in the `Set-Cookie` and nowhere else — not in the `Location`, not in a fragment.\n\nSending this by hand needs a `code` and `state` from a real provider round trip, so in practice it is exercised through a browser. The test script captures the session if one was issued.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "oauth",
+                "{{oauthProvider}}",
+                "callback"
+              ],
+              "raw": "{{baseUrl}}/auth/oauth/{{oauthProvider}}/callback?code={{oauthCode}}&state={{oauthState}}",
+              "query": [
+                {
+                  "description": "The single-use authorization code from the provider.",
+                  "key": "code",
+                  "value": "{{oauthCode}}"
+                },
+                {
+                  "description": "The opaque single-use value the start route minted.",
+                  "key": "state",
+                  "value": "{{oauthState}}"
+                }
+              ]
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "OAuth"
+    },
+    {
+      "description": "The account's own sessions, and remote revocation of one. Both routes are scoped to the caller by construction — no route here takes a user id, so a signed-in caller can only ever describe and revoke their own.",
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('The device list resolves', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().sessions).to.be.an('array');",
+                  "});",
+                  "",
+                  "var sessions = pm.response.json().sessions;",
+                  "",
+                  "if (sessions.length > 0) {",
+                  "  pm.environment.set('sessionId', sessions[0].id);",
+                  "  console.log('[devices] sessionId set to ' + sessions[0].id + '.');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "List signed-in devices",
+          "request": {
+            "description": "The devices this account is signed in on: what they are, where they were, when they arrived and when they were last seen. Never the session token and never the hash it is stored under — each summary carries a uuid of its own.\n\nAn account with nothing to list gets an empty array, not a `404`.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "sessions"
+              ],
+              "raw": "{{baseUrl}}/auth/sessions"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"sessions\": [\n    {\n      \"createdAt\": \"2026-08-20T18:02:44.109Z\",\n      \"fingerprint\": \"b17c4e9f2a\",\n      \"id\": \"9a3c81e6-4d52-4f18-b0a7-6e2f5c9d13b4\",\n      \"ip\": \"127.0.0.1\",\n      \"lastSeenAt\": \"2026-08-21T09:11:07.552Z\",\n      \"userAgent\": \"PostmanRuntime/7.44.1\"\n    }\n  ]\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 One device",
+              "originalRequest": {
+                "description": "The devices this account is signed in on: what they are, where they were, when they arrived and when they were last seen. Never the session token and never the hash it is stored under — each summary carries a uuid of its own.\n\nAn account with nothing to list gets an empty array, not a `404`.",
+                "header": [],
+                "method": "GET",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "auth",
+                    "sessions"
+                  ],
+                  "raw": "{{baseUrl}}/auth/sessions"
+                }
+              },
+              "status": "OK"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Session revoked', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status).to.eql('session-revoked');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Revoke a device session",
+          "request": {
+            "description": "Revokes one of the caller's sessions, effective on the revoked device's next request.\n\nAn id that is not one of the caller's is `404`, never `403`: a `403` would be a claim that the session exists, and repeated across guessed ids that claim enumerates other people's sessions. Revoking the id in `sessionId` while it is your own session signs this environment out — the collection recovers by signing in again.",
+            "header": [],
+            "method": "DELETE",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "auth",
+                "sessions",
+                "{{sessionId}}"
+              ],
+              "raw": "{{baseUrl}}/auth/sessions/{{sessionId}}"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "Signed-in devices"
+    },
+    {
+      "description": "Signup creates a user, not an organisation (ADR 007), so a new account starts with none.\n\nListing and creating carry no permission requirement — a permission set is scoped to an organisation, and neither route is inside one yet. Everything below `/orgs/:orgId` is, and the `orgId` variable is what the rest of the collection hangs off.",
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('The organisation list resolves', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().orgs).to.be.an('array');",
+                  "});",
+                  "",
+                  "var orgs = pm.response.json().orgs;",
+                  "",
+                  "// Only filled in when nothing is pinned, so a deliberate orgId survives a list.",
+                  "if (orgs.length > 0 && !pm.environment.get('orgId')) {",
+                  "  pm.environment.set('orgId', orgs[0].id);",
+                  "  console.log('[tenancy] orgId set to ' + orgs[0].id + '.');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "List organisations",
+          "request": {
+            "description": "The organisations the caller is a member of, each with the role they hold. Answered from inside row-level security rather than by a cross-tenant query (ADR 023), so it cannot return one the caller is not in.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs"
+              ],
+              "raw": "{{baseUrl}}/orgs"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"orgs\": [\n    {\n      \"createdAt\": \"2026-08-20T18:04:12.771Z\",\n      \"id\": \"d41b8f30-9e27-4c6a-85b1-3f0e7a2c9d58\",\n      \"name\": \"Acme Rockets\",\n      \"plan\": \"free\",\n      \"role\": \"owner\",\n      \"slug\": \"acme-rockets\"\n    }\n  ]\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 One membership",
+              "originalRequest": {
+                "description": "The organisations the caller is a member of, each with the role they hold. Answered from inside row-level security rather than by a cross-tenant query (ADR 023), so it cannot return one the caller is not in.",
+                "header": [],
+                "method": "GET",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "orgs"
+                  ],
+                  "raw": "{{baseUrl}}/orgs"
+                }
+              },
+              "status": "OK"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Organisation created', function () {",
+                  "  pm.response.to.have.status(201);",
+                  "  pm.expect(pm.response.json().org).to.have.property('id');",
+                  "});",
+                  "",
+                  "pm.environment.set('orgId', pm.response.json().org.id);",
+                  "console.log('[tenancy] orgId set to ' + pm.response.json().org.id + '.');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Create organisation",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"name\": \"{{orgName}}\",\n  \"slug\": \"{{orgSlug}}\"\n}"
+            },
+            "description": "Creates an organisation owned by the caller, with a default workspace. `201`.\n\nThe slug is globally unique — lowercase letters, digits and single hyphens — so running this twice with the same `orgSlug` is a `409 conflict`. Change `orgSlug`, or enable the `Idempotency-Key` header to make the retry replay the first response instead.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                "disabled": true,
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs"
+              ],
+              "raw": "{{baseUrl}}/orgs"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"org\": {\n    \"createdAt\": \"2026-08-20T18:04:12.771Z\",\n    \"id\": \"d41b8f30-9e27-4c6a-85b1-3f0e7a2c9d58\",\n    \"name\": \"Acme Rockets\",\n    \"plan\": \"free\",\n    \"slug\": \"acme-rockets\"\n  }\n}",
+              "code": 201,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "201 Created",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"name\": \"{{orgName}}\",\n  \"slug\": \"{{orgSlug}}\"\n}"
+                },
+                "description": "Creates an organisation owned by the caller, with a default workspace. `201`.\n\nThe slug is globally unique — lowercase letters, digits and single hyphens — so running this twice with the same `orgSlug` is a `409 conflict`. Change `orgSlug`, or enable the `Idempotency-Key` header to make the retry replay the first response instead.",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                    "disabled": true,
+                    "key": "Idempotency-Key",
+                    "value": "{{idempotencyKey}}"
+                  }
+                ],
+                "method": "POST",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "orgs"
+                  ],
+                  "raw": "{{baseUrl}}/orgs"
+                }
+              },
+              "status": "Created"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('The organisation resolves', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().org.id).to.eql(pm.environment.get('orgId'));",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Read organisation",
+          "request": {
+            "description": "Reads one organisation. Requires `org:read`, resolved from the caller's membership — a caller outside the organisation gets `403 permission-denied` rather than a `404`, because the id was theirs to guess either way.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "Organisations"
+    },
+    {
+      "description": "Organisation membership. Roles are `owner`, `admin`, `member` and `billing`.\n\nEach route names the permission it needs, and the service adds the part a decorator cannot express: nobody may promote another member above their own role, and the last owner cannot be demoted or removed.",
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('The member list resolves', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().members).to.be.an('array');",
+                  "});",
+                  "",
+                  "// Somebody other than the caller, so the role and grant requests below do not",
+                  "// act on the account this environment is signed in as.",
+                  "var caller = pm.environment.get('currentUserId');",
+                  "var other = pm.response.json().members.filter(function (member) {",
+                  "  return member.userId !== caller;",
+                  "})[0];",
+                  "",
+                  "if (other) {",
+                  "  pm.environment.set('memberUserId', other.userId);",
+                  "  console.log('[tenancy] memberUserId set to ' + other.email + '.');",
+                  "} else {",
+                  "  console.log('[tenancy] No member other than the caller; invite one first.');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "List members",
+          "request": {
+            "description": "Lists the members of the organisation, invited and accepted alike — `acceptedAt` is `null` for an invitation nobody has taken up. Requires `org:members.read`.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "members"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/members"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"members\": [\n    {\n      \"acceptedAt\": \"2026-08-20T18:04:12.771Z\",\n      \"email\": \"dev@forge.test\",\n      \"invitedAt\": \"2026-08-20T18:04:12.771Z\",\n      \"role\": \"owner\",\n      \"userId\": \"5f2a1c74-6b9e-4a0f-8d31-2c7e9b4a1f60\"\n    },\n    {\n      \"acceptedAt\": null,\n      \"email\": \"teammate@forge.test\",\n      \"invitedAt\": \"2026-08-21T08:55:01.204Z\",\n      \"role\": \"member\",\n      \"userId\": \"c0a8e512-77b3-4d91-9f6e-1b8d4a3c2075\"\n    }\n  ]\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 Two members",
+              "originalRequest": {
+                "description": "Lists the members of the organisation, invited and accepted alike — `acceptedAt` is `null` for an invitation nobody has taken up. Requires `org:members.read`.",
+                "header": [],
+                "method": "GET",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "orgs",
+                    "{{orgId}}",
+                    "members"
+                  ],
+                  "raw": "{{baseUrl}}/orgs/{{orgId}}/members"
+                }
+              },
+              "status": "OK"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Role changed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status).to.eql('member-role-changed');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Change member role",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"role\": \"admin\"\n}"
+            },
+            "description": "Changes a member's organisation role. Requires `org:members.role-change`.\n\nThe guard answers \"may this caller change roles here at all\"; the service answers \"but not to a role above their own, and not away from the last owner\". Both refusals are `403 permission-denied`.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "PATCH",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "members",
+                "{{memberUserId}}"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/members/{{memberUserId}}"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Member removed', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status).to.eql('member-removed');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Remove member",
+          "request": {
+            "description": "Removes a member. Requires `org:members.remove`.\n\nWhen this returns, the removed member's cached permission set is gone **and** every session they held has been revoked — both after the transaction committed, never before.",
+            "header": [],
+            "method": "DELETE",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "members",
+                "{{memberUserId}}"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/members/{{memberUserId}}"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "Members"
+    },
+    {
+      "description": "Inviting somebody to an organisation, and accepting.\n\nInvitations never read the users table (ADR 020), so inviting an address that has no account is ordinary. The token is good for `INVITATION_TTL_SECONDS` — a week, longer than a verification link, because the reader is often not expecting it and may not have an account yet.",
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Invitation sent', function () {",
+                  "  pm.response.to.have.status(202);",
+                  "  pm.expect(pm.response.json().status).to.eql('invitation-sent');",
+                  "});",
+                  "",
+                  "pm.environment.set('invitationId', pm.response.json().id);",
+                  "console.log(",
+                  "  '[tenancy] Copy the token from the invitation link in the API log into the invitationToken ' +",
+                  "    'environment variable, then sign in as ' +",
+                  "    pm.environment.get('inviteEmail') +",
+                  "    ' to accept it.'",
+                  ");"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Invite a member",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"email\": \"{{inviteEmail}}\",\n  \"role\": \"member\"\n}"
+            },
+            "description": "Invites an address and mails it a link. Requires `org:members.invite`. `202`, because the mail is the point and it has been accepted for delivery.\n\nWith `MAIL_PROVIDER=console` the link is printed to the API log; copy its `token` query parameter into `invitationToken` for the next request.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                "disabled": true,
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "invitations"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/invitations"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"expiresAt\": \"2026-08-28T08:55:01.204Z\",\n  \"id\": \"7e4d2b09-8c15-4a63-91f0-5d3b7c8e2a41\",\n  \"status\": \"invitation-sent\"\n}",
+              "code": 202,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "202 Invitation sent",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"email\": \"{{inviteEmail}}\",\n  \"role\": \"member\"\n}"
+                },
+                "description": "Invites an address and mails it a link. Requires `org:members.invite`. `202`, because the mail is the point and it has been accepted for delivery.\n\nWith `MAIL_PROVIDER=console` the link is printed to the API log; copy its `token` query parameter into `invitationToken` for the next request.",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                    "disabled": true,
+                    "key": "Idempotency-Key",
+                    "value": "{{idempotencyKey}}"
+                  }
+                ],
+                "method": "POST",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "orgs",
+                    "{{orgId}}",
+                    "invitations"
+                  ],
+                  "raw": "{{baseUrl}}/orgs/{{orgId}}/invitations"
+                }
+              },
+              "status": "Accepted"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Invitation accepted', function () {",
+                  "  pm.response.to.have.status(201);",
+                  "  pm.expect(pm.response.json().status).to.eql('invitation-accepted');",
+                  "});",
+                  "",
+                  "pm.environment.set('orgId', pm.response.json().orgId);"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Accept an invitation",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"token\": \"{{invitationToken}}\"\n}"
+            },
+            "description": "Accepts an invitation and becomes a member. `201`.\n\nBehind no permission requirement, deliberately: the caller is not a member yet, so their permission set in this organisation is empty and a guard could only ever refuse them. The token is the authorisation.\n\n**Sign in as the invited address first** — accepting binds the invitation to whoever the session belongs to. Point `userEmail` and `userPassword` at that account, or the organisation gains the wrong member.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "invitations",
+                "accept"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/invitations/accept"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "Invitations"
+    },
+    {
+      "description": "Workspaces inside an organisation. Listing needs `org:read` and returns only the ones the caller holds a role in; reading one needs `workspace:read` scoped to that workspace. Creating, renaming and archiving need `org:settings.update` — a workspace is organisation structure, so reshaping it is the organisation admin's call, not a workspace role's (ADR 031).",
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('The workspace list resolves', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().workspaces).to.be.an('array');",
+                  "});",
+                  "",
+                  "var workspaces = pm.response.json().workspaces;",
+                  "",
+                  "if (workspaces.length > 0 && !pm.environment.get('workspaceId')) {",
+                  "  pm.environment.set('workspaceId', workspaces[0].id);",
+                  "  console.log('[tenancy] workspaceId set to ' + workspaces[0].id + '.');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "List workspaces",
+          "request": {
+            "description": "The workspaces the caller has a role in, each with that role. Requires `org:read`.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "workspaces"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"workspaces\": [\n    {\n      \"createdAt\": \"2026-08-20T18:04:12.771Z\",\n      \"id\": \"2b9f6c14-3a78-4e05-8d21-9c7e5b0a4f36\",\n      \"name\": \"Default\",\n      \"role\": \"admin\"\n    }\n  ]\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 One workspace",
+              "originalRequest": {
+                "description": "The workspaces the caller has a role in, each with that role. Requires `org:read`.",
+                "header": [],
+                "method": "GET",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "orgs",
+                    "{{orgId}}",
+                    "workspaces"
+                  ],
+                  "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces"
+                }
+              },
+              "status": "OK"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Workspace created', function () {",
+                  "  pm.response.to.have.status(201);",
+                  "  pm.expect(pm.response.json().workspace).to.have.property('id');",
+                  "  pm.expect(pm.response.json().workspace.role).to.eql('admin');",
+                  "});",
+                  "",
+                  "pm.environment.set('workspaceId', pm.response.json().workspace.id);",
+                  "console.log('[tenancy] workspaceId set to ' + pm.response.json().workspace.id + '.');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Create workspace",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"name\": \"{{workspaceName}}\"\n}"
+            },
+            "description": "Creates a workspace in the organisation; the caller becomes its `admin`, which the returned `role` reports. Requires `org:settings.update`. `201`.\n\n`name` is trimmed, then must be 1–120 characters — a whitespace-only name is a `400 validation-failed`.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                "disabled": true,
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "workspaces"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"workspace\": {\n    \"createdAt\": \"2026-09-14T09:12:41.118Z\",\n    \"id\": \"7c2e5a90-1f4b-4d6e-b3a8-52d9e0c7f114\",\n    \"name\": \"Launch\",\n    \"role\": \"admin\"\n  }\n}",
+              "code": 201,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "201 Created",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"name\": \"{{workspaceName}}\"\n}"
+                },
+                "description": "Creates a workspace in the organisation; the caller becomes its `admin`, which the returned `role` reports. Requires `org:settings.update`. `201`.\n\n`name` is trimmed, then must be 1–120 characters — a whitespace-only name is a `400 validation-failed`.",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                    "disabled": true,
+                    "key": "Idempotency-Key",
+                    "value": "{{idempotencyKey}}"
+                  }
+                ],
+                "method": "POST",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "orgs",
+                    "{{orgId}}",
+                    "workspaces"
+                  ],
+                  "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces"
+                }
+              },
+              "status": "Created"
+            }
+          ]
+        },
+        {
+          "name": "Read workspace",
+          "request": {
+            "description": "Reads one workspace. Requires `workspace:read`, qualified by the `workspaceId` path parameter — an organisation role alone is not enough if it grants no role here.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "workspaces",
+                "{{workspaceId}}"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces/{{workspaceId}}"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Workspace renamed', function () {",
+                  "  pm.response.to.have.status(204);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Rename workspace",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"name\": \"{{workspaceName}}\"\n}"
+            },
+            "description": "Renames a workspace. Requires `org:settings.update`. `204` with no body — the read shape carries the caller's own role, and an organisation admin renaming a workspace they hold no role in has none to report, so the client refetches instead.\n\nAn archived or unknown workspace is a `404 not-found`; the two are deliberately one answer.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                "disabled": true,
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "method": "PATCH",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "workspaces",
+                "{{workspaceId}}"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces/{{workspaceId}}"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "text",
+              "body": "",
+              "code": 204,
+              "cookie": [],
+              "header": [],
+              "name": "204 Renamed",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"name\": \"{{workspaceName}}\"\n}"
+                },
+                "description": "Renames a workspace. Requires `org:settings.update`. `204` with no body — the read shape carries the caller's own role, and an organisation admin renaming a workspace they hold no role in has none to report, so the client refetches instead.\n\nAn archived or unknown workspace is a `404 not-found`; the two are deliberately one answer.",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                    "disabled": true,
+                    "key": "Idempotency-Key",
+                    "value": "{{idempotencyKey}}"
+                  }
+                ],
+                "method": "PATCH",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "orgs",
+                    "{{orgId}}",
+                    "workspaces",
+                    "{{workspaceId}}"
+                  ],
+                  "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces/{{workspaceId}}"
+                }
+              },
+              "status": "No Content"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Workspace archived', function () {",
+                  "  pm.response.to.have.status(204);",
+                  "});",
+                  "",
+                  "pm.environment.unset('workspaceId');",
+                  "console.log('[tenancy] workspaceId cleared — the workspace is archived.');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Archive workspace",
+          "request": {
+            "description": "Archives a workspace **and every live project in it**. Requires `org:settings.update`. `204`.\n\nAn archive, never a purge (ADR 012): the rows stay, but the workspace disappears from the listing, its reads answer `404`, and so do its projects. Archiving one that is already archived is a `404 not-found`. There is no unarchive route.",
+            "header": [
+              {
+                "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                "disabled": true,
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "method": "DELETE",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "workspaces",
+                "{{workspaceId}}"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces/{{workspaceId}}"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "text",
+              "body": "",
+              "code": 204,
+              "cookie": [],
+              "header": [],
+              "name": "204 Archived",
+              "originalRequest": {
+                "description": "Archives a workspace **and every live project in it**. Requires `org:settings.update`. `204`.\n\nAn archive, never a purge (ADR 012): the rows stay, but the workspace disappears from the listing, its reads answer `404`, and so do its projects. Archiving one that is already archived is a `404 not-found`. There is no unarchive route.",
+                "header": [
+                  {
+                    "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                    "disabled": true,
+                    "key": "Idempotency-Key",
+                    "value": "{{idempotencyKey}}"
+                  }
+                ],
+                "method": "DELETE",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "orgs",
+                    "{{orgId}}",
+                    "workspaces",
+                    "{{workspaceId}}"
+                  ],
+                  "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces/{{workspaceId}}"
+                }
+              },
+              "status": "No Content"
+            }
+          ]
+        }
+      ],
+      "name": "Workspaces"
+    },
+    {
+      "description": "Projects inside an organisation. Reads live under `/orgs/{orgId}/projects` so a guest holding a grant and no workspace role can reach them; the listing carries no permission guard at all and simply excludes what the caller cannot read. Writes live under the workspace — `/orgs/{orgId}/workspaces/{workspaceId}/projects` — because the permissions that admit them (`workspace:projects.create`, `workspace:projects.archive`) are workspace-scoped and the guard reads its qualifying id from the path (ADR 031).",
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('The project list resolves', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().projects).to.be.an('array');",
+                  "});",
+                  "",
+                  "var projects = pm.response.json().projects;",
+                  "",
+                  "if (projects.length > 0 && !pm.environment.get('projectId')) {",
+                  "  pm.environment.set('projectId', projects[0].id);",
+                  "  console.log('[tenancy] projectId set to ' + projects[0].id + '.');",
+                  "}"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "List projects",
+          "request": {
+            "description": "The projects the caller may read — organisation role and per-project grants both count.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "projects"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/projects"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"projects\": [\n    {\n      \"createdAt\": \"2026-08-20T18:06:33.418Z\",\n      \"id\": \"8c1e4a72-5d90-4b36-a7f1-0e2c9b5d7143\",\n      \"name\": \"Launch site\"\n    }\n  ]\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 One project",
+              "originalRequest": {
+                "description": "The projects the caller may read — organisation role and per-project grants both count.",
+                "header": [],
+                "method": "GET",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "orgs",
+                    "{{orgId}}",
+                    "projects"
+                  ],
+                  "raw": "{{baseUrl}}/orgs/{{orgId}}/projects"
+                }
+              },
+              "status": "OK"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Project created', function () {",
+                  "  pm.response.to.have.status(201);",
+                  "  pm.expect(pm.response.json().project).to.have.property('id');",
+                  "});",
+                  "",
+                  "pm.environment.set('projectId', pm.response.json().project.id);",
+                  "console.log('[tenancy] projectId set to ' + pm.response.json().project.id + '.');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Create project",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"name\": \"{{projectName}}\",\n  \"template\": \"{{projectTemplate}}\"\n}"
+            },
+            "description": "Creates a project in a workspace; the caller becomes its `owner`. Requires `workspace:projects.create` in that workspace. `201`.\n\n`template` is one of `vite-react`, `nextjs`, `node-api`, `python`, defaults to `vite-react`, and is immutable once chosen. `name` is trimmed, then 1–120 characters.\n\nA viewer, a member with no role in this workspace, a guest and a workspace id from another organisation all get the guard's uniform `403`. The one `404` is an archived workspace the caller still holds a role in.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                "disabled": true,
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "method": "POST",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "workspaces",
+                "{{workspaceId}}",
+                "projects"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces/{{workspaceId}}/projects"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"project\": {\n    \"createdAt\": \"2026-09-14T09:14:03.502Z\",\n    \"id\": \"a5d3f8e1-6b27-4c90-9e14-0f7b2c8d3a61\",\n    \"name\": \"Storefront\"\n  }\n}",
+              "code": 201,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "201 Created",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"name\": \"{{projectName}}\",\n  \"template\": \"{{projectTemplate}}\"\n}"
+                },
+                "description": "Creates a project in a workspace; the caller becomes its `owner`. Requires `workspace:projects.create` in that workspace. `201`.\n\n`template` is one of `vite-react`, `nextjs`, `node-api`, `python`, defaults to `vite-react`, and is immutable once chosen. `name` is trimmed, then 1–120 characters.\n\nA viewer, a member with no role in this workspace, a guest and a workspace id from another organisation all get the guard's uniform `403`. The one `404` is an archived workspace the caller still holds a role in.",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                    "disabled": true,
+                    "key": "Idempotency-Key",
+                    "value": "{{idempotencyKey}}"
+                  }
+                ],
+                "method": "POST",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "orgs",
+                    "{{orgId}}",
+                    "workspaces",
+                    "{{workspaceId}}",
+                    "projects"
+                  ],
+                  "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces/{{workspaceId}}/projects"
+                }
+              },
+              "status": "Created"
+            }
+          ]
+        },
+        {
+          "name": "Read project",
+          "request": {
+            "description": "Reads one project. Requires `project:read`, qualified by `projectId`.",
+            "header": [],
+            "method": "GET",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "projects",
+                "{{projectId}}"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/projects/{{projectId}}"
+            }
+          },
+          "response": []
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Project renamed', function () {",
+                  "  pm.response.to.have.status(204);",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Rename project",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"name\": \"{{projectName}}\"\n}"
+            },
+            "description": "Renames a project. Requires `workspace:projects.create` in its workspace — a rename is the workspace's business, not a project role's. `204` with no body; the client refetches.\n\nAn archived or unknown project, or one that lives in a different workspace, is a `404 not-found`.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              },
+              {
+                "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                "disabled": true,
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "method": "PATCH",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "workspaces",
+                "{{workspaceId}}",
+                "projects",
+                "{{projectId}}"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces/{{workspaceId}}/projects/{{projectId}}"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "text",
+              "body": "",
+              "code": 204,
+              "cookie": [],
+              "header": [],
+              "name": "204 Renamed",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"name\": \"{{projectName}}\"\n}"
+                },
+                "description": "Renames a project. Requires `workspace:projects.create` in its workspace — a rename is the workspace's business, not a project role's. `204` with no body; the client refetches.\n\nAn archived or unknown project, or one that lives in a different workspace, is a `404 not-found`.",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  },
+                  {
+                    "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                    "disabled": true,
+                    "key": "Idempotency-Key",
+                    "value": "{{idempotencyKey}}"
+                  }
+                ],
+                "method": "PATCH",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "orgs",
+                    "{{orgId}}",
+                    "workspaces",
+                    "{{workspaceId}}",
+                    "projects",
+                    "{{projectId}}"
+                  ],
+                  "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces/{{workspaceId}}/projects/{{projectId}}"
+                }
+              },
+              "status": "No Content"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Project archived', function () {",
+                  "  pm.response.to.have.status(204);",
+                  "});",
+                  "",
+                  "pm.environment.unset('projectId');",
+                  "console.log('[tenancy] projectId cleared — the project is archived.');"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Archive project",
+          "request": {
+            "description": "Archives a project. Requires `workspace:projects.archive` in its workspace. `204`.\n\nAn archive, never a purge (ADR 012): the row stays, the project leaves the listing and its read answers `404`. Archiving it again is a `404 not-found`. There is no unarchive route.",
+            "header": [
+              {
+                "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                "disabled": true,
+                "key": "Idempotency-Key",
+                "value": "{{idempotencyKey}}"
+              }
+            ],
+            "method": "DELETE",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "workspaces",
+                "{{workspaceId}}",
+                "projects",
+                "{{projectId}}"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces/{{workspaceId}}/projects/{{projectId}}"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "text",
+              "body": "",
+              "code": 204,
+              "cookie": [],
+              "header": [],
+              "name": "204 Archived",
+              "originalRequest": {
+                "description": "Archives a project. Requires `workspace:projects.archive` in its workspace. `204`.\n\nAn archive, never a purge (ADR 012): the row stays, the project leaves the listing and its read answers `404`. Archiving it again is a `404 not-found`. There is no unarchive route.",
+                "header": [
+                  {
+                    "description": "Every unsafe route accepts one; none requires one. Enable this header with a stable value (a UUID) and send twice: the second request replays the first response instead of repeating its effect. Sending a *different* body under the same key is a 409 `idempotency-key-reused`.",
+                    "disabled": true,
+                    "key": "Idempotency-Key",
+                    "value": "{{idempotencyKey}}"
+                  }
+                ],
+                "method": "DELETE",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "orgs",
+                    "{{orgId}}",
+                    "workspaces",
+                    "{{workspaceId}}",
+                    "projects",
+                    "{{projectId}}"
+                  ],
+                  "raw": "{{baseUrl}}/orgs/{{orgId}}/workspaces/{{workspaceId}}/projects/{{projectId}}"
+                }
+              },
+              "status": "No Content"
+            }
+          ]
+        }
+      ],
+      "name": "Projects"
+    },
+    {
+      "description": "Per-project access for one user, above or beside whatever their organisation role gives them. Both routes require `project:share.external`, scoped to the project in the path.\n\nProject roles are `owner`, `editor`, `commenter` and `viewer` — a different vocabulary from organisation roles, and not interchangeable with them.",
+      "item": [
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Access granted', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status).to.eql('project-granted');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Grant project access",
+          "request": {
+            "body": {
+              "mode": "raw",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              },
+              "raw": "{\n  \"role\": \"editor\"\n}"
+            },
+            "description": "Grants a user access to one project. `PUT`, and idempotent by shape: sending it twice with the same role leaves the same single grant, and sending a different role replaces the first.",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "method": "PUT",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "projects",
+                "{{projectId}}",
+                "grants",
+                "{{memberUserId}}"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/projects/{{projectId}}/grants/{{memberUserId}}"
+            }
+          },
+          "response": [
+            {
+              "_postman_previewlanguage": "json",
+              "body": "{\n  \"role\": \"editor\",\n  \"status\": \"project-granted\"\n}",
+              "code": 200,
+              "cookie": [],
+              "header": [
+                {
+                  "key": "Content-Type",
+                  "value": "application/json; charset=utf-8"
+                }
+              ],
+              "name": "200 Granted",
+              "originalRequest": {
+                "body": {
+                  "mode": "raw",
+                  "options": {
+                    "raw": {
+                      "language": "json"
+                    }
+                  },
+                  "raw": "{\n  \"role\": \"editor\"\n}"
+                },
+                "description": "Grants a user access to one project. `PUT`, and idempotent by shape: sending it twice with the same role leaves the same single grant, and sending a different role replaces the first.",
+                "header": [
+                  {
+                    "key": "Content-Type",
+                    "value": "application/json"
+                  }
+                ],
+                "method": "PUT",
+                "url": {
+                  "host": [
+                    "{{baseUrl}}"
+                  ],
+                  "path": [
+                    "orgs",
+                    "{{orgId}}",
+                    "projects",
+                    "{{projectId}}",
+                    "grants",
+                    "{{memberUserId}}"
+                  ],
+                  "raw": "{{baseUrl}}/orgs/{{orgId}}/projects/{{projectId}}/grants/{{memberUserId}}"
+                }
+              },
+              "status": "OK"
+            }
+          ]
+        },
+        {
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "exec": [
+                  "pm.test('Grant revoked', function () {",
+                  "  pm.response.to.have.status(200);",
+                  "  pm.expect(pm.response.json().status).to.eql('project-grant-revoked');",
+                  "});"
+                ],
+                "type": "text/javascript"
+              }
+            }
+          ],
+          "name": "Revoke project access",
+          "request": {
+            "description": "Withdraws a user's access to one project. The organisation role they hold is untouched — if it already granted them a way in, this does not take it away.",
+            "header": [],
+            "method": "DELETE",
+            "url": {
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "orgs",
+                "{{orgId}}",
+                "projects",
+                "{{projectId}}",
+                "grants",
+                "{{memberUserId}}"
+              ],
+              "raw": "{{baseUrl}}/orgs/{{orgId}}/projects/{{projectId}}/grants/{{memberUserId}}"
+            }
+          },
+          "response": []
+        }
+      ],
+      "name": "Project grants"
+    }
+  ]
+}

@@ -1,0 +1,31 @@
+-- Privileges for `webhook_deliveries`, which 0031 created (spec 026, data-model.md § 1).
+--
+-- Hand-written for the reason 0003, 0009, 0014 and 0016 give: a grant belongs with the schema that
+-- creates the table and drizzle-kit does not diff grants. Until this file forge_app can do nothing
+-- to `webhook_deliveries`, which is why `src/schema/rls.spec.ts` goes red the moment 0031 lands.
+--
+-- ## Why this table sits outside row-level security
+--
+-- A delivery belongs to no tenant at the moment it arrives. GitHub posts an installation id, not
+-- an organisation, and the receiver's whole job is to verify the signature, record the row and
+-- acknowledge (R11, FR-027) — resolving an organisation would mean doing that lookup in the
+-- request, which is exactly the processing §12 keeps off the request path. So there is no column
+-- named `org_id`, no policy, and `rls.spec.ts` names this table as a platform exception beside
+-- `outbox` and `sandbox_pool` rather than deriving it into the tenant gate.
+--
+-- That is not a hole. Every *effect* of a delivery happens in the consumer, inside a
+-- per-organisation tenant transaction opened once the installation has been resolved to a
+-- connection (R13) — so tenancy is enforced where the tenant exists, on the rows that have one.
+-- The delivery row itself carries a provider id, an event type and a payload the provider already
+-- signed; it is a receipt, not tenant data.
+--
+-- ## Why forge_app gets all four verbs, and forge_bypass reads only
+--
+-- The receiver INSERTs (`ON CONFLICT DO NOTHING` — the dedup), the consumer UPDATEs the row to
+-- `processed`, `ignored` or `failed` and bumps `attempts`, and the retention sweep both UPDATEs
+-- (nulling `body` at 7 days) and DELETEs (at 30 days, R15). Every verb is on the request, worker
+-- or maintenance path as forge_app. forge_bypass gains SELECT for the parked-deliveries view and
+-- rollups and, as everywhere (0003), no UPDATE and no DELETE.
+
+GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE "webhook_deliveries" TO "forge_app";--> statement-breakpoint
+GRANT SELECT ON TABLE "webhook_deliveries" TO "forge_bypass";

@@ -1,0 +1,761 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Quality and build
+    runs-on: ubuntu-latest
+    # The api suite alone is ~390 files and runs for well over ten minutes (759s on a
+    # developer machine), on top of install, lint, typecheck and build. At 20 the job was
+    # cancelled mid-suite with every test so far green -- a budget, not a hang.
+    timeout-minutes: 45
+
+    # Every connection string is set explicitly, and none of them is allowed to be a
+    # default. `packages/db/src/env.ts` falls back to
+    # `postgres://forge_migrator:forge_migrator@localhost:5432/forge` when
+    # DATABASE_MIGRATION_URL is unset -- an address a runner with a Postgres service
+    # container answers on. A forgotten variable would therefore migrate and test
+    # against an unintended database and still go green, which is the failure mode
+    # that is worse than a red build.
+    env:
+      DATABASE_MIGRATION_URL: postgres://forge_migrator:forge_migrator@localhost:5432/forge
+      DATABASE_URL: postgres://forge_app:forge_app@localhost:5432/forge
+      DATABASE_URL_BYPASS_RLS: postgres://forge_bypass:forge_bypass@localhost:5432/forge
+      # The local stack, not a deployment. Everything that must be refused on a real
+      # deployment keys on DEPLOY_ENV rather than NODE_ENV (ADR 009).
+      DEPLOY_ENV: local
+      # Turns an unreachable database from a skipped suite into a failed job. The
+      # suites skip with a loud warning on a laptop with no Docker, by design; here
+      # that behaviour is exactly what must not happen.
+      EXPECT_INTEGRATION: 1
+      # A short relay tick, so a suite that waits on a mail waits on the outcome, not a timer.
+      OUTBOX_RELAY_TICK_MS: 50
+      REDIS_CACHE_URL: redis://localhost:6380
+      REDIS_QUEUE_URL: redis://localhost:6381
+      REDIS_SESSION_URL: redis://localhost:6379
+      REDIS_STREAM_URL: redis://localhost:6382
+
+    # Ports mirror compose.yaml so the same connection strings work in both places.
+    #
+    # A service container's command cannot be overridden, so none of the Redis roles
+    # starts with the `--maxmemory-policy` compose.yaml gives it. The policies are
+    # applied instead by the "Configure Redis eviction policies" step below, with
+    # CONFIG SET, before any suite runs -- see the note there for why they are not
+    # simply left at the defaults.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: forge
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d forge"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+          --health-start-period 10s
+
+      redis-session:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis-cache:
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis-queue:
+        image: redis:7-alpine
+        ports:
+          - 6381:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis-stream:
+        image: redis:7-alpine
+        ports:
+          - 6382:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Deleting EXPECT_INTEGRATION from the env block above is invisible while the
+      # services happen to be up: the suites run, pass, and nothing says the guard is
+      # gone. This step makes that edit fail the job on the spot.
+      - name: Refuse to run without EXPECT_INTEGRATION
+        run: |
+          if [ "${EXPECT_INTEGRATION}" != "1" ]; then
+            echo "::error::EXPECT_INTEGRATION is '${EXPECT_INTEGRATION:-<unset>}', not 1. CI must fail on an unreachable database, not skip the integration suites. Restore it in the job env block."
+            exit 1
+          fi
+          echo "EXPECT_INTEGRATION=1 — an unreachable database fails this job rather than skipping it."
+
+      # A service container runs the image, but the repository is not checked out
+      # until the steps begin, so there is nothing to mount into
+      # docker-entrypoint-initdb.d at the moment it would run. Without this step
+      # citext, pgcrypto, pg_trgm and all three forge_* roles are absent and every
+      # migration fails -- so it is applied here, explicitly, as the bootstrap
+      # superuser, from the same file compose.yaml mounts.
+      #
+      # psql comes from the pinned postgres image rather than from whatever the
+      # runner happens to preinstall, so the client and server versions cannot drift.
+      - name: Bootstrap database roles and extensions
+        run: |
+          docker run --rm --network host \
+            -e PGPASSWORD=postgres \
+            -v "${{ github.workspace }}/infra/postgres:/sql:ro" \
+            postgres:16-alpine \
+            psql -v ON_ERROR_STOP=1 -h localhost -p 5432 -U postgres -d forge -f /sql/init-roles.sql
+
+      # The three instances exist because their eviction policies contradict each
+      # other: session is noeviction, because an eviction there signs a user out; queue
+      # is noeviction, because an eviction there silently loses a job; and cache is
+      # allkeys-lru (§09). A service container cannot be given the `redis-server`
+      # command compose.yaml gives it, so the policies are set here instead. Leaving
+      # them at the defaults would make `redis.module.spec.ts` assert a property this
+      # environment does not have -- which is exactly what it did, failing every PR on
+      # the cache instance reporting `noeviction`.
+      #
+      # noeviction is already the default, and is set anyway: the point is that all
+      # four policies are stated here, so the day a default changes it does not
+      # quietly become the session, queue or stream instance's configuration. The
+      # stream instance is noeviction because its keys are capped by MAXLEN, not by
+      # memory pressure (009).
+      #
+      # The queue instance alone also gets AOF: compose.yaml starts it with
+      # `--appendonly yes --appendfsync everysec` so a restart does not lose jobs, and
+      # a service container that cannot take that command gets the same two settings
+      # by CONFIG SET, for the same reason as the policies -- so that what the suites
+      # assert about the queue role is a property this environment actually has
+      # (research R13). `everysec` is the Redis default and is set anyway.
+      #
+      # redis-cli comes from the pinned image rather than from whatever the runner
+      # preinstalls, matching the Postgres bootstrap step above.
+      - name: Configure Redis eviction policies
+        run: |
+          set -o pipefail
+          redis_config() {
+            docker run --rm --network host redis:7-alpine \
+              redis-cli -h localhost -p "$1" config set "$2" "$3"
+          }
+          for port_and_policy in "6379 noeviction" "6380 allkeys-lru" "6381 noeviction" "6382 noeviction"; do
+            set -- ${port_and_policy}
+            redis_config "$1" maxmemory 256mb
+            redis_config "$1" maxmemory-policy "$2"
+            echo "localhost:$1 -> $(docker run --rm --network host redis:7-alpine \
+              redis-cli -h localhost -p "$1" config get maxmemory-policy | tail -1)"
+          done
+          redis_config 6381 appendonly yes
+          redis_config 6381 appendfsync everysec
+
+      - name: Migrate database
+        run: pnpm --filter @repo/db db:migrate
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      # Before type-check, because a boundary error should be the first thing a PR
+      # author reads, and this step costs seconds where typecheck costs minutes. No
+      # `if`, no `continue-on-error`, no env: a gate that can be switched off is a
+      # convention, and the ruleset in `.dependency-cruiser.cjs` is only a rule
+      # while this step is unconditional.
+      - name: Check module boundaries
+        run: pnpm boundaries
+
+      - name: Type-check
+        run: pnpm typecheck
+
+      # TURBO_FORCE, because a turbo cache key is a hash of source and declared env
+      # and cannot encode "a live Postgres answered on 5432". A cached green
+      # `@repo/db#test` replays as green with the database stopped — verified
+      # locally, and the only reason it is not reachable on a runner today is that
+      # nothing restores the turbo cache. It is scoped to this step: lint, typecheck
+      # and build are pure functions of the source and stay cacheable.
+      #
+      # set -o pipefail, because the default shell for `run` is `bash -e`, without
+      # it — so `pnpm test | tee` would report tee's exit code and swallow a failure.
+      #
+      # This one step carries three gates, and none of them is a separate run:
+      #
+      #   * the suites themselves;
+      #   * `--allowOnly=false` (in `apps/api/package.json` and again in
+      #     `vitest.config.mts`), so a stray `.only` fails the job rather than
+      #     narrowing it to one test and passing;
+      #   * branch coverage on `rbac/` and `common/crypto/`, enforced at 100% by
+      #     the thresholds in `vitest.config.mts`. Coverage is enabled in the
+      #     config rather than behind a `--coverage` flag on a second invocation:
+      #     the api suite takes over ten minutes, and running it twice to
+      #     produce a number is ten minutes spent on something the first run
+      #     already knew.
+      - name: Test
+        env:
+          TURBO_FORCE: true
+        run: |
+          set -o pipefail
+          pnpm test 2>&1 | tee test.log
+
+      # The threshold is only a gate while it runs. `coverage.enabled: false`, a
+      # deleted `thresholds` block, or an `include` that stops matching either
+      # tree are all one-line edits that leave every test green and quietly
+      # remove the requirement — and the step above would still pass, because
+      # nothing failed.
+      #
+      # So the summary artefact is read rather than the log, and both trees are
+      # checked by name. Reading `coverage-summary.json` also means this asserts
+      # the same numbers the thresholds were applied to, instead of asserting on
+      # a text table whose rows depend on the terminal width.
+      - name: Refuse a run that measured no coverage
+        run: |
+          node -e '
+            const fs = require("node:fs");
+            const path = "apps/api/coverage/coverage-summary.json";
+
+            if (!fs.existsSync(path)) {
+              console.log(`::error::${path} does not exist: the test run measured no coverage at all. Restore coverage.enabled and coverage.reporter in apps/api/vitest.config.mts.`);
+              process.exit(1);
+            }
+
+            const summary = JSON.parse(fs.readFileSync(path, "utf8"));
+            const files = Object.keys(summary).filter((key) => key !== "total").map((key) => key.split(/[\\\\/]/).join("/"));
+            const trees = ["src/common/crypto/", "src/modules/rbac/", "src/modules/deploy/"];
+            const missing = trees.filter((tree) => !files.some((file) => file.includes(tree)));
+
+            if (missing.length > 0) {
+              console.log(`::error::No coverage was reported for ${missing.join(" or ")}. The 100% branch gate did not cover ${missing.length === 1 ? "that tree" : "those trees"} — check coverage.include in apps/api/vitest.config.mts.`);
+              process.exit(1);
+            }
+
+            const branches = summary.total.branches;
+
+            if (branches.pct !== 100) {
+              console.log(`::error::Branch coverage across the gated files (rbac/, common/crypto/, deploy/) is ${branches.pct}% (${branches.covered}/${branches.total}). The spec requires no uncovered branch. Cover it — do not lower the threshold.`);
+              process.exit(1);
+            }
+
+            console.log(`Coverage gate held: ${files.length} files across rbac/, common/crypto/ and deploy/, ${branches.covered}/${branches.total} branches.`);
+          '
+
+      # EXPECT_INTEGRATION covers the case where the database is unreachable. This
+      # covers every other reason a suite might decide to skip itself: the repository
+      # convention is that a skipped integration suite prints a banner containing
+      # SKIPPING, and in CI that banner is a failure rather than a warning.
+      - name: Refuse a silently skipped integration suite
+        run: |
+          if grep -q 'SKIPPING' test.log; then
+            echo "::error::An integration suite skipped in CI. A skip here means the assertion never ran."
+            grep -n -A2 'SKIPPING' test.log
+            exit 1
+          fi
+          echo "No integration suite skipped."
+
+      - name: Build
+        run: pnpm build
+
+  # Spec 001 criteria 20-21 (#20): the compose stack is a deliverable, and `quality`
+  # never touches it -- it proves the code against service containers whose ports
+  # happen to mirror compose.yaml. Nothing above notices a compose file that does not
+  # parse, an api image that does not build, a `depends_on` on a service that does not
+  # exist, or a health body that the edge's proxy serves without one of the
+  # roles. This job proves those things, and that the migrations apply from an empty
+  # database and are idempotent (SC-009, SC-012).
+  #
+  # The suites are not run here (research R14, FR-030): `quality` already runs every
+  # one of them against the same ports, so a second run under compose would prove
+  # nothing new and double the slowest job. What is proved here is the stack, not the
+  # code.
+  #
+  # "Health first, then migrate" is deliberate. The api image runs no migrations and
+  # its healthcheck is a ping, so `--wait` returns on an empty database; migrating
+  # afterwards is therefore a real from-empty proof rather than one that borrowed a
+  # schema from an earlier step. No `needs`, no `if`, no `continue-on-error`: a gate
+  # that can be switched off is a convention.
+  compose:
+    name: Compose stack boots and migrates from empty
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    # The host-side address of the compose Postgres, for `db:migrate` run on the runner
+    # rather than in a container. Set explicitly for the same reason `quality` sets it:
+    # `packages/db/src/env.ts` has a default, and a default that happens to be right is
+    # still not a statement.
+    env:
+      DATABASE_MIGRATION_URL: postgres://forge_migrator:forge_migrator@localhost:5432/forge
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      # Spec 025 (research R2, T027). This workflow runs on every pull request, including one day
+      # from a fork. Publishing needs `packages: write` and keyless signing needs `id-token: write`,
+      # and both of those live in `release.yml`, which runs only on `main` and on a tag. Widening
+      # this one to serve a job that never publishes is the kind of change that is invisible until
+      # it is an incident, so the narrow grant is asserted here rather than merely written above.
+      #
+      # The file is parsed rather than grepped: `grep permissions ci.yml` matches a comment, a
+      # job-level block, or the very line this step would print, and none of those is the top-level
+      # grant. `contents: read` and nothing else -- an added key fails this, which is the point.
+      - name: The merge gate still holds only contents:read
+        run: |
+          python3 - <<'PY'
+          import sys, yaml
+
+          with open('.github/workflows/ci.yml', encoding='utf-8') as handle:
+              workflow = yaml.safe_load(handle)
+
+          permissions = workflow.get('permissions')
+
+          if permissions != {'contents': 'read'}:
+              print(
+                  '::error::.github/workflows/ci.yml declares top-level permissions '
+                  f'{permissions!r}, not {{\'contents\': \'read\'}}. The merge gate runs on every '
+                  'pull request and must not hold write scopes; release.yml holds them on its '
+                  'narrow trigger instead (025 FR-008, research R2).'
+              )
+              sys.exit(1)
+
+          for name, job in workflow.get('jobs', {}).items():
+              if 'permissions' in job:
+                  print(
+                      f'::error::Job {name!r} declares its own `permissions`. No job in the merge '
+                      'gate needs one, and a job-level grant re-widens what the top-level block '
+                      'was narrowed to.'
+                  )
+                  sys.exit(1)
+
+          print('Merge gate permissions: contents: read, and no job widens it.')
+          PY
+
+      # pnpm and Node only for `db:migrate`; the stack itself needs neither.
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # The edge serves the built single-page app from a mount rather than from an image of
+      # its own (025 T012), so the build happens here. It is the one thing `--build` used to
+      # do for the retired `web` image and no longer does.
+      - name: Build the single-page app the edge serves
+        run: pnpm --filter @repo/web... build
+
+      # `--wait` blocks until every service with a healthcheck is healthy, and fails if
+      # one is not within the timeout -- which is the whole proof for compose.yaml.
+      - name: Start the compose stack
+        run: docker compose up --build --wait --wait-timeout 300
+
+      # Through the edge on 8080 -- Caddy since 025, nginx before it -- not the api
+      # directly: the api is only `expose`d, and the proxy is part of what the stack has to
+      # get right. The port and the path do not move. The body goes to stderr so a failing
+      # grep leaves the evidence in the log.
+      - name: Health reports every role
+        run: curl -fsS http://localhost:8080/api/v1/health | tee /dev/stderr | grep -q '"redis_queue"'
+
+      # Spec 025 US1 (SC-002, T026). What is running has to be answerable from outside, through
+      # the same edge a person or a deploy script would ask, not from the api's own port. The
+      # response is `z.strictObject` in `packages/contracts` and `@Public()` on the controller, so
+      # this asserts the shape as well as the status: exactly three fields, no more, and no
+      # session needed to read them.
+      #
+      # The compose stack passes no build arguments, so the three values are `local`'s defaults --
+      # `dev`, `dev` and the boot time. That is the assertion: a build that cannot say which
+      # artifact it is answers `dev` here and refuses to start anywhere but local (FR-033). What
+      # a real digest looks like in this field is proved by the deploy's own check (T039), which
+      # needs an image this job does not build.
+      - name: The edge answers /api/v1/version
+        run: |
+          set -o pipefail
+          version="$(curl -fsS http://localhost:8080/api/v1/version | tee /dev/stderr)"
+          node -e '
+            const body = JSON.parse(process.argv[1]);
+            const keys = Object.keys(body).sort();
+            const fail = (message) => { console.log(`::error::${message}`); process.exit(1); };
+
+            if (keys.join(",") !== "builtAt,commit,digest") {
+              fail(`GET /api/v1/version answered fields [${keys.join(", ")}], not exactly builtAt, commit and digest. The contract is a z.strictObject and an extra field is a leak, not an addition.`);
+            }
+
+            if (Number.isNaN(Date.parse(body.builtAt))) {
+              fail(`builtAt is ${JSON.stringify(body.builtAt)}, which is not an instant.`);
+            }
+
+            // The compose stack passes no build arguments, so `local` fills all three.
+            for (const field of ["commit", "digest"]) {
+              if (body[field] !== "dev") {
+                fail(`${field} is ${JSON.stringify(body[field])}; the compose stack bakes no build identity, so local must answer "dev" rather than inventing one.`);
+              }
+            }
+
+            console.log(`version through the edge: ${JSON.stringify(body)}`);
+          ' "$version"
+
+      # Spec 025 US2 (FR-018, research R4 and R6, T016). `compose.yaml` runs the api and the
+      # worker with `KEK_PROVIDER=openbao` against the `openbao` service, so this job is where the
+      # provider a deployment uses is exercised against a real transit mount over HTTP rather than
+      # against the injected `fetch` its unit tests use. Staging cannot boot at all until that
+      # wiring works, which is why it is proved by a job that runs on every pull request.
+      #
+      # Three things, in order: the store really is mounted where `TRANSIT_MOUNT` says (the key is
+      # read back by name, which a `bao status` would not prove); the api really is configured for
+      # it, read out of the running container rather than out of this file; and the api came up --
+      # it is answering through the edge, and `--wait` above already refused to return until its
+      # healthcheck passed.
+      - name: The api booted against the OpenBao transit mount
+        run: |
+          set -o pipefail
+          key="$(docker compose exec -T openbao bao read -field=name transit/keys/forge-kek)"
+          echo "transit key: $key"
+          test "$key" = "forge-kek"
+
+          provider="$(docker compose exec -T api printenv KEK_PROVIDER | tr -d '\r')"
+          addr="$(docker compose exec -T api printenv OPENBAO_ADDR | tr -d '\r')"
+          echo "api KEK_PROVIDER=$provider OPENBAO_ADDR=$addr"
+          test "$provider" = "openbao"
+          test "$addr" = "http://openbao:8200"
+
+          worker_provider="$(docker compose exec -T worker printenv KEK_PROVIDER | tr -d '\r')"
+          echo "worker KEK_PROVIDER=$worker_provider"
+          test "$worker_provider" = "openbao"
+
+          curl -fsS http://localhost:8080/api/v1/health | tee /dev/stderr | grep -q '"redis_queue"'
+
+          # `kekProviderFor` throws MissingKekConfigurationError when the openbao values are
+          # absent, and the container would not have become healthy -- but a log that names it
+          # would mean the stack booted for a reason other than the one asserted above.
+          if docker compose logs api | grep -q 'MissingKekConfigurationError'; then
+            echo "::error::The api logged MissingKekConfigurationError while configured for OpenBao."
+            docker compose logs api | grep -n 'MissingKekConfigurationError'
+            exit 1
+          fi
+
+      # Spec 025 US2 (FR-023, T017). A secret store the platform cannot use must be a named
+      # refusal, and must never be answered by quietly reaching for something weaker. The second
+      # half is the one worth engineering against: `compose.yaml` deliberately keeps a perfectly
+      # usable `KEK_ENV_MASTER_KEY` set alongside `KEK_PROVIDER=openbao`, so a fallback would
+      # succeed if the code had one. This step takes that exact environment, removes one OpenBao
+      # value at a time, and asserts the process dies naming the variable it lacks rather than
+      # starting on the env provider that is sitting right there.
+      #
+      # `run --no-deps` with the stack already up, so this is the real image with the real
+      # environment and one value changed -- not a synthesised container. An empty string rather
+      # than an unset variable, because that is what an operator's blanked-out value looks like
+      # and `environment.ts` must treat it the same way.
+      #
+      # WHAT THIS STEP DOES NOT ASSERT, deliberately and not by oversight: a store that is
+      # reachable at boot and becomes unreachable or sealed afterwards. `OpenBaoKekProvider`
+      # resolves its `fetch` per call and is never probed during boot, so an unreachable address
+      # configured at boot does not stop the process -- it makes the first wrap or unwrap throw
+      # `OpenBaoTransportError`, which is deliberately not a `KekUnwrapError` precisely so an
+      # outage is paged rather than reported as corrupt data. That distinction is covered by
+      # `openbao-kek.provider.spec.ts`, and asserting it here would need the api to probe the
+      # vault at boot -- an application change this feature is explicitly not making (T018).
+      - name: A secret store it cannot reach is a refusal, not a fallback
+        run: |
+          set -o pipefail
+          for variable in OPENBAO_ADDR OPENBAO_TOKEN; do
+            echo "--- api with ${variable} blank, KEK_ENV_MASTER_KEY still set ---"
+            status=0
+            log="$(docker compose run --rm --no-deps -T -e "${variable}=" api 2>&1)" || status=$?
+            echo "$log"
+            echo "exit status: ${status}"
+
+            if test "${status}" = "0"; then
+              echo "::error::The api started with ${variable} blank and KEK_PROVIDER=openbao. A secret store it cannot address must be a refusal (FR-023), and a usable KEK_ENV_MASTER_KEY in the same environment must not rescue it."
+              exit 1
+            fi
+
+            if ! grep -q "${variable}" <<<"$log"; then
+              echo "::error::The api refused to start with ${variable} blank, but its output never names ${variable}. FR-023 requires an explicit named failure, not an anonymous one."
+              exit 1
+            fi
+
+            # The fallback that must not exist. `EnvKekProvider` is the weaker source, and the
+            # only correct number of times it is chosen here is none.
+            if grep -qi 'EnvKekProvider\|KEK_ENV_MASTER_KEY' <<<"$log"; then
+              echo "::error::The api's refusal mentions the env key provider. Nothing may fall back from OpenBao to the plaintext master key (FR-023)."
+              exit 1
+            fi
+          done
+
+      # Spec 025 US3 (FR-015, SC-007). `apps/web/nginx.conf` is the specification for the edge
+      # that replaces it, and its behaviour is inventoried item by item in
+      # docs/specs/025-platform-delivery/checklists/nginx-behaviour.md. These two steps are the
+      # runtime half of that inventory: they pass against nginx today and must keep passing
+      # against Caddy, which is what makes T014's deletion of nginx.conf evidence rather than
+      # assumption.
+      - name: Assets keep immutable caching and their security headers
+        run: |
+          set -o pipefail
+          asset="$(curl -fsS http://localhost:8080/ | grep -o '/assets/[A-Za-z0-9._-]*\.js' | head -1)"
+          echo "asset: $asset"
+          test -n "$asset"
+
+          found="$(curl -fsSI "http://localhost:8080${asset}" | tee /dev/stderr)"
+          grep -qi '^cache-control: public, max-age=31536000, immutable' <<<"$found"
+          grep -qi '^x-content-type-options: nosniff' <<<"$found"
+          grep -qi '^x-frame-options: SAMEORIGIN' <<<"$found"
+          grep -qi '^referrer-policy: strict-origin-when-cross-origin' <<<"$found"
+
+          # A missing asset is a 404 that still carries the headers, never the SPA fallback: a
+          # stale client must fail loudly after a deploy rather than be handed an HTML document
+          # where it asked for JavaScript (CHK003.5, CHK003.6).
+          missing="$(curl -sSI http://localhost:8080/assets/not-a-real-asset-probe.js | tee /dev/stderr)"
+          grep -qi '^HTTP/[0-9.]* 404' <<<"$missing"
+          grep -qi '^cache-control: public, max-age=31536000, immutable' <<<"$missing"
+          grep -qi '^x-content-type-options: nosniff' <<<"$missing"
+          grep -qi '^x-frame-options: SAMEORIGIN' <<<"$missing"
+          grep -qi '^referrer-policy: strict-origin-when-cross-origin' <<<"$missing"
+
+      - name: The app is never cached and /api/ does not duplicate the API's headers
+        run: |
+          set -o pipefail
+          root="$(curl -fsSI http://localhost:8080/ | tee /dev/stderr)"
+          # index.html must never be cached, or a deploy leaves clients requesting asset hashes
+          # that no longer exist (CHK004.1).
+          grep -qi '^cache-control: no-cache' <<<"$root"
+          grep -qi '^x-content-type-options: nosniff' <<<"$root"
+          grep -qi '^x-frame-options: SAMEORIGIN' <<<"$root"
+          grep -qi '^referrer-policy: strict-origin-when-cross-origin' <<<"$root"
+
+          # A deep link refreshed in the browser reaches the client router, not a 404 (CHK004.6).
+          deep="$(curl -sS -o /dev/null -w '%{http_code}' http://localhost:8080/projects/deep/link)"
+          echo "deep link: $deep"
+          test "$deep" = "200"
+
+          # The load-bearing omission (CHK002.7): the edge sets no security headers on /api/, so
+          # the API's own helmet headers arrive exactly once. An edge that added its own would
+          # duplicate them, which is why the assertion is a count and not a presence check.
+          api="$(curl -fsS -D- -o /dev/null http://localhost:8080/api/v1/health | tee /dev/stderr)"
+          for header in x-content-type-options x-frame-options referrer-policy; do
+            seen="$(grep -ci "^${header}:" <<<"$api" || true)"
+            echo "${header} on /api/: ${seen}"
+            test "$seen" = "1"
+          done
+
+          # The forwarded-header set itself (CHK002.3 to CHK002.6) is not asserted here, and the
+          # omission is deliberate rather than overlooked: nothing the API exposes echoes a
+          # request header back, so there is no observable through the edge to assert on. What
+          # covers it instead is `bootstrap.ts`'s `trust proxy` and the api suites in `quality`,
+          # plus the edge's own configuration -- nginx sets the four explicitly, and Caddy's
+          # `reverse_proxy` sets X-Forwarded-For, -Host and -Proto and preserves the client's
+          # Host by default. Asserting it end to end needs a route that reflects its request.
+
+      - name: Migrate from empty
+        run: pnpm --filter @repo/db db:migrate
+
+      # Spec 013 (research R8, SC-008): the api runs with `RUN_PROFILES: api` and so cannot
+      # relay; if the row it appends moves, the worker moved it. A signup rather than a run,
+      # because a run needs a sandbox and a model and CI has neither; a signup needs nothing
+      # and produces one outbox row that the mail lane drains with `MAIL_PROVIDER: console`.
+      # The CSRF middleware issues its cookie on any response, so the health probe fills the
+      # jar; the header echoes it; Turnstile is inert without `TURNSTILE_SECRET_KEY`.
+      - name: Sign up through the api
+        run: |
+          curl -sS -c jar -o /dev/null http://localhost:8080/api/v1/health
+          token="$(awk '$6 == "forge_csrf" { print $7 }' jar)"
+          test -n "$token"
+          status="$(curl -sS -b jar -o /dev/null -w '%{http_code}' \
+            -H "x-csrf-token: $token" -H 'Origin: http://localhost:8080' \
+            -H 'content-type: application/json' \
+            -d '{"email":"probe@example.test","password":"correct horse battery staple 42"}' \
+            http://localhost:8080/api/v1/auth/signup)"
+          echo "signup: $status"
+          test "$status" = "202"
+
+      - name: The worker moved the row the api enqueued
+        run: |
+          count() {
+            docker compose exec -T postgres psql -U postgres -d forge -tAc "$1"
+          }
+          for _ in $(seq 30); do
+            pending="$(count 'select count(*) from outbox where published_at is null')"
+            processed="$(count 'select count(*) from processed_events')"
+            echo "outbox pending: $pending, processed_events: $processed"
+            if test "$pending" = "0" && test "$processed" -ge 1; then exit 0; fi
+            sleep 1
+          done
+          exit 1
+
+      # The relay and the consumers are silent on the happy path (they `warn` only), so the
+      # proof is the consumer's output: the console mailer prints the verification mail on the
+      # process that ran the consumer, and the worker announces its profiles on boot.
+      - name: The api relayed nothing
+        run: |
+          docker compose logs worker | grep -q 'worker booted with profiles agent,events,cron'
+          docker compose logs worker | grep -c 'mail (console adapter, not delivered)'
+          test "$(docker compose logs api | grep -c 'mail (console adapter, not delivered)')" = "0"
+
+      # Spec 025 US3 (FR-013, FR-017, SC-005). The bug this story closes is live: the edge
+      # proxies `/api/` with no buffering exemption, so a run's stream is delivered when the run
+      # ends rather than as it is produced. This step starts a run and reads its stream with a
+      # deadline far shorter than the run's life; if the edge buffers, no frame arrives before
+      # the deadline and the step fails. It is written before the Caddyfile and is expected to
+      # fail against nginx -- that failure is the bug.
+      #
+      # The run is inserted as a durable row rather than started through `POST .../runs`,
+      # because a run started through the API is enqueued and the worker would lease it, and CI
+      # has neither a model nor a sandbox for it to use -- the same reason the step above signs
+      # up rather than running an agent. A queued row nothing leases stays live for the whole
+      # probe, which is what makes the deadline genuinely shorter than the run; the assertion at
+      # the end that it is still `queued` is there so a run that ended early fails the probe
+      # rather than passing it for the wrong reason.
+      #
+      # The session, organisation and project are real and made through the API, because the
+      # stream route is behind `project:read` and a fabricated session would prove nothing.
+      - name: The edge streams a run as it is produced
+        run: |
+          set -o pipefail
+          # -q, because `-tA` alone still prints the command tag: `insert ... returning id`
+          # would capture "<uuid>\nINSERT 0 1" as the run id and the probe would read a URL
+          # that does not exist.
+          sql() { docker compose exec -T postgres psql -U postgres -d forge -qtAc "$1"; }
+          csrf() { awk '$6 == "forge_csrf" { print $7 }' jar; }
+          post() {
+            url="$1"
+            body="$2"
+            shift 2
+            curl -sS -b jar -c jar -H "x-csrf-token: $(csrf)" \
+              -H 'Origin: http://localhost:8080' -H 'content-type: application/json' \
+              -d "$body" "$@" "$url"
+          }
+
+          curl -sS -c jar -o /dev/null http://localhost:8080/api/v1/health
+          test -n "$(csrf)"
+
+          # The signup above left the account awaiting a verification mail, and tenancy refuses
+          # an unverified one. Confirming it in SQL keeps this probe about the edge; the mail
+          # lane itself is what the two steps above assert.
+          sql "update users set email_verified_at = now() where email = 'probe@example.test'"
+
+          login="$(post http://localhost:8080/api/v1/auth/login \
+            '{"email":"probe@example.test","password":"correct horse battery staple 42"}' \
+            -o /dev/null -w '%{http_code}')"
+          echo "login: $login"
+          test "$login" = "200"
+
+          org="$(post http://localhost:8080/api/v1/orgs \
+            '{"name":"Edge probe","slug":"edge-probe"}' | tee /dev/stderr | jq -r '.org.id')"
+          test -n "$org" && test "$org" != "null"
+
+          # The workspace `OrgService.create` makes for a new organisation -- read rather than
+          # created, so the probe stays honest about what the API actually produced.
+          workspace="$(sql "select id from workspaces where org_id = '$org'")"
+          test -n "$workspace"
+
+          project="$(post "http://localhost:8080/api/v1/orgs/$org/workspaces/$workspace/projects" \
+            '{"name":"Edge probe project"}' | tee /dev/stderr | jq -r '.project.id')"
+          test -n "$project" && test "$project" != "null"
+
+          run="$(sql "insert into agent_runs (org_id, project_id, user_id, model)
+            select '$org', '$project', id, 'edge-probe-model'
+            from users where email = 'probe@example.test' returning id")"
+          test -n "$run"
+
+          stream="http://localhost:8080/api/v1/orgs/$org/projects/$project/runs/$run/stream"
+
+          # `read -N 1` returns the moment a byte arrives, so the elapsed time is the time to
+          # the first frame and not the time to the deadline. Not `$(curl | head -c 1)`: the
+          # substitution waits for curl too, and curl only sees the closed pipe on its next
+          # write, which an idle stream never makes -- so that form always measured the
+          # `timeout`. The route writes `retry: 2000` before the reader is even attached, so an
+          # edge that does not buffer answers at once.
+          started="$(date +%s%3N)"
+          exec 3< <(exec timeout 10 curl -sN --no-buffer -b jar "$stream")
+          reader=$!
+          first=""
+          IFS= read -r -N 1 -t 10 first <&3 || true
+          elapsed="$(( $(date +%s%3N) - started ))"
+          kill "$reader" 2>/dev/null || true
+          exec 3<&-
+          echo "first stream byte after ${elapsed}ms: '${first}'"
+
+          if test -z "$first"; then
+            echo "::error::No frame arrived from ${stream} within ${elapsed}ms, while the run was still live. The edge is buffering the run stream -- /api/v1/*/stream must be exempt (FR-013, FR-017)."
+            exit 1
+          fi
+
+          test "$elapsed" -lt 2000
+
+          status="$(sql "select status from agent_runs where id = '$run'")"
+          echo "run status after the probe: $status"
+          if test "$status" != "queued"; then
+            echo "::error::The probe run left 'queued' during the read, so the deadline was not shorter than the run and the result proves nothing. Something leased a run the probe expects nothing to lease."
+            exit 1
+          fi
+
+      # Counting `drizzle.__drizzle_migrations` before and after, rather than reading
+      # drizzle-kit's output: the journal is the only thing a no-op run is guaranteed
+      # not to change, and what drizzle-kit prints on a no-op is not a contract.
+      - name: Migrate again
+        run: |
+          applied() {
+            docker compose exec -T postgres psql -U postgres -d forge -tAc \
+              'select count(*) from drizzle.__drizzle_migrations'
+          }
+          before="$(applied)"
+          pnpm --filter @repo/db db:migrate
+          after="$(applied)"
+          echo "migrations applied: ${before} before the second run, ${after} after"
+          test "$before" = "$after"
+
+      - name: Tear down
+        if: always()
+        run: docker compose down -v

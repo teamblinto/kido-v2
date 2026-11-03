@@ -1,0 +1,30 @@
+[
+  {
+    "type": "dependency",
+    "from": "apps/api/src/common/idempotency/idempotency.interceptor.ts",
+    "to": "apps/api/src/modules/identity/services/session.service.ts",
+    "unresolvedTo": "../../modules/identity/services/session.service",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "error",
+      "name": "shared-layers-never-import-modules"
+    }
+  },
+  {
+    "type": "dependency",
+    "from": "apps/api/src/database/database.module.ts",
+    "to": "apps/api/src/modules/rbac/resource-org.resolver.ts",
+    "unresolvedTo": "../modules/rbac/resource-org.resolver",
+    "dependencyTypes": [
+      "local",
+      "import"
+    ],
+    "rule": {
+      "severity": "error",
+      "name": "shared-layers-never-import-modules"
+    }
+  }
+]

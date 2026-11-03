@@ -1,0 +1,1 @@
+ALTER TABLE "local_agent_runs" ADD COLUMN "permission_mode" text DEFAULT 'default' NOT NULL;

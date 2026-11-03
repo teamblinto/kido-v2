@@ -1,0 +1,359 @@
+# Self-hosted Daytona for the sandbox module (spec 010). Its own Compose project, deliberately not
+# part of the root compose.yaml: Forge's stack does not need it to run, spec 010 froze that file,
+# and a developer without sandboxes never pays for a privileged Docker-in-Docker runner.
+#
+#   docker compose -f infra/daytona/compose.yaml up -d
+#
+# Derived from Daytona's own `docker/docker-compose.yaml` at tag v0.190.0 (research R11), with
+# what a local Forge stack needs and nothing else: no pgAdmin, registry UI, MailDev, Jaeger, OTel
+# collector or SSH gateway. Every service is pinned; every service that another one waits on has a
+# healthcheck and is waited on with `service_healthy`, so `api` never starts before its database
+# and `bootstrap` never talks to an `api` that is still migrating.
+#
+# Images. Docker Hub has no `v0.190.0` tags for daytona-api / daytona-runner / daytona-ssh-gateway
+# (checked 2026-09-15; the release published binaries only), so DAYTONA_IMAGE_TAG defaults to
+# `v0.189.0-amd64`, the last published set. The v0.189 -> v0.190 diff is the pause action and the
+# domain allow-list — none of the endpoints the adapter uses changed (research R1-R2, verified on
+# this exact combination). On Apple Silicon set DAYTONA_IMAGE_TAG=v0.189.0-arm64 in `.env`; the
+# runner is Docker-in-Docker and does not survive emulation. Bump the one variable when v0.190.0
+# images appear.
+#
+# Secrets. Every credential below is a local placeholder shared with Daytona's own compose file,
+# the same convention as the root compose.yaml: not a secret, never reused outside this machine,
+# and only the API port and the image tag are worth overriding (see .env.example). The Daytona
+# API key Forge actually uses is minted at runtime by `bootstrap` and never lives in this file.
+name: forge-daytona
+
+services:
+  api:
+    image: daytonaio/daytona-api:${DAYTONA_IMAGE_TAG:-v0.189.0-amd64}
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      dex:
+        condition: service_healthy
+      registry:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      ENVIRONMENT: docker-compose
+      OTEL_ENABLED: 'false'
+      # The image the runner pulls at boot and every sandbox is created from. `bootstrap` waits
+      # for this snapshot to become active before it creates the sandbox.
+      DEFAULT_SNAPSHOT: daytonaio/sandbox:0.5.0-slim
+      ENCRYPTION_KEY: supersecretkey
+      ENCRYPTION_SALT: supersecretsalt
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_USERNAME: user
+      DB_PASSWORD: pass
+      DB_DATABASE: daytona
+      RUN_MIGRATIONS: 'true'
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      OIDC_CLIENT_ID: daytona
+      OIDC_ISSUER_BASE_URL: http://dex:5556/dex
+      PUBLIC_OIDC_DOMAIN: http://localhost:5556/dex
+      OIDC_AUDIENCE: daytona
+      SKIP_USER_EMAIL_VERIFICATION: 'true'
+      # Forge's own API owns 3000 on the host, so Daytona's is published on 3100 by default. The
+      # dashboard is built with relative API URLs and has to be told where it is served from.
+      DASHBOARD_URL: http://localhost:${DAYTONA_API_PORT:-3100}/dashboard
+      DASHBOARD_BASE_API_URL: http://localhost:${DAYTONA_API_PORT:-3100}
+      POSTHOG_API_KEY: ''
+      POSTHOG_HOST: ''
+      POSTHOG_ENVIRONMENT: local
+      TRANSIENT_REGISTRY_URL: http://registry:6000
+      TRANSIENT_REGISTRY_ADMIN: admin
+      TRANSIENT_REGISTRY_PASSWORD: password
+      TRANSIENT_REGISTRY_PROJECT_ID: daytona
+      INTERNAL_REGISTRY_URL: http://registry:6000
+      INTERNAL_REGISTRY_ADMIN: admin
+      INTERNAL_REGISTRY_PASSWORD: password
+      INTERNAL_REGISTRY_PROJECT_ID: daytona
+      SMTP_HOST: ''
+      SMTP_PORT: ''
+      SMTP_EMAIL_FROM: Daytona <no-reply@daytona.local>
+      S3_ENDPOINT: http://minio:9000
+      S3_STS_ENDPOINT: http://minio:9000/minio/v1/assume-role
+      S3_REGION: us-east-1
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_DEFAULT_BUCKET: daytona
+      S3_ACCOUNT_ID: /
+      S3_ROLE_NAME: /
+      MAX_AUTO_ARCHIVE_INTERVAL: 43200
+      MAINTENANCE_MODE: 'false'
+      # The toolbox proxy, as the adapter reaches it (research R1: `toolboxProxyUrl` on the sandbox
+      # dto). Daytona's default is `proxy.localhost:4000`, which Windows does not resolve and which
+      # otherwise needs a hosts-file entry; `PROXY_TOOLBOX_BASE_URL` overrides only the toolbox URL,
+      # the proxy itself routes `/toolbox/<id>/...` by path whatever the Host header says.
+      PROXY_DOMAIN: proxy.localhost:4000
+      PROXY_PROTOCOL: http
+      PROXY_API_KEY: super_secret_key
+      PROXY_TEMPLATE_URL: http://{{PORT}}-{{sandboxId}}.proxy.localhost:4000
+      # A worker in a container needs http://host.docker.internal:4000 (localhost is itself there).
+      PROXY_TOOLBOX_BASE_URL: ${DAYTONA_TOOLBOX_BASE_URL:-http://localhost:4000}
+      DEFAULT_RUNNER_DOMAIN: runner:3003
+      DEFAULT_RUNNER_API_URL: http://runner:3003
+      DEFAULT_RUNNER_PROXY_URL: http://runner:3003
+      DEFAULT_RUNNER_API_KEY: secret_api_token
+      DEFAULT_RUNNER_CPU: 4
+      DEFAULT_RUNNER_MEMORY: 8
+      DEFAULT_RUNNER_DISK: 50
+      DEFAULT_RUNNER_NAME: default
+      DEFAULT_REGION_ID: us
+      DEFAULT_REGION_NAME: us
+      DEFAULT_REGION_ENFORCE_QUOTAS: 'false'
+      DEFAULT_ORG_QUOTA_TOTAL_CPU_QUOTA: 10000
+      DEFAULT_ORG_QUOTA_TOTAL_MEMORY_QUOTA: 10000
+      DEFAULT_ORG_QUOTA_TOTAL_DISK_QUOTA: 100000
+      DEFAULT_ORG_QUOTA_MAX_CPU_PER_SANDBOX: 100
+      DEFAULT_ORG_QUOTA_MAX_MEMORY_PER_SANDBOX: 100
+      DEFAULT_ORG_QUOTA_MAX_DISK_PER_SANDBOX: 1000
+      DEFAULT_ORG_QUOTA_SNAPSHOT_QUOTA: 1000
+      DEFAULT_ORG_QUOTA_MAX_SNAPSHOT_SIZE: 1000
+      DEFAULT_ORG_QUOTA_VOLUME_QUOTA: 10000
+      SSH_GATEWAY_API_KEY: ssh_secret_api_token
+      SSH_GATEWAY_COMMAND: ssh -p 2222 {{TOKEN}}@localhost
+      SSH_GATEWAY_URL: localhost:2222
+      RUNNER_DECLARATIVE_BUILD_SCORE_THRESHOLD: 10
+      RUNNER_AVAILABILITY_SCORE_THRESHOLD: 10
+      RUNNER_START_SCORE_THRESHOLD: 3
+      OTEL_COLLECTOR_API_KEY: otel_collector_api_key
+      HEALTH_CHECK_API_KEY: supersecretkey
+    # `/api/health/ready` pings the database and Redis; `/api/health` only says Nest is up.
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'curl',
+          '-fsS',
+          '-H',
+          'Authorization: Bearer supersecretkey',
+          'http://127.0.0.1:3000/api/health/ready',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+      start_period: 60s
+    ports:
+      - '${DAYTONA_API_PORT:-3100}:3000'
+    privileged: true
+    restart: unless-stopped
+
+  proxy:
+    image: daytonaio/daytona-proxy:${DAYTONA_IMAGE_TAG:-v0.189.0-amd64}
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      DAYTONA_API_URL: http://api:3000/api
+      PROXY_PORT: 4000
+      PROXY_API_KEY: super_secret_key
+      PROXY_PROTOCOL: http
+      OIDC_CLIENT_ID: daytona
+      OIDC_CLIENT_SECRET: ''
+      OIDC_DOMAIN: http://dex:5556/dex
+      OIDC_PUBLIC_DOMAIN: http://localhost:5556/dex
+      OIDC_AUDIENCE: daytona
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      TOOLBOX_ONLY_MODE: 'false'
+      PREVIEW_WARNING_ENABLED: 'false'
+    # The image declares its own HEALTHCHECK (`curl -f http://localhost:4000/health`).
+    ports:
+      - '4000:4000'
+    restart: unless-stopped
+
+  runner:
+    image: daytonaio/daytona-runner:${DAYTONA_IMAGE_TAG:-v0.189.0-amd64}
+    environment:
+      ENVIRONMENT: development
+      API_PORT: 3003
+      DAYTONA_RUNNER_TOKEN: secret_api_token
+      LOG_FILE_PATH: /home/daytona/runner/runner.log
+      # cgroups cannot be partitioned inside Docker-in-Docker without the host socket.
+      RESOURCE_LIMITS_DISABLED: 'true'
+      AWS_ENDPOINT_URL: http://minio:9000
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: minioadmin
+      AWS_SECRET_ACCESS_KEY: minioadmin
+      AWS_DEFAULT_BUCKET: daytona
+      DAYTONA_API_URL: http://api:3000/api
+      RUNNER_DOMAIN: runner
+      SSH_GATEWAY_ENABLE: 'false'
+      INTER_SANDBOX_NETWORK_ENABLED: 'false'
+    healthcheck:
+      test: ['CMD', 'curl', '-fsS', 'http://127.0.0.1:3003/']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    # Docker-in-Docker: the sandboxes are containers inside this one. The inner daemon's image
+    # store is a volume so a restart does not re-pull the default snapshot.
+    privileged: true
+    restart: unless-stopped
+    volumes:
+      - runner-docker:/var/lib/docker
+
+  dex:
+    image: dexidp/dex:v2.42.0
+    configs:
+      - source: dex-config
+        target: /etc/dex/config.yaml
+    entrypoint: ['sh', '-c', 'touch /var/dex/dex.db && exec dex serve /etc/dex/config.yaml']
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'wget',
+          '--spider',
+          '--quiet',
+          'http://localhost:5556/dex/.well-known/openid-configuration',
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    # Published because the browser is redirected here to sign in to the dashboard.
+    ports:
+      - '5556:5556'
+    restart: unless-stopped
+    volumes:
+      - dex-db:/var/dex
+
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_DB: daytona
+      POSTGRES_PASSWORD: pass
+      POSTGRES_USER: user
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U user -d daytona']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    # Not published: Forge's own Postgres owns 5432 on the host.
+    restart: unless-stopped
+    volumes:
+      - db-data:/var/lib/postgresql/18/docker
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+
+  registry:
+    image: registry:2.8.2
+    environment:
+      REGISTRY_HTTP_ADDR: registry:6000
+      REGISTRY_STORAGE_DELETE_ENABLED: 'true'
+    healthcheck:
+      test: ['CMD', 'wget', '--spider', '--quiet', 'http://registry:6000/v2/']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    volumes:
+      - registry-data:/var/lib/registry
+
+  minio:
+    # quay.io rather than Docker Hub: `minio/minio` is no longer served there (research R11).
+    image: quay.io/minio/minio:RELEASE.2025-04-22T22-12-26Z
+    command: server /data --console-address ':9001'
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_IDENTITY_STS_EXPIRY: 24h
+    healthcheck:
+      test: ['CMD', 'mc', 'ready', 'local']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    volumes:
+      - minio-data:/data
+
+  # One-shot, idempotent, re-run by every `up`: signs in as the built-in Dex user, mints the Forge
+  # API key once, keeps it in the `bootstrap-state` volume, creates (or restarts) the `forge-local`
+  # sandbox once the default snapshot is active, and writes the three variables the sandbox module
+  # and the real-sandbox suite read to `.generated/daytona.env`, next to this file and git-ignored.
+  bootstrap:
+    image: node:24-alpine
+    command: ['node', '/bootstrap.mjs']
+    depends_on:
+      api:
+        condition: service_healthy
+      proxy:
+        condition: service_healthy
+      runner:
+        condition: service_healthy
+    environment:
+      DAYTONA_API_URL: http://api:3000/api
+      DEX_TOKEN_URL: http://dex:5556/dex/token
+      DEX_EMAIL: dev@daytona.io
+      DEX_PASSWORD: password
+      # What goes into the generated file: the stack as the host reaches it.
+      PUBLIC_API_URL: http://localhost:${DAYTONA_API_PORT:-3100}/api
+      SNAPSHOT: daytonaio/sandbox:0.5.0-slim
+      SANDBOX_NAME: forge-local
+      API_KEY_NAME: forge-local
+      STATE_FILE: /state/daytona.env
+      OUTPUT_FILE: /out/daytona.env
+    restart: 'no'
+    volumes:
+      - ./bootstrap.mjs:/bootstrap.mjs:ro
+      - bootstrap-state:/state
+      - ./.generated:/out
+
+configs:
+  # Dex's static config, inline so the API port interpolates into the redirect URIs. Password
+  # grant is enabled for the one static user so `bootstrap` can sign in without a browser.
+  dex-config:
+    content: |
+      issuer: http://localhost:5556/dex
+      storage:
+        type: sqlite3
+        config:
+          file: /var/dex/dex.db
+      web:
+        http: 0.0.0.0:5556
+        allowedOrigins: ['*']
+        allowedHeaders: ['x-requested-with']
+      oauth2:
+        passwordConnector: local
+      staticClients:
+        - id: daytona
+          name: Daytona
+          public: true
+          redirectURIs:
+            - http://localhost:${DAYTONA_API_PORT:-3100}
+            - http://localhost:${DAYTONA_API_PORT:-3100}/dashboard
+            - http://localhost:${DAYTONA_API_PORT:-3100}/api/oauth2-redirect.html
+            - http://localhost:4000/callback
+            - http://proxy.localhost:4000/callback
+      enablePasswordDB: true
+      staticPasswords:
+        # dev@daytona.io / password (`echo password | htpasswd -BinC 10 admin | cut -d: -f2`)
+        - email: dev@daytona.io
+          hash: $$2a$$10$$2b2cU8CPhOTaGrs1HRQuAueS7JTT5ZHsHSzYiFPm1leZck7Mc8T4W
+          username: admin
+          userID: '1234'
+
+volumes:
+  bootstrap-state:
+  db-data:
+  dex-db:
+  minio-data:
+  registry-data:
+  runner-docker:

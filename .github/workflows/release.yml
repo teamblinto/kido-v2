@@ -1,0 +1,224 @@
+# The release path (spec 025, contracts § 1, research R2). Deliberately a second workflow rather
+# than jobs added to `ci.yml`: publishing needs `packages: write`, and keyless signing needs
+# `id-token: write`. `ci.yml` runs on every pull request, including one day from a fork, and
+# widening its token to serve work that only ever happens on `main` is the kind of change that is
+# invisible until it is an incident. The wide permissions stay on the narrow trigger.
+name: Release
+
+# Two triggers, because the gate has to be genuinely required in both cases and a workflow cannot
+# `needs:` a job in another workflow:
+#
+#   * `main` -- fired by CI *finishing*, not by the push. `workflow_run` carries that run's
+#     conclusion, and a conclusion of `success` is exactly "the `quality` and `compose` jobs both
+#     passed for this commit" (T032, FR-008). The `gate` job refuses every other conclusion, so a
+#     red merge gate publishes nothing.
+#   * a tag -- CI does not run on tags (`ci.yml` is `push: branches: [main]`), so there is no run to
+#     wait for. The `gate` job instead requires the tagged commit to be an ancestor of `main`, which
+#     is the commit CI already proved. A tag cut from anywhere else is refused.
+#
+# Neither path re-runs the gate's checks, and neither can be satisfied without them.
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_run:
+    workflows: ['CI']
+    types: [completed]
+    branches: [main]
+
+# Exactly the three (contracts § 1). `contents: read` to check out and to read `main`'s history,
+# `id-token: write` for the keyless OIDC signing identity, `packages: write` for GHCR. Every other
+# scope is `none` by virtue of this block existing, which is the point of writing it out.
+permissions:
+  contents: read
+  id-token: write
+  packages: write
+
+# Keyed on the commit rather than the ref: the same commit reached through `main` and through a tag
+# is one artifact, and `cancel-in-progress: false` because a half-cancelled publish leaves a digest
+# signed by nothing.
+concurrency:
+  group: release-${{ github.event.workflow_run.head_sha || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  # Nothing publishes until this job succeeds. It holds the whole "the merge gate passed for this
+  # exact commit" argument in one place, so the publish job below can be read without it.
+  gate:
+    name: Merge gate passed for this commit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      sha: ${{ steps.commit.outputs.sha }}
+
+    steps:
+      # On `workflow_run` the event is the CI run; refuse anything but a clean one before doing any
+      # other work. On a tag push there is no CI run and this expression is empty, so the job
+      # continues to the ancestry check below.
+      - name: Refuse a CI run that did not pass
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.conclusion != 'success'
+        run: |
+          echo "::error::CI concluded '${{ github.event.workflow_run.conclusion }}' for this commit; nothing is published."
+          exit 1
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          # `workflow_run` runs against the default branch's workflow file but must build the commit
+          # CI actually tested, which is the triggering run's head SHA.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # The ancestry check below reads `main`'s history, which a shallow clone does not have.
+          fetch-depth: 0
+
+      # A tag can be cut from any commit in the repository, including one that never went through a
+      # pull request. CI has no run for it to inherit, so the requirement is expressed as lineage:
+      # the tagged commit must be on `main`, and every commit on `main` has a green CI run behind
+      # it. A tag from a side branch fails here rather than publishing an unproved artifact.
+      - name: Require a tag to point at a commit on main
+        if: github.event_name == 'push'
+        run: |
+          git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          if ! git merge-base --is-ancestor "${GITHUB_SHA}" origin/main; then
+            echo "::error::${GITHUB_SHA} is not an ancestor of main; the merge gate never ran on it."
+            exit 1
+          fi
+
+      - name: Record the commit being released
+        id: commit
+        run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+
+  # One job per image, so each image is built exactly once per commit (FR-003) and the two do not
+  # serialise behind each other. Nothing downstream ever rebuilds: what this job pushes is what is
+  # deployed, promoted unchanged from here to every environment.
+  publish:
+    name: Publish ${{ matrix.image }}
+    needs: gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      # An image that fails to build must not leave the other one signed and half-released without
+      # anyone noticing; both matrix legs run to completion and the run is red if either failed.
+      fail-fast: false
+      matrix:
+        include:
+          - image: forge-app
+            dockerfile: apps/api/Dockerfile
+          - image: forge-gateway
+            dockerfile: apps/gateway/Dockerfile
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Lowercased because a GHCR repository name must be, and a GitHub owner need not be.
+      - name: Resolve the image reference
+        id: ref
+        env:
+          IMAGE: ${{ matrix.image }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          echo "repository=ghcr.io/$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')/${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "builtAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      # `push-by-digest` with no tag at all: the output of this workflow is a digest, and a moving
+      # tag is exactly the thing FR-002 forbids a deploy from being pointed at. There is nothing for
+      # a later push to re-point, because there is no name to re-point.
+      #
+      # `BUILD_DIGEST` is not a build argument here and cannot be: the digest is a hash of the image
+      # this build produces, so baking it in would change it. Building twice to close that loop
+      # would publish two artifacts per commit and break FR-003, which is the stronger requirement.
+      # The digest is therefore supplied to the container at run time by `infra/deploy.sh`, from the
+      # value the deploy was asked for; `BUILD_COMMIT` and `BUILD_AT` are knowable at build and are
+      # baked, as `apps/api/Dockerfile` expects.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          provenance: mode=max
+          sbom: false
+          outputs: type=image,name=${{ steps.ref.outputs.repository }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            BUILD_COMMIT=${{ needs.gate.outputs.sha }}
+            BUILD_AT=${{ steps.ref.outputs.builtAt }}
+          cache-from: type=gha,scope=${{ matrix.image }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Install syft
+        uses: anchore/sbom-action/download-syft@v0
+
+      # Keyless (research R5). There is no key to hold, which matters here more than usual: the
+      # secret store that would hold one is a thing this same feature is still deploying, and a
+      # signing key kept by the system being bootstrapped is a bootstrapping problem nobody needs.
+      # The signature is made against this workflow's OIDC identity, and `infra/deploy.sh` pins the
+      # verification to that exact identity and issuer -- so a signature made by any other workflow,
+      # in any other repository, fails a deploy.
+      - name: Sign the digest
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REPOSITORY: ${{ steps.ref.outputs.repository }}
+        run: cosign sign --yes "${REPOSITORY}@${DIGEST}"
+
+      # Generated from the pushed image rather than from the checkout: the bill of materials has to
+      # describe the artifact, and the runner's working tree is not the artifact.
+      - name: Generate the SBOM
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REPOSITORY: ${{ steps.ref.outputs.repository }}
+        run: syft "registry:${REPOSITORY}@${DIGEST}" -o spdx-json="sbom.spdx.json"
+
+      - name: Attach the SBOM as an attestation
+        env:
+          COSIGN_EXPERIMENTAL: '1'
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REPOSITORY: ${{ steps.ref.outputs.repository }}
+        run: |
+          cosign attest --yes \
+            --type spdxjson \
+            --predicate sbom.spdx.json \
+            "${REPOSITORY}@${DIGEST}"
+
+      # The run page is where the person deploying reads the digest from, so it has to be here and
+      # it has to be copyable as-is: the fenced line below is the exact argument `infra/deploy.sh`
+      # takes (contracts § 1). Both matrix legs append their own block to the one run summary.
+      - name: Write the digest into the job summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ matrix.image }}
+          REPOSITORY: ${{ steps.ref.outputs.repository }}
+        run: |
+          {
+            echo "### ${IMAGE}"
+            echo
+            echo "| Field | Value |"
+            echo "| ----- | ----- |"
+            echo "| Image | \`${REPOSITORY}\` |"
+            echo "| Digest | \`${DIGEST}\` |"
+            echo "| Commit | \`${{ needs.gate.outputs.sha }}\` |"
+            echo "| Built at | \`${{ steps.ref.outputs.builtAt }}\` |"
+            echo
+            echo "Deploy it with:"
+            echo
+            echo '```sh'
+            echo "infra/deploy.sh staging ${DIGEST}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

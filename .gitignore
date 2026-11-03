@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+
+# Build and cache output
+dist/
+.turbo/
+.vite/
+*.tsbuildinfo
+
+# Environment files (examples remain committed)
+.env
+.env.*
+!.env.example
+
+# Written by the local Daytona stack's bootstrap (infra/daytona): holds the minted API key.
+infra/daytona/.generated/
+
+# Coverage output. Regenerable, per-machine, and absolute paths in every report — a
+# `coverage-summary.json` committed from one laptop is a diff nobody can review.
+coverage/
+coverage-*/
+
+# Logs
+*.log
+pnpm-debug.log*
+
+# Editors and operating systems
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Agent worktrees (full checkouts; never part of the repository)
+.claude/worktrees/
+# Per-developer agent settings. Ignored here rather than only in a personal global ignore file, so
+# the repository is clean on a machine that has no such file.
+.claude/settings.local.json
+
+# Personal Postman environments. The two committed under apps/api/postman/environments hold
+# placeholders only; anything a developer exports after filling in credentials stays local.
+*.local.postman_environment.json
+
+# Claude Code per-machine settings
+.claude/settings.local.json
+dump.rdb

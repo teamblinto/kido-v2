@@ -1,0 +1,185 @@
+---
+# The app pool (spec 025 · T050 · architecture § 01's node-role table).
+#
+# § 01: "app | 2 → N | 8 vCPU / 16 GB | Caddy, NestJS API, agent + build + event workers, node
+# exporter. Stateless; any node is replaceable."
+#
+# So every app node runs three containers, and only these three:
+#
+#   caddy    the edge, from infra/Caddyfile — the same file the local stack mounts (FR-016)
+#   api      forge-app with RUN_PROFILES=api
+#   worker   forge-app with RUN_PROFILES=agent,events,cron
+#
+# One image, two services: `forge-app` is built once per commit and addressed by digest, and
+# RUN_PROFILES alone decides what a process does (spec 013, contracts § 1). The digest is
+# passed in by infra/deploy.sh; this play refuses a tag.
+#
+# infra/Caddyfile is the repository's one edge configuration and is NOT written by this play —
+# it is copied verbatim from the repository. Changing the edge means changing that file and
+# converging, never editing anything on a node (FR-030, FR-032).
+
+- name: App pool — Caddy, the API and the workers
+  hosts: app
+  become: true
+
+  handlers:
+    - name: Reload Caddy
+      community.docker.docker_container_exec:
+        container: caddy
+        command: caddy reload --config /etc/caddy/Caddyfile
+      listen: caddy config changed
+
+  tasks:
+    - name: Refuse anything but a digest for forge-app
+      # FR-002: the full sha256:…, never a moving tag. A tag deployed today and a tag deployed
+      # tomorrow are different artifacts however identical they looked.
+      ansible.builtin.assert:
+        that:
+          - forge_app_digest is defined
+          - forge_app_digest is match('^sha256:[0-9a-f]{64}$')
+        fail_msg: >-
+          forge_app_digest must be a full sha256:… digest, not
+          '{{ forge_app_digest | default("undefined") }}'. One build becomes the thing that
+          runs (FR-002, FR-003).
+
+    - name: Create the app node's directories
+      ansible.builtin.file:
+        path: '{{ item }}'
+        state: directory
+        owner: root
+        group: root
+        mode: '0755'
+      loop:
+        - '{{ forge_config_dir }}'
+        - '{{ forge_config_dir }}/caddy'
+        - '{{ forge_web_root }}'
+
+    # --- the edge ---------------------------------------------------------------------
+
+    - name: Install the Caddyfile from the repository
+      # ../Caddyfile relative to this play: infra/Caddyfile, the one in contracts § 3, the
+      # same file compose.yaml mounts. This play never generates edge configuration — if the
+      # edge is wrong, the repository is wrong.
+      ansible.builtin.copy:
+        src: '{{ playbook_dir }}/../Caddyfile'
+        dest: '{{ forge_config_dir }}/caddy/Caddyfile'
+        owner: root
+        group: root
+        mode: '0644'
+      notify: caddy config changed
+
+    - name: Unpack the web assets the build produced
+      # The single-page app's built output, content-addressed alongside the image digest it
+      # shipped with, fetched from the object store rather than built on the node.
+      ansible.builtin.unarchive:
+        src: '{{ forge_web_assets_url }}'
+        dest: '{{ forge_web_root }}'
+        remote_src: true
+        owner: root
+        group: root
+      notify: caddy config changed
+
+    - name: Run Caddy
+      community.docker.docker_container:
+        name: caddy
+        image: '{{ forge_caddy_image }}'
+        restart_policy: unless-stopped
+        networks: [{ name: '{{ forge_network }}' }]
+        published_ports: '{{ forge_caddy_ports }}'
+        volumes:
+          - '{{ forge_config_dir }}/caddy/Caddyfile:/etc/caddy/Caddyfile:ro'
+          - '{{ forge_web_root }}:/srv:ro'
+          - caddy-data:/data
+        comparisons:
+          '*': strict
+
+    # --- forge-app, twice, by digest ---------------------------------------------------
+
+    - name: Run the API — forge-app as `api`
+      community.docker.docker_container:
+        name: api
+        image: '{{ forge_app_repository }}@{{ forge_app_digest }}'
+        restart_policy: unless-stopped
+        networks: [{ name: '{{ forge_network }}' }]
+        env: "{{ forge_app_env | combine({'RUN_PROFILES': 'api'}) }}"
+        healthcheck:
+          test:
+            [
+              'CMD',
+              'wget',
+              '--quiet',
+              '--tries=1',
+              '--spider',
+              'http://127.0.0.1:3000/api/v1/health',
+            ]
+          interval: 10s
+          timeout: 3s
+          retries: 5
+          start_period: 10s
+        comparisons:
+          '*': strict
+
+    - name: Run the workers — forge-app as `agent,events,cron`
+      # The same image and the same environment; the profile set is the whole difference. The
+      # worker is the only process that may hold a model or sandbox credential (spec 013 R10),
+      # which is why forge_app_worker_env is merged here and nowhere else.
+      community.docker.docker_container:
+        name: worker
+        image: '{{ forge_app_repository }}@{{ forge_app_digest }}'
+        restart_policy: unless-stopped
+        networks: [{ name: '{{ forge_network }}' }]
+        env: >-
+          {{ forge_app_env
+             | combine(forge_app_worker_env)
+             | combine({'RUN_PROFILES': 'agent,events,cron'}) }}
+        # § 13's hard-kill budget: on SIGTERM the worker stops taking jobs and finishes the
+        # active ones; a run that has not reached a boundary in 120 s is killed and resumed
+        # elsewhere under a new lease epoch (spec 008).
+        stop_timeout: 120
+        healthcheck:
+          test:
+            [
+              'CMD',
+              'wget',
+              '--quiet',
+              '--tries=1',
+              '--spider',
+              'http://127.0.0.1:3000/api/v1/health',
+            ]
+          interval: 10s
+          timeout: 3s
+          retries: 5
+          start_period: 10s
+        comparisons:
+          '*': strict
+
+    - name: Run the node exporter
+      # § 01's table lists it on this pool; the ops node scrapes it.
+      community.docker.docker_container:
+        name: node-exporter
+        image: '{{ forge_node_exporter_image }}'
+        restart_policy: unless-stopped
+        networks: [{ name: '{{ forge_network }}' }]
+        pid_mode: host
+        volumes:
+          - /:/host:ro,rslave
+        command: ['--path.rootfs=/host']
+        comparisons:
+          '*': strict
+
+    - name: Confirm this node runs what § 01 says the app pool runs, and nothing else
+      # The node-role table, checked rather than asserted in a comment.
+      community.docker.docker_host_info:
+        containers: true
+      register: forge_app_containers
+
+    - name: Assert the app pool's container set
+      ansible.builtin.assert:
+        that:
+          - >-
+            forge_app_containers.containers
+            | map(attribute='Names') | flatten | map('regex_replace', '^/', '')
+            | sort == ['api', 'caddy', 'node-exporter', 'worker']
+        fail_msg: >-
+          The app pool runs Caddy, the API, the workers and the node exporter (§ 01). Found:
+          {{ forge_app_containers.containers | map(attribute='Names') | flatten | sort }}.

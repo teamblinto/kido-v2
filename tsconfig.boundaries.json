@@ -1,0 +1,21 @@
+{
+  // Exists only for `.dependency-cruiser.cjs` (options.tsConfig): it maps `@repo/*` to each
+  // package's source entry so the boundary check reads the tree without a build, and mirrors the
+  // web app's `@/*` alias. No package extends it; `pnpm typecheck` never reads it. The aliases
+  // are repo-wide (`baseUrl: "."`), so `apps/gateway`'s `@repo/contracts` and `@repo/types`
+  // resolve through the same two entries (017 R15) — a new `@repo/*` package lands here too.
+  "compilerOptions": {
+    "baseUrl": ".",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "paths": {
+      "@/*": ["apps/web/src/*"],
+      "@repo/contracts": ["packages/contracts/src/index.ts"],
+      "@repo/db": ["packages/db/src/index.ts"],
+      "@repo/types": ["packages/types/src/index.ts"],
+      "@repo/utils": ["packages/utils/src/index.ts"]
+    }
+  },
+  "files": ["apps/api/src/main.ts"]
+}

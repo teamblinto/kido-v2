@@ -1,0 +1,17 @@
+# The repository is LF-only: .editorconfig declares `end_of_line = lf` and the Prettier
+# config declares `endOfLine: 'lf'`. Without this file neither of those declarations reaches
+# git, so Git for Windows applies its system-wide `core.autocrlf=true` and checks every file
+# out with CRLF -- at which point `prettier --check` fails on the whole tree and the
+# `pnpm check` gate is unreproducible for anyone on Windows. This makes git honour what the
+# repository already says about itself.
+* text=auto eol=lf
+
+# Binary: never normalise, never diff as text.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary

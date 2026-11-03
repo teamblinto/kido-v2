@@ -1,0 +1,6 @@
+{
+  "name": "Missing nextjs",
+  "description": "Fixture nextjs.",
+  "base": "daytonaio/sandbox:0.5.0-slim",
+  "install": "npm ci"
+}

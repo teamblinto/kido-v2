@@ -1,0 +1,285 @@
+@import '@fontsource-variable/geist';
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+/*
+ * BAIOS design tokens, mirrored from the Figma library (file cacvYkPW57IcnGo5Ufud4W).
+ *
+ * Two layers live here:
+ *   1. `:root` holds the shadcn/ui semantic contract (--primary, --ring, …) so the
+ *      generated primitives in components/ui keep working and stay upgradable.
+ *   2. `@theme` adds the BAIOS-specific tokens shadcn has no equivalent for
+ *      (brand teal, status soft fills, the dark brand panel) plus the type ramp.
+ *
+ * Figma's "accent" group is the brand teal. shadcn's `accent` means "hover surface",
+ * so the teal is exposed as `brand-*` here to keep the two from colliding.
+ */
+:root {
+  --radius: 0.625rem;
+
+  --background: #ffffff;
+  --foreground: #09090b;
+  --card: #ffffff;
+  --card-foreground: #09090b;
+  --popover: #ffffff;
+  --popover-foreground: #09090b;
+  --primary: #111113;
+  --primary-foreground: #ffffff;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #09090b;
+  --muted: #f4f4f5;
+  --muted-foreground: #8e8e96;
+  --accent: #f4f4f5;
+  --accent-foreground: #09090b;
+  --destructive: #b4271d;
+  --border: #e4e4e7;
+  --input: #e4e4e7;
+  --ring: #14685a;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+}
+
+@theme {
+  --font-sans:
+    'Geist Variable', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* Figma pairs the ramp with Geist Mono. Only keycaps use it, so it is not
+   * bundled — the platform mono stack carries the same tabular feel. */
+  --font-mono:
+    'Geist Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo, 'Cascadia Mono', monospace;
+
+  /* Surfaces — Figma bg/* and surface/* */
+  --color-canvas: #ffffff;
+  --color-subtle: #fafafa;
+  --color-raised: #ffffff;
+
+  /* Borders — Figma border/* */
+  --color-line: #e4e4e7;
+  --color-line-subtle: #ededef;
+  --color-line-strong: #d4d4d8;
+
+  /* Text — Figma text/secondary and text/tertiary */
+  --color-subdued: #52525b;
+  --color-faint: #8e8e96;
+
+  /* Brand — Figma accent/* */
+  --color-brand: #14685a;
+  --color-brand-soft: #e3f1ed;
+  --color-brand-border: #b7dbd2;
+  --color-brand-text: #0f5b4e;
+
+  /* Status — Figma status/* and run/* */
+  --color-danger: #b4271d;
+  --color-danger-soft: #fce9e7;
+  --color-warning: #8a6410;
+  --color-warning-soft: #fbf0d8;
+  --color-success: #167c52;
+  --color-success-soft: #e4f4ec;
+  --color-info: #1f5fbf;
+  --color-info-soft: #e7f0fd;
+  /* Figma status/neutral — the "nothing is wrong, nothing is happening" tone
+   * behind queued and asleep. */
+  --color-neutral: #6a6a73;
+  --color-neutral-soft: #f1f1f3;
+
+  /* Figma action/disabled — a filled control that is inert rather than faded. */
+  --color-disabled: #efeff1;
+
+  /* Figma thumb/* — the placeholder artwork on a project card. */
+  --color-thumb-from: #eff6f4;
+  --color-thumb-to: #e1ece9;
+
+  /* The dark brand panel — Figma hero/* */
+  --color-on-panel: #eaf5f1;
+  --color-on-panel-muted: #9ec2b8;
+  --color-panel-mint: #4fd6b5;
+
+  /* Type ramp. Figma letter-spacing is a percentage of font size, converted to em. */
+  --text-display-sm: 2rem;
+  --text-display-sm--line-height: 2.375rem;
+  --text-display-sm--letter-spacing: -0.012em;
+  --text-heading-xl: 1.5rem;
+  --text-heading-xl--line-height: 1.875rem;
+  --text-heading-xl--letter-spacing: -0.008em;
+  --text-heading-lg: 1.25rem;
+  --text-heading-lg--line-height: 1.75rem;
+  --text-heading-lg--letter-spacing: -0.005em;
+  --text-heading-md: 1.0625rem;
+  --text-heading-md--line-height: 1.5rem;
+  --text-heading-md--letter-spacing: -0.002em;
+  --text-heading-sm: 0.9375rem;
+  --text-heading-sm--line-height: 1.375rem;
+  --text-body-lg: 1rem;
+  --text-body-lg--line-height: 1.625rem;
+  --text-body-md: 0.875rem;
+  --text-body-md--line-height: 1.375rem;
+  --text-body-sm: 0.8125rem;
+  --text-body-sm--line-height: 1.25rem;
+  --text-label-md: 0.875rem;
+  --text-label-md--line-height: 1.25rem;
+  --text-label-sm: 0.8125rem;
+  --text-label-sm--line-height: 1.125rem;
+  --text-label-xs: 0.75rem;
+  --text-label-xs--line-height: 1rem;
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1rem;
+  --text-overline: 0.6875rem;
+  --text-overline--line-height: 0.875rem;
+  --text-overline--letter-spacing: 0.08em;
+  --text-mono-sm: 0.75rem;
+  --text-mono-sm--line-height: 1.125rem;
+
+  /* Elevation ramp — the further a surface floats, the softer and deeper it casts. */
+  --shadow-composer: 0 8px 26px -4px rgb(8 18 15 / 0.1);
+  --shadow-popover: 0 10px 30px -6px rgb(8 18 15 / 0.16);
+  --shadow-palette: 0 18px 48px -8px rgb(8 18 15 / 0.28);
+  --shadow-modal: 0 20px 56px -10px rgb(8 18 15 / 0.3);
+
+  --animate-caret-blink: caret-blink 1.25s ease-out infinite;
+  --animate-breathe: breathe 2s ease-in-out infinite;
+
+  @keyframes caret-blink {
+    0%,
+    70%,
+    100% {
+      opacity: 1;
+    }
+    20%,
+    50% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes breathe {
+    0%,
+    100% {
+      opacity: 1;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 0.4;
+      transform: scale(0.75);
+    }
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  html {
+    min-width: 320px;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-canvas text-foreground font-sans antialiased;
+    margin: 0;
+    min-height: 100dvh;
+  }
+
+  /* One consistent focus treatment across every interactive surface. */
+  :focus-visible {
+    @apply outline-ring outline-2 outline-offset-2;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/*
+ * highlight.js token colours (spec 022, research R6).
+ *
+ * Written against this file's palette rather than shipping a stock
+ * `highlight.js/styles/*.css`: those carry their own background and a dark-mode
+ * block this app has no counterpart for. The file view is read-only, so this is
+ * the whole surface — no cursor, no selection states.
+ */
+.hljs-comment,
+.hljs-quote {
+  color: var(--muted-foreground);
+  font-style: italic;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-doctag {
+  color: #8250df;
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: #0a7b5e;
+}
+
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet {
+  color: #0550ae;
+}
+
+.hljs-title,
+.hljs-section,
+.hljs-name,
+.hljs-attr,
+.hljs-attribute {
+  color: #953800;
+}
+
+.hljs-type,
+.hljs-built_in,
+.hljs-class .hljs-title {
+  color: var(--ring);
+}
+
+.hljs-deletion {
+  color: var(--destructive);
+}
+
+.hljs-meta,
+.hljs-tag,
+.hljs-punctuation {
+  color: #57606a;
+}
+
+.hljs-emphasis {
+  font-style: italic;
+}
+
+.hljs-strong {
+  font-weight: 600;
+}

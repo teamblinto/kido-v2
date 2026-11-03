@@ -1,0 +1,32 @@
+# {{ ansible_managed }}
+# Rendered from infra/ansible/templates/openbao.hcl.j2. Do not edit on the node: the next
+# converge overwrites it, and a hand edit is exactly what FR-030 forbids.
+#
+# Raft storage with THREE voters — data-1, data-2 and the witness (§01, research R6, R9).
+# Two voters have a quorum of two, so losing either takes the secret store, and therefore
+# every tenant credential, offline. The witness is a full voter that stores nothing anyone
+# reads. The third voter is structural here: the peer list below is built from the whole
+# `data` group, and openbao_raft_voters asserts it is three before anything is written.
+
+ui = false
+disable_mlock = false
+
+storage "raft" {
+  path    = "{{ openbao_data_dir }}"
+  node_id = "{{ inventory_hostname }}"
+{% for peer in groups['data'] | difference([inventory_hostname]) %}
+
+  retry_join {
+    leader_api_addr = "https://{{ hostvars[peer].openbao_internal_name }}:{{ openbao_api_port }}"
+  }
+{% endfor %}
+}
+
+listener "tcp" {
+  address       = "0.0.0.0:{{ openbao_api_port }}"
+  tls_cert_file = "{{ openbao_tls_dir }}/openbao.crt"
+  tls_key_file  = "{{ openbao_tls_dir }}/openbao.key"
+}
+
+api_addr     = "https://{{ openbao_internal_name }}:{{ openbao_api_port }}"
+cluster_addr = "https://{{ openbao_internal_name }}:{{ openbao_cluster_port }}"

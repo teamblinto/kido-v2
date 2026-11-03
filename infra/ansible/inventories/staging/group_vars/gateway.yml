@@ -1,0 +1,106 @@
+---
+# The gateway pool's variables (T051).
+#
+# `gateway_env` below is the WHOLE environment forge-gateway is given. It is not merged with
+# `forge_app_env` and shares no key with it; `forge_app_env` is defined in group_vars/app.yml
+# and is not in scope on a gateway host at all. That is the structural half of the
+# credential-free guarantee. The asserts in gateway.yml are the mechanical half, and T048
+# checks the same property on the rendered environment.
+#
+# Read the list below and note what is absent: no DATABASE_URL of any kind, no REDIS_* URL, no
+# KEK_PROVIDER, no OPENBAO_ADDR or OPENBAO_TOKEN, no PLATFORM_API_KEY, no ANTHROPIC_API_KEY,
+# no DAYTONA_API_KEY. The gateway resolves routes and verifies grants against a PUBLIC JWKS
+# and reaches two narrow broker endpoints on the app pool over mTLS (§ 01, spec 022).
+
+gateway_network: forge-gateway
+gateway_config_dir: /etc/forge-gateway
+gateway_published_ports:
+  - '80:3200'
+  - '443:3200'
+
+# The API's public preview-signing key set. Public, but environment-specific, so it is kept
+# with the inventory's other environment values rather than in the play.
+gateway_preview_public_jwks: '{{ vault_preview_public_jwks }}'
+
+gateway_env:
+  DEPLOY_ENV: staging
+  PORT: '3200'
+  PREVIEW_DOMAIN: preview.staging.forge.dev
+  PRODUCT_ORIGIN: https://staging.forge.dev
+  # A PUBLIC verification key set. The gateway is verify-only: it can check a grant the API
+  # signed and cannot mint one.
+  PREVIEW_PUBLIC_JWKS: '{{ gateway_preview_public_jwks }}'
+  # mTLS to the app pool's two broker endpoints. A client identity, not a data-store
+  # credential: it authorises exactly the broker calls the app pool chooses to answer.
+  BROKER_TRANSPORT: mtls
+  BROKER_HOST: 'broker.{{ forge_internal_domain }}'
+  BROKER_PORT: '3001'
+  BROKER_TLS_CA: /etc/forge/mtls/ca.pem
+  BROKER_TLS_CERT: /etc/forge/mtls/client.pem
+  BROKER_TLS_KEY: /etc/forge/mtls/client-key.pem
+  ROUTE_CACHE_MAX: '1000'
+  ROUTE_CACHE_TTL_MS: '5000'
+  GATEWAY_UPSTREAM_TIMEOUT_MS: '30000'
+  GATEWAY_SOCKET_MAX_MS: '3600000'
+  GATEWAY_WAKE_BUDGET_MS: '90000'
+  # Deployed sites (spec 027 R11, ask-first item 1). A READ-ONLY key scoped to the artifacts
+  # bucket, which holds only content that is or was served publicly. It is not the app pool's
+  # OBJECT_STORE_* write key, and gateway.yml refuses a converge where it is (T096). The bucket
+  # must match group_vars/app.yml's OBJECT_STORE_BUCKET_ARTIFACTS.
+  SITE_DOMAIN: '{{ forge_site_domain }}'
+  ARTIFACT_STORE_ENDPOINT: '{{ vault_object_store_endpoint }}'
+  ARTIFACT_STORE_BUCKET: forge-staging-artifacts
+  ARTIFACT_STORE_ACCESS_KEY_ID: '{{ vault_artifact_store_read_access_key_id }}'
+  ARTIFACT_STORE_SECRET_ACCESS_KEY: '{{ vault_artifact_store_read_secret_access_key }}'
+  # Custom domains (spec 028 R15). The secret the edge adds to what it forwards for a tenant's
+  # hostname, at least 32 characters; requires SITE_DOMAIN above. Not a Cloudflare credential:
+  # CLOUDFLARE_API_TOKEN stays on the app pool, and gateway_forbidden_env_keys refuses it here.
+  EDGE_ORIGIN_SECRET: '{{ vault_edge_origin_secret }}'
+
+# The app pool's object-store WRITE key id, held here only to be compared against and never put
+# in `gateway_env`: gateway.yml asserts the gateway's ARTIFACT_STORE_ACCESS_KEY_ID differs from it
+# (spec 027 T096). A key id is an identifier, not the secret half.
+gateway_app_object_store_access_key_id: '{{ vault_object_store_access_key_id }}'
+
+# The app pool's write access to the object store, by name. None of it belongs on this pool; the
+# gateway reads sites with its own ARTIFACT_STORE_* key (spec 027 T096). Kept apart from
+# `gateway_forbidden_env_keys` because that list mirrors infra/deploy.sh's FORBIDDEN_ENV_KEYS
+# line for line; deploy.sh's T096 block makes the same refusal separately.
+gateway_forbidden_write_env_keys:
+  - OBJECT_STORE_
+
+# Checked as a prefix match, so a new variable cannot be introduced under an old family name
+# — DATABASE_URL_SOMETHING_NEW is caught by DATABASE_.
+gateway_forbidden_env_keys:
+  - DATABASE_
+  - POSTGRES_
+  - PGBOUNCER_
+  - REDIS_
+  - KEK_
+  - OPENBAO_
+  - VAULT_
+  - PLATFORM_API_KEY
+  - ANTHROPIC_
+  - OPENAI_
+  - DAYTONA_API_KEY
+  - GITHUB_APP_PRIVATE_KEY
+  - CLOUDFLARE_API_TOKEN
+  - SESSION_SECRET
+  - PREVIEW_SIGNING
+  - PREVIEW_PRIVATE
+
+# The key name is the easy half; this catches a connection string or a vault token smuggled in
+# under an innocent key.
+gateway_forbidden_env_values: >-
+  (postgres(ql)?://|redis(s)?://|amqp(s)?://|mysql://|mongodb(\+srv)?://|\b(s\.|hvs\.|bao_)[A-Za-z0-9]{16,})
+
+# "Hardened, no database client" is about the node as well as the environment: a psql on the
+# box is an invitation to do by hand what the rule forbids by design (§ 01).
+gateway_broker_tls_ca: '{{ vault_gateway_broker_tls_ca }}'
+gateway_broker_tls_cert: '{{ vault_gateway_broker_tls_cert }}'
+gateway_broker_tls_key: '{{ vault_gateway_broker_tls_key }}'
+
+gateway_forbidden_packages:
+  - postgresql-client
+  - redis-tools
+  - mysql-client

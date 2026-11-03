@@ -1,0 +1,17 @@
+{
+  "extends": "@repo/typescript-config/nest.json",
+  "compilerOptions": {
+    "allowJs": true,
+    "baseUrl": ".",
+    "outDir": "dist",
+    "types": ["node", "vitest/globals"]
+  },
+  // `src/**/*.mjs` is `modules/sandbox/dev-supervisor.mjs` (spec 023): plain Node, uploaded
+  // verbatim into a tenant sandbox and run by the node already there, so it is never compiled —
+  // `tsconfig.build.json` excludes it, and `nest-cli.json` copies it into `dist/` as an asset
+  // instead. It is in the program anyway so that `tsc --noEmit` reads it and eslint lints it
+  // against real type information rather than an inferred one. `allowJs` exists for that file
+  // alone; `checkJs` stays off, because its own types are JSDoc and its contract is `.d.mts`.
+  "include": ["src/**/*.ts", "src/**/*.mjs", "test/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

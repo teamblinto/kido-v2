@@ -1,0 +1,13 @@
+# {{ ansible_managed }}
+[Unit]
+Description=OpenBao Raft snapshot to the object store (runbook § 7)
+After=openbao.service
+Wants=openbao.service
+
+[Service]
+Type=oneshot
+User=openbao
+# Credentials for the snapshot bucket only. It is write-mostly from here by design: the
+# deployment can add a snapshot and cannot delete one (object lock lives on the bucket).
+EnvironmentFile={{ openbao_snapshot_env_file }}
+ExecStart={{ openbao_snapshot_script }} scheduled

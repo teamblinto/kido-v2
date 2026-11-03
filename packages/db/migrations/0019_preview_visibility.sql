@@ -1,0 +1,2 @@
+CREATE TYPE "public"."preview_visibility" AS ENUM('private', 'org', 'public');--> statement-breakpoint
+ALTER TABLE "projects" ADD COLUMN "preview_visibility" "preview_visibility" DEFAULT 'private' NOT NULL;

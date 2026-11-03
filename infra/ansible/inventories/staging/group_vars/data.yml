@@ -1,0 +1,35 @@
+---
+# The data pool's variables (T022, T023).
+
+openbao_packages:
+  - openbao
+  - awscli
+openbao_config_dir: /etc/openbao
+openbao_tls_dir: /etc/openbao/tls
+openbao_data_dir: /var/lib/openbao/data
+openbao_snapshot_dir: /var/lib/openbao/snapshots
+openbao_api_port: 8200
+openbao_cluster_port: 8201
+
+openbao_tls_cert: '{{ vault_openbao_tls_cert }}'
+openbao_tls_key: '{{ vault_openbao_tls_key }}'
+
+# --- snapshots (FR-020, runbook § 7) -----------------------------------------------------
+openbao_snapshot_script: /usr/local/sbin/openbao-snapshot
+openbao_snapshot_env_file: /etc/openbao/snapshot.env
+openbao_snapshot_token_file: /etc/openbao/snapshot.token
+# The runbook's § 7.2 timer, to the minute: daily at 03:15 UTC, Persistent=true so a node that
+# was down at 03:15 takes its snapshot when it comes back rather than skipping a day.
+# A snapshot is ALSO taken after any material change — data.yml's `openbao material change`
+# handler covers the one this play can make (a Raft peer added or removed); the other five
+# are performed by hand and the runbook's § 7.1 is the same script.
+openbao_snapshot_on_calendar: '*-*-* 03:15:00 UTC'
+
+# Outside the deployment it protects: a different provider from the data pool, not a different
+# bucket on it. data.yml refuses an endpoint that resolves into this fleet.
+openbao_snapshot_bucket: forge-openbao-snapshots
+openbao_snapshot_endpoint: https://s3.us-west-002.backblazeb2.com
+openbao_snapshot_region: us-west-002
+openbao_snapshot_token: '{{ vault_openbao_snapshot_token }}'
+openbao_snapshot_access_key_id: '{{ vault_openbao_snapshot_access_key_id }}'
+openbao_snapshot_secret_access_key: '{{ vault_openbao_snapshot_secret_access_key }}'

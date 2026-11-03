@@ -1,0 +1,369 @@
+name: production-monorepo
+
+# One image, two services, one env block (spec 013, research R7). `api` and `worker` build the
+# same `forge-app` image from the same Dockerfile; `RUN_PROFILES` alone decides what a process
+# does, so the environment is shared through this anchor and each service adds its profile set.
+x-app-env: &app-env
+  API_PREFIX: api
+  API_VERSION: 1
+  APP_URL: http://localhost:8080
+  CORS_ORIGINS: http://localhost:8080
+  DATABASE_MIGRATION_URL: postgres://forge_migrator:forge_migrator@postgres:5432/forge
+  DATABASE_URL: postgres://forge_app:forge_app@postgres:5432/forge
+  DATABASE_URL_BYPASS_RLS: postgres://forge_bypass:forge_bypass@postgres:5432/forge
+  # NODE_ENV is production because the runner image is a production build (deployed
+  # --prod, so pino-pretty is absent). DEPLOY_ENV says what this actually is: a local
+  # stack. Everything that must be refused on a real deployment keys on DEPLOY_ENV.
+  DEPLOY_ENV: local
+  # A local-only placeholder, not a secret: the schema refuses this value outside
+  # DEPLOY_ENV=local, because a deployment verifying with it verifies nothing (spec 026 R10).
+  GITHUB_WEBHOOK_SECRET: local-example-webhook-secret
+  HOST: 0.0.0.0
+  # The hooks origin (spec 029 US6): `local`'s default, spelled out because the edge reads it too.
+  HOOKS_HOST: hooks.localhost
+  # 32 zero bytes. A local-only placeholder, not a secret; a real deployment uses the
+  # OpenBao provider, which DEPLOY_ENV=staging|production makes mandatory.
+  #
+  # It is still set although KEK_PROVIDER is `openbao` below, and deliberately so: a usable
+  # env master key sitting right here is the fallback FR-023 forbids. The stack must refuse a
+  # secret store it cannot reach rather than quietly reach for this instead, and the ci.yml
+  # probe "A secret store it cannot reach is a refusal, not a fallback" asserts exactly that.
+  KEK_ENV_MASTER_KEY: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=
+  # `openbao` rather than `env` (025 research R4, T020): the compose stack exercises the
+  # provider a deployment uses, against the real transit mount the `openbao` service below
+  # brings up. A bare `pnpm dev` keeps `env` -- DEPLOY_ENV=local permits either, and
+  # `environment.ts` requires OPENBAO_ADDR and OPENBAO_TOKEN whenever this says `openbao`.
+  KEK_PROVIDER: openbao
+  LOG_LEVEL: info
+  MAIL_PROVIDER: console
+  NODE_ENV: production
+  # The in-container address of the `openbao` service and its development root token. The token
+  # is in plain sight because it is a development-mode fixture, not a credential: see the
+  # `openbao` service's comment. OPENBAO_KEY_NAME is left at its `forge-kek` default, which is
+  # the key the service creates.
+  OPENBAO_ADDR: http://openbao:8200
+  OPENBAO_TOKEN: forge-local-root-token
+  PORT: 3000
+  REDIS_CACHE_URL: redis://redis-cache:6379
+  REDIS_QUEUE_URL: redis://redis-queue:6379
+  REDIS_SESSION_URL: redis://redis-session:6379
+  REDIS_STREAM_URL: redis://redis-stream:6379
+  SWAGGER_ENABLED: 'true'
+  THROTTLE_LIMIT: 100
+  THROTTLE_TTL_MS: 60000
+
+# The same probe for both services: every process answers `GET /api/v1/health` on `HOST:PORT`
+# (the api through its full pipeline, a worker through its bare liveness listener), so one
+# healthcheck line is the whole contract (013 contracts § 3).
+x-app-healthcheck: &app-healthcheck
+  test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:3000/api/v1/health']
+  interval: 10s
+  timeout: 3s
+  retries: 5
+  start_period: 10s
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: forge-app
+    # Every store it needs, on `service_healthy` rather than `service_started`: `/api/v1/health`
+    # reports an indicator for each of them, so an api that starts first would spend its start
+    # period failing its own healthcheck for a reason that is not its own. `openbao` is on the
+    # same condition for a stronger reason -- its healthcheck is what proves `transit` is mounted
+    # and the key exists, and an api that reached for an unmounted transit would be a runtime
+    # failure rather than a boot order. `caddy` in turn waits on this one, which is what makes the
+    # startup order postgres + the four Redis roles + openbao -> api -> caddy.
+    depends_on:
+      openbao:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+      redis-session:
+        condition: service_healthy
+      redis-stream:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      RUN_PROFILES: api
+    expose:
+      - '3000'
+    healthcheck: *app-healthcheck
+    restart: unless-stopped
+
+  # The worker: the same image, no listener but the liveness probe, and the profiles that do
+  # work -- `agent` drains the run queues, `events` relays the outbox and drains the event
+  # queues, `cron` sweeps stalled runs. One service carrying all three here, because a local
+  # stack has one of everything; spec 023 lays the profiles out per pool. It waits on the same
+  # five stores as `api` and not on `api` itself (FR-023): the two share a database, not a
+  # dependency.
+  #
+  # `stop_grace_period` is §13's hard-kill budget verbatim (compose's default is 10 s): on
+  # SIGTERM the worker stops taking jobs and finishes the active ones; a run that has not
+  # reached a boundary within 120 s is killed and resumed elsewhere under a new lease epoch
+  # (spec 008).
+  worker:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: forge-app
+    depends_on:
+      openbao:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+      redis-session:
+        condition: service_healthy
+      redis-stream:
+        condition: service_healthy
+    environment:
+      <<: *app-env
+      RUN_PROFILES: 'agent,events,cron'
+      # The only service that may carry these (013 R10): a model and a sandbox are things a
+      # worker talks to, never the api. Uncomment and fill in to run real agent runs locally.
+      # ANTHROPIC_API_KEY: ''
+      # DAYTONA_API_URL: ''
+      # DAYTONA_API_KEY: ''
+    healthcheck: *app-healthcheck
+    restart: unless-stopped
+    stop_grace_period: 120s
+
+  # The edge (025 research R3, contracts § 3), replacing the nginx `web` service whose
+  # buffering held every run's stream until the run ended. `infra/Caddyfile` is the same file
+  # the app pool runs, so the local stack and a deployment cannot disagree about it (FR-016).
+  #
+  # No `build:`: there are two images to sign and promote, `forge-app` and `forge-gateway`, and
+  # the edge is not a third. The built single-page app is mounted instead, which means a local
+  # stack needs `pnpm --filter @repo/web... build` before `docker compose up` -- the `compose`
+  # job in ci.yml does exactly that.
+  caddy:
+    # Pinned by digest alongside the tag, like postgres and redis above: the tag stays
+    # readable, the digest is what is fetched (FR-006).
+    image: caddy:2-alpine@sha256:de23def33b17fb5d1290b0f6c2add1d70780e52341896c00a4c8a2a2fe9d355e
+    depends_on:
+      api:
+        condition: service_healthy
+    # The Caddyfile's `@hooks` matcher (spec 029 US6); the same value the api reads.
+    environment:
+      HOOKS_HOST: hooks.localhost
+    ports:
+      - '8080:8080'
+    restart: unless-stopped
+    volumes:
+      - ./infra/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./apps/web/dist:/srv:ro
+
+  # The local secret store (025 research R4 and R6, T019). It exists so the compose stack can
+  # exercise `KEK_PROVIDER=openbao` -- the provider a deployment actually uses -- against a real
+  # `transit` mount over HTTP, instead of only against the unit tests' injected `fetch`.
+  #
+  # ---------------------------------------------------------------------------------------------
+  # THIS IS NOT THE DEPLOYED SHAPE, and must never be copied towards one.
+  #
+  # Development mode: the storage backend is in memory and is lost on every restart, the vault is
+  # auto-unsealed and can never be sealed by an operator, and the root token is a fixed string
+  # written in this file in plain sight. It is a fixture, not a credential -- there is nothing in
+  # here but a transit key generated seconds ago for a throwaway stack.
+  #
+  # A deployment is the opposite of each of those: three Raft voters including a witness so the
+  # quorum survives losing a node, real unseal key shares split among holders and applied by hand,
+  # and a platform token scoped to `transit/encrypt/forge-kek` and `transit/decrypt/forge-kek`
+  # alone. That shape is `infra/ansible/data.yml` and `docs/runbooks/openbao.md` (FR-019 to
+  # FR-022). What this service proves is the wiring; it proves nothing whatever about the
+  # deployment.
+  # ---------------------------------------------------------------------------------------------
+  openbao:
+    # Pinned by digest alongside the tag, like every other upstream image here (FR-006).
+    image: openbao/openbao:2@sha256:11fd73a2102cda9c55d5d881a8c3210303146a7ec1e8ac76f526e175c6d24641
+    # The dev server still mlocks its memory, and refuses to start without the capability.
+    cap_add:
+      - IPC_LOCK
+    # `bao server -dev` mounts `kv`, not `transit`, so the mount and the key are made here once
+    # the server answers. Both match what `openbao-kek.provider.ts` and the runbook assume:
+    # the mount path is TRANSIT_MOUNT (`transit`) and the key is OPENBAO_KEY_NAME's default
+    # (`forge-kek`). `derived=true` is what makes the organisation id select a distinct data key
+    # inside the engine -- the provider sends `context` on every call and a non-derived key
+    # refuses it. `convergent_encryption` stays off, so two organisations holding the same data
+    # key do not produce the same ciphertext.
+    #
+    # The mount runs in a subshell that waits for the server to answer, and the server itself is
+    # `exec`ed so it is PID 1 and a SIGTERM stops the container rather than being absorbed by a
+    # shell. If either `bao` command fails the key never appears, the healthcheck below never
+    # passes, and `docker compose up --wait` fails -- which is the behaviour wanted, because an
+    # api pointed at a transit mount that is not there would fail later and further away.
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        (
+          until bao status >/dev/null 2>&1; do sleep 1; done
+          bao secrets enable -path=transit transit &&
+          bao write -f transit/keys/forge-kek derived=true convergent_encryption=false &&
+          echo 'openbao dev mode ready: transit mounted, forge-kek created (NOT a deployment)'
+        ) &
+        exec bao server -dev
+    environment:
+      # The address the CLI inside this container talks to, and the one the dev server listens
+      # on for `api` and `worker`. Plain HTTP: dev mode serves no TLS, which is one more reason
+      # this shape is local-only.
+      BAO_ADDR: http://127.0.0.1:8200
+      BAO_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+      BAO_DEV_ROOT_TOKEN_ID: forge-local-root-token
+      BAO_TOKEN: forge-local-root-token
+    # Reading the transit key back, rather than `bao status`: status answers as soon as the dev
+    # server is up, which is before the mount and the key exist. `api` waits on this condition,
+    # so a healthy `openbao` means the exact endpoint the provider posts to is there.
+    healthcheck:
+      test: ['CMD-SHELL', 'bao read -field=name transit/keys/forge-kek']
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+    # Not published to the host: nothing outside the stack has any business talking to it, and
+    # the ci.yml probes reach it through `docker compose exec` instead.
+    expose:
+      - '8200'
+    restart: unless-stopped
+
+  postgres:
+    # Pinned by digest alongside the tag so a local stack and a deployed one resolve
+    # the same bytes; the tag stays readable, the digest is what is fetched (FR-006).
+    image: postgres:16-alpine@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea
+    environment:
+      POSTGRES_DB: forge
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U postgres -d forge']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    ports:
+      - '5432:5432'
+    restart: unless-stopped
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/postgres/init-roles.sql:/docker-entrypoint-initdb.d/10-init-roles.sql:ro
+
+  # Four Redis instances rather than four databases on one, because their eviction policies
+  # are mutually contradictory: one instance cannot be both noeviction and allkeys-lru (§09).
+  redis-session:
+    # All four Redis roles share one pinned digest — same image, different policies.
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    # noeviction, because an eviction here signs a user out -- a "cache miss" with a very
+    # different meaning. AOF so a restart does not do the same thing.
+    command:
+      [
+        'redis-server',
+        '--maxmemory',
+        '256mb',
+        '--maxmemory-policy',
+        'noeviction',
+        '--appendonly',
+        'yes',
+      ]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - '6379:6379'
+    restart: unless-stopped
+    volumes:
+      - redis-session-data:/data
+
+  redis-cache:
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    # allkeys-lru and no persistence: everything here is reconstructible from Postgres.
+    command:
+      [
+        'redis-server',
+        '--maxmemory',
+        '256mb',
+        '--maxmemory-policy',
+        'allkeys-lru',
+        '--appendonly',
+        'no',
+        '--save',
+        '',
+      ]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - '6380:6379'
+    restart: unless-stopped
+
+  redis-queue:
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    # noeviction, because evicting a job key silently loses work: the outbox has already marked
+    # the event published and will never send it again (§09). AOF so a restart does not do the
+    # same thing; `everysec` is the Redis default and is stated anyway, because §09's row says
+    # so and a default is not a statement.
+    command:
+      [
+        'redis-server',
+        '--maxmemory',
+        '256mb',
+        '--maxmemory-policy',
+        'noeviction',
+        '--appendonly',
+        'yes',
+        '--appendfsync',
+        'everysec',
+      ]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - '6381:6379'
+    restart: unless-stopped
+    volumes:
+      - redis-queue-data:/data
+
+  redis-stream:
+    image: redis:7-alpine@sha256:858f009f9709ce576febc734aa78b8f6d624b82571f9ddb6bda4377c833b3499
+    # noeviction, because a stream that is capped by MAXLEN must not also be trimmed by memory
+    # pressure -- and its own instance, because a run's stream must not share the queue's memory
+    # ceiling. No persistence: every entry is replayable from Postgres, so a loss here costs live
+    # tails only (§09).
+    command:
+      [
+        'redis-server',
+        '--maxmemory',
+        '256mb',
+        '--maxmemory-policy',
+        'noeviction',
+        '--appendonly',
+        'no',
+        '--save',
+        '',
+      ]
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - '6382:6379'
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+  redis-queue-data:
+  redis-session-data:

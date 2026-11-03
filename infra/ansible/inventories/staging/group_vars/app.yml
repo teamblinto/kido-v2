@@ -1,0 +1,91 @@
+---
+# The app pool's variables. Nothing in this file is in scope on a gateway or daytona host:
+# Ansible scopes group_vars to the group in the filename, and neither pool is a child of `app`.
+
+forge_network: forge
+forge_config_dir: /etc/forge
+forge_web_root: /srv/forge-web
+forge_caddy_ports:
+  - '80:80'
+  - '443:443'
+  - '443:443/udp'
+
+forge_web_assets_url: >-
+  https://assets.staging.forge.internal/web/{{ forge_app_digest | replace('sha256:', '') }}.tar.gz
+
+# The api's and worker's shared environment. DEPLOY_ENV=staging is what makes
+# environment.ts refuse KEK_PROVIDER=env, which is why the data pool's OpenBao has to exist
+# before this pool can boot at all (research R6).
+forge_app_env:
+  API_PREFIX: api
+  API_VERSION: '1'
+  APP_URL: https://staging.forge.dev
+  CORS_ORIGINS: https://staging.forge.dev
+  DEPLOY_ENV: staging
+  HOST: 0.0.0.0
+  LOG_LEVEL: info
+  NODE_ENV: production
+  PORT: '3000'
+
+  DATABASE_URL: '{{ vault_database_url }}'
+  DATABASE_MIGRATION_URL: '{{ vault_database_migration_url }}'
+  DATABASE_URL_BYPASS_RLS: '{{ vault_database_url_bypass_rls }}'
+
+  REDIS_CACHE_URL: 'redis://redis.{{ forge_internal_domain }}:6379'
+  REDIS_QUEUE_URL: 'redis://redis.{{ forge_internal_domain }}:6380'
+  REDIS_SESSION_URL: 'redis://redis.{{ forge_internal_domain }}:6381'
+  REDIS_STREAM_URL: 'redis://redis.{{ forge_internal_domain }}:6382'
+
+  # The secret store the data pool deploys. Exactly the four names
+  # docs/runbooks/openbao.md § 5.4 tells the operator to set, and the transit mount is the
+  # `TRANSIT_MOUNT = 'transit'` constant openbao-kek.provider.ts already assumes.
+  KEK_PROVIDER: openbao
+  OPENBAO_ADDR: 'https://openbao.{{ forge_internal_domain }}:8200'
+  OPENBAO_KEY_NAME: forge-kek
+  OPENBAO_TOKEN: '{{ vault_openbao_token }}'
+
+  # The object store: spec 018's repository mirror and spec 027's artifacts bucket, one endpoint
+  # and one WRITE key, all five or none and required outside DEPLOY_ENV=local. The gateway pool
+  # reads the artifacts bucket with a different, read-only key; gateway.yml refuses a converge
+  # where the two key ids are equal (spec 027 T096). The bucket names must match
+  # group_vars/gateway.yml's ARTIFACT_STORE_BUCKET.
+  OBJECT_STORE_ENDPOINT: '{{ vault_object_store_endpoint }}'
+  OBJECT_STORE_ACCESS_KEY_ID: '{{ vault_object_store_access_key_id }}'
+  OBJECT_STORE_SECRET_ACCESS_KEY: '{{ vault_object_store_secret_access_key }}'
+  OBJECT_STORE_BUCKET_REPOS: forge-staging-repos
+  OBJECT_STORE_BUCKET_ARTIFACTS: forge-staging-artifacts
+
+  # Deployed sites' parent domain (spec 027 R10); the gateway serves the same one. A registrable
+  # domain of its own -- the api refuses one equal to, under or above APP_URL's host or
+  # PREVIEW_DOMAIN -- and it belongs on the Public Suffix List (ADR 053).
+  SITE_DOMAIN: '{{ forge_site_domain }}'
+
+  # The inbound webhook origin (spec 029 US6, contracts/hooks-origin.md). Its own hostname, never
+  # APP_URL's; the edge serves only the provider routes on it. Retire the product-host address
+  # with WEBHOOK_LEGACY_ADDRESS=false once the GitHub App points here and one delivery has arrived.
+  HOOKS_HOST: REPLACE-ME.hooks.staging.forge.example
+  WEBHOOK_LEGACY_ADDRESS: 'true'
+
+  # Custom domains (spec 028 R15). The platform's Cloudflare for SaaS zone: the token, zone and
+  # CNAME target are all three or none. The token needs only "SSL and Certificates: Edit" on that
+  # zone and is held by the api and worker alone -- never the gateway pool (FR-032). The target
+  # must not equal, sit under or sit above APP_URL's host, PREVIEW_DOMAIN or SITE_DOMAIN. The two
+  # REPLACE-ME values are placeholders an operator sets for the real zone.
+  CLOUDFLARE_API_TOKEN: '{{ vault_cloudflare_api_token }}'
+  CLOUDFLARE_ZONE_ID: REPLACE-ME-staging-saas-zone-id
+  CUSTOM_HOSTNAME_TARGET: REPLACE-ME.edge.staging.forge.example
+  CUSTOM_HOSTNAME_CA: lets_encrypt
+  DNS_RESOLVERS: 1.1.1.1,8.8.8.8
+  RESERVED_DOMAINS: ''
+
+  # Baked into the image at build and re-stated here so GET /api/v1/version can be checked
+  # against the digest that was asked for (contracts § 4).
+  BUILD_DIGEST: '{{ forge_app_digest }}'
+
+# Only the worker may hold these: a model and a sandbox are things a worker talks to, never
+# the api (spec 013 R10). They are merged into the worker's environment in app.yml and
+# nowhere else.
+forge_app_worker_env:
+  ANTHROPIC_API_KEY: '{{ vault_anthropic_api_key }}'
+  DAYTONA_API_URL: 'https://daytona-1.{{ forge_internal_domain }}:3986'
+  DAYTONA_API_KEY: '{{ vault_daytona_api_key }}'

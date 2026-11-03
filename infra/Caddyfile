@@ -1,0 +1,104 @@
+# The edge. One file for the local compose stack and for the app pool (025 FR-016,
+# research R3, contracts § 3), replacing `apps/web/nginx.conf`, whose behaviour is
+# inventoried item by item in
+# `docs/specs/025-platform-delivery/checklists/nginx-behaviour.md`. Every item there is
+# reproduced below except one: nginx buffers the run stream, and that is the bug this
+# file exists to close.
+#
+# The site is the built single-page app mounted at /srv, not baked into an image: there
+# are two images to sign and promote, `forge-app` and `forge-gateway`, and the edge is
+# not a third. `compose.yaml` mounts `apps/web/dist`, so a local stack needs
+# `pnpm --filter @repo/web... build` before `docker compose up`.
+{
+	# No TLS at this layer. The edge is plain HTTP on 8080 and terminates nothing --
+	# compose publishes 8080:8080 and both APP_URL and CORS_ORIGINS are
+	# http://localhost:8080, so the port is part of the contract (CHK001.1, CHK005.5).
+	# Without this Caddy would try to provision a certificate and bind 443.
+	auto_https off
+
+	# Nothing administers this process over HTTP; it is reconfigured by changing this
+	# file in the repository.
+	admin off
+}
+
+:8080 {
+	# Compression for the types nginx declared -- Caddy's `encode` defaults cover
+	# text/*, application/json, application/javascript and image/svg+xml (CHK001.5).
+	encode gzip
+
+	# The hooks origin (spec 029 US6, contracts/hooks-origin.md § Edge), before every other
+	# handle: on HOOKS_HOST the only thing served is an inbound provider route, rewritten onto
+	# the api's one path for it, and everything else is a 404 here. `reverse_proxy` keeps the
+	# original Host, so the api's HooksHostMiddleware sees HOOKS_HOST too. A provider without a
+	# verifier has no `handle` here and no route there.
+	@hooks host {$HOOKS_HOST}
+	handle @hooks {
+		handle /github {
+			rewrite * /api/v1/webhooks/github
+			reverse_proxy api:3000
+		}
+		respond 404
+	}
+
+	# `handle` blocks are mutually exclusive and are evaluated in the order written, so
+	# this is the explicit precedence nginx got from prefix matching: the stream first,
+	# then the rest of the API, then the hashed assets, then the app (CHK005.1).
+
+	# The stream, and only the stream: flush every write straight through rather than
+	# collecting a response body (FR-013). `run.controller.ts` declares
+	# `@Controller({ path: 'orgs/:orgId/projects/:projectId/runs', version: '1' })` with
+	# `@Get(':runId/stream')`, so the served path is
+	# /api/v1/orgs/{orgId}/projects/{projectId}/runs/{runId}/stream; Caddy's `path` glob
+	# crosses `/`, so this matches it and nothing else the API serves.
+	#
+	# Caddy sets no response timeout of its own, which is the other half of FR-014: a
+	# run is minutes long and spec 009 heartbeats every 15 s, so nothing here caps the
+	# connection's life. `flush_interval -1` alone would not be enough on nginx.
+	@stream path /api/v1/*/stream
+	handle @stream {
+		reverse_proxy api:3000 {
+			flush_interval -1
+		}
+	}
+
+	# Everything else under /api keeps exactly what nginx.conf gave it. No `header`
+	# block here, and that omission is load-bearing (CHK002.7): the API sends its own
+	# helmet headers and an edge that added its own would duplicate them. Caddy's
+	# reverse_proxy already forwards the client's Host and appends X-Forwarded-For,
+	# -Host and -Proto, which is the set the API's `trust proxy`, throttler and absolute
+	# URLs read (CHK002.2 to CHK002.6).
+	handle /api/* {
+		reverse_proxy api:3000
+	}
+
+	root * /srv
+
+	# Hashed build output: one year, immutable, because every file here carries a
+	# content hash in its name. No `try_files` -- a missing asset is a 404 and must
+	# never become index.html, so a stale client fails loudly after a deploy instead of
+	# being served an HTML document where it asked for JavaScript (CHK003.6).
+	handle /assets/* {
+		header {
+			Cache-Control "public, max-age=31536000, immutable"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "SAMEORIGIN"
+		}
+		file_server
+	}
+
+	# The single-page app. index.html must never be cached, or a deploy leaves clients
+	# requesting asset hashes that no longer exist (CHK004.1). An existing file is served
+	# first; anything else reaches the client router rather than a 404 (CHK004.6,
+	# CHK004.7).
+	handle {
+		header {
+			Cache-Control "no-cache"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "SAMEORIGIN"
+		}
+		try_files {path} {path}/ /index.html
+		file_server
+	}
+}

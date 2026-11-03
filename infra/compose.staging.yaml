@@ -1,0 +1,144 @@
+# The staging app pool (spec 025, contracts § 2). Rendered and started by `infra/deploy.sh staging
+# <digest>`, never by hand: the digest arrives from the deploy's argument, which arrived from the
+# release run that built it.
+#
+# What is *not* here is as deliberate as what is. There is no `build:` anywhere -- staging runs the
+# artifact the release workflow published, and a stack that can rebuild its own images is a stack
+# that can quietly run something no one signed (FR-003). There is no Postgres and no Redis either:
+# on staging those live on the data pool, and their addresses arrive as environment variables from
+# the host's own environment file rather than being written into a file in the repository.
+name: forge-staging
+
+# Every value that is a credential or an address is named here and valued nowhere in this
+# repository: compose reads each one from the environment of the deploy that starts the stack. A
+# missing one is an unset variable in the container rather than a plausible-looking default that
+# happens to point at the wrong database.
+x-app-env: &app-env
+  - API_PREFIX=api
+  - API_VERSION=1
+  - DEPLOY_ENV=staging
+  - HOST=0.0.0.0
+  - NODE_ENV=production
+  - PORT=3000
+  # The digest this deploy was asked for. The image cannot carry its own digest -- baking it in
+  # would change the hash it names -- so `infra/deploy.sh` renders it in here, and its last step
+  # cross-checks the answer `GET /api/v1/version` gives against the image the daemon reports the
+  # container is actually running (FR-007).
+  - BUILD_DIGEST=${FORGE_APP_DIGEST:?the forge-app digest is rendered by infra/deploy.sh}
+  - APP_URL
+  - CORS_ORIGINS
+  - DATABASE_MIGRATION_URL
+  - DATABASE_URL
+  - DATABASE_URL_BYPASS_RLS
+  - KEK_PROVIDER
+  - LOG_LEVEL
+  - MAIL_PROVIDER
+  - OPENBAO_ADDR
+  - OPENBAO_TOKEN
+  - REDIS_CACHE_URL
+  - REDIS_QUEUE_URL
+  - REDIS_SESSION_URL
+  - REDIS_STREAM_URL
+  - THROTTLE_LIMIT
+  - THROTTLE_TTL_MS
+  # The object store (spec 018's repos bucket, spec 027's artifacts bucket): all five or none,
+  # and required outside DEPLOY_ENV=local. This is the WRITE key; the gateway's read key below
+  # must be a different one, and `infra/deploy.sh` refuses the render if it is not (spec 027 T096).
+  - OBJECT_STORE_ENDPOINT
+  - OBJECT_STORE_ACCESS_KEY_ID
+  - OBJECT_STORE_SECRET_ACCESS_KEY
+  - OBJECT_STORE_BUCKET_REPOS
+  - OBJECT_STORE_BUCKET_ARTIFACTS
+  # Deployed sites' parent domain (spec 027 R10), required outside DEPLOY_ENV=local. The api and
+  # the gateway read the same variable, so the addresses the api hands out are the ones served.
+  - SITE_DOMAIN
+  # The inbound webhook origin (spec 029 US6), required outside DEPLOY_ENV=local and distinct from
+  # APP_URL's host. The edge below reads the same value for its `@hooks` matcher.
+  - HOOKS_HOST
+  - WEBHOOK_LEGACY_ADDRESS
+  # Custom domains (spec 028 R15). The platform's Cloudflare for SaaS registration: the token, zone
+  # and CNAME target are all three or none. The token is a platform credential held by the api and
+  # the worker alone, never the gateway (FR-032); `infra/deploy.sh` refuses a render that gives the
+  # gateway one.
+  - CLOUDFLARE_API_TOKEN
+  - CLOUDFLARE_ZONE_ID
+  - CLOUDFLARE_API_URL
+  - CUSTOM_HOSTNAME_TARGET
+  - CUSTOM_HOSTNAME_CA
+  - DNS_RESOLVERS
+  - RESERVED_DOMAINS
+
+x-app-healthcheck: &app-healthcheck
+  test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:3000/api/v1/health']
+  interval: 10s
+  timeout: 3s
+  retries: 5
+  start_period: 10s
+
+services:
+  # `@${FORGE_APP_DIGEST}` and not `:${FORGE_APP_TAG}`: the reference is already an `@` form, so a
+  # tag substituted here cannot produce a valid image reference and the render fails rather than
+  # pulling whatever that tag points at today (FR-002). `deploy.sh` refuses a non-digest argument
+  # before it ever gets this far; this is the second of the two, kept because the file is also read
+  # by people.
+  api:
+    image: ${FORGE_APP_IMAGE:?rendered by infra/deploy.sh}@${FORGE_APP_DIGEST:?rendered by infra/deploy.sh}
+    environment: *app-env
+    expose:
+      - '3000'
+    healthcheck: *app-healthcheck
+    restart: unless-stopped
+
+  # The same image and the same digest, distinguished only by `RUN_PROFILES` -- one artifact, two
+  # roles (spec 013 research R7). `stop_grace_period` is §13's hard-kill budget: on SIGTERM the
+  # worker finishes its active runs, and one that has not reached a boundary in 120s is killed and
+  # resumed elsewhere.
+  worker:
+    image: ${FORGE_APP_IMAGE:?rendered by infra/deploy.sh}@${FORGE_APP_DIGEST:?rendered by infra/deploy.sh}
+    environment: *app-env
+    healthcheck: *app-healthcheck
+    restart: unless-stopped
+    stop_grace_period: 120s
+
+  # The second published artifact, deployed on its own digest. It carries no database URL, no
+  # platform API key and no secret-store token, and nothing in its environment block could give it
+  # one -- §01's hard rule, which T048 turns into an assertion rather than a comment.
+  gateway:
+    image: ${FORGE_GATEWAY_IMAGE:?rendered by infra/deploy.sh}@${FORGE_GATEWAY_DIGEST:?rendered by infra/deploy.sh}
+    environment:
+      - NODE_ENV=production
+      - BROKER_TRANSPORT
+      - PORT
+      - PREVIEW_DOMAIN
+      # Deployed sites (spec 027 R11). A READ-ONLY key scoped to the artifacts bucket -- content
+      # that is or was served publicly -- never the api's OBJECT_STORE_* write key. All five or
+      # none; without SITE_DOMAIN the gateway serves previews only.
+      - SITE_DOMAIN
+      - ARTIFACT_STORE_ENDPOINT
+      - ARTIFACT_STORE_BUCKET
+      - ARTIFACT_STORE_ACCESS_KEY_ID
+      - ARTIFACT_STORE_SECRET_ACCESS_KEY
+      # Custom domains (spec 028 R15). The shared secret the edge adds to what it forwards for a
+      # tenant's hostname; unset, the gateway serves no custom hostname. It is not a Cloudflare
+      # credential: the gateway still holds no database URL and no Cloudflare token (FR-032).
+      - EDGE_ORIGIN_SECRET
+    expose:
+      - '3200'
+    restart: unless-stopped
+
+  # The same `infra/Caddyfile` the local stack runs, so a deployment and a laptop cannot disagree
+  # about the edge (FR-016). The built single-page app is mounted from the host, where the deploy
+  # places it; the edge is not a third image to sign.
+  caddy:
+    image: caddy:2-alpine@sha256:de23def33b17fb5d1290b0f6c2add1d70780e52341896c00a4c8a2a2fe9d355e
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      - HOOKS_HOST
+    ports:
+      - '8080:8080'
+    restart: unless-stopped
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ${FORGE_WEB_ROOT:-/srv/forge/web}:/srv:ro

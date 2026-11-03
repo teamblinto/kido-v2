@@ -1,0 +1,398 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1786617044857,
+      "tag": "0000_freezing_catseye",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1786682759397,
+      "tag": "0001_auth_tables",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1786682774028,
+      "tag": "0002_rls_policies",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1786682775165,
+      "tag": "0003_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1786700161000,
+      "tag": "0004_rls_null_tenant",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1786943081029,
+      "tag": "0005_wandering_whirlwind",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1786943081030,
+      "tag": "0006_workspace_members_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1787040000000,
+      "tag": "0007_memberships_self_read",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789310388657,
+      "tag": "0008_special_inhumans",
+      "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789310400000,
+      "tag": "0009_outbox_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789381107540,
+      "tag": "0010_open_mentallo",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789381200000,
+      "tag": "0011_run_events_partitioned",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789465054176,
+      "tag": "0012_sandboxes",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1789583987393,
+      "tag": "0013_sandbox_lifecycle",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1789584087393,
+      "tag": "0014_sandbox_pool_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1789617449004,
+      "tag": "0015_template_versions",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1789617549004,
+      "tag": "0016_template_versions_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1789628767217,
+      "tag": "0017_checkpoints",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1789628775756,
+      "tag": "0018_checkpoints_are_append_only",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1789701424365,
+      "tag": "0019_preview_visibility",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1789932792285,
+      "tag": "0020_connectors",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1789932792286,
+      "tag": "0021_connectors_are_tenant_owned",
+      "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1789935215172,
+      "tag": "0022_a_disconnected_link_outlives_its_connection",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1789936553195,
+      "tag": "0023_a_sync_operation_outlives_its_link",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1789936553196,
+      "tag": "0024_a_set_null_that_keeps_the_tenant",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1789972697198,
+      "tag": "0025_provider_keys",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1789972697199,
+      "tag": "0026_provider_keys_are_tenant_owned",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1789987432819,
+      "tag": "0027_project_context_and_run_summary",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1789987432820,
+      "tag": "0028_project_context_is_tenant_owned",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1789987432822,
+      "tag": "0029_a_person_s_save_is_a_checkpoint",
+      "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1789987432823,
+      "tag": "0030_an_edit_names_its_author_and_no_run",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1790092081641,
+      "tag": "0031_mute_thunderball",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1790092081642,
+      "tag": "0032_webhook_deliveries_grants",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1790102281636,
+      "tag": "0033_deploys",
+      "breakpoints": true
+    },
+    {
+      "idx": 34,
+      "version": "7",
+      "when": 1790102281637,
+      "tag": "0034_deploys_are_tenant_owned",
+      "breakpoints": true
+    },
+    {
+      "idx": 35,
+      "version": "7",
+      "when": 1790134415605,
+      "tag": "0035_domains",
+      "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "7",
+      "when": 1790134415606,
+      "tag": "0036_domains_are_tenant_owned",
+      "breakpoints": true
+    },
+    {
+      "idx": 37,
+      "version": "7",
+      "when": 1790139204180,
+      "tag": "0037_domains_claimed_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "7",
+      "when": 1790147115994,
+      "tag": "0038_webhook_endpoints",
+      "breakpoints": true
+    },
+    {
+      "idx": 39,
+      "version": "7",
+      "when": 1790147124167,
+      "tag": "0039_webhook_endpoints_are_tenant_owned",
+      "breakpoints": true
+    },
+    {
+      "idx": 40,
+      "version": "7",
+      "when": 1790172744300,
+      "tag": "0040_connector_providers",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "7",
+      "when": 1790172892491,
+      "tag": "0041_connector_bindings",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "7",
+      "when": 1790172901491,
+      "tag": "0042_connector_bindings_are_tenant_owned",
+      "breakpoints": true
+    },
+    {
+      "idx": 43,
+      "version": "7",
+      "when": 1790172911491,
+      "tag": "0043_one_holder_per_project",
+      "breakpoints": true
+    },
+    {
+      "idx": 44,
+      "version": "7",
+      "when": 1790188798048,
+      "tag": "0044_project_invitations",
+      "breakpoints": true
+    },
+    {
+      "idx": 45,
+      "version": "7",
+      "when": 1790188799048,
+      "tag": "0045_project_invitations_and_grant_self_read",
+      "breakpoints": true
+    },
+    {
+      "idx": 46,
+      "version": "7",
+      "when": 1790188800048,
+      "tag": "0046_an_edit_is_the_only_actor_row_without_a_cause",
+      "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1790218282916,
+      "tag": "0047_byos",
+      "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "7",
+      "when": 1790218290610,
+      "tag": "0048_byos_grants_and_platform_table",
+      "breakpoints": true
+    },
+    {
+      "idx": 49,
+      "version": "7",
+      "when": 1790222608867,
+      "tag": "0049_run_credential_choice",
+      "breakpoints": true
+    },
+    {
+      "idx": 50,
+      "version": "7",
+      "when": 1793632954194,
+      "tag": "0050_local_agent",
+      "breakpoints": true
+    },
+    {
+      "idx": 51,
+      "version": "7",
+      "when": 1793632962182,
+      "tag": "0051_local_agent_runs_are_tenant_owned",
+      "breakpoints": true
+    },
+    {
+      "idx": 52,
+      "version": "7",
+      "when": 1793637845797,
+      "tag": "0052_local_agent_runs_permission_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 53,
+      "version": "7",
+      "when": 1793645824939,
+      "tag": "0053_local_agent_runs_tool_mode",
+      "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1793648569301,
+      "tag": "0054_agent_homes",
+      "breakpoints": true
+    },
+    {
+      "idx": 55,
+      "version": "7",
+      "when": 1793653643766,
+      "tag": "0055_agent_homes_start_times",
+      "breakpoints": true
+    }
+  ]
+}

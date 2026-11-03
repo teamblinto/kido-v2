@@ -1,0 +1,53 @@
+-- Let a user read their own membership rows outside a tenant transaction (§09, §11).
+--
+-- Hand-written for the reason 0002 gives: drizzle-kit diffs tables, columns, keys and indexes, and
+-- a policy is none of those. `src/schema/rls.spec.ts` asserts this clause directly, so it cannot be
+-- lost in a regeneration and cannot be widened without a test saying so.
+--
+-- ## Why one table needs a second axis
+--
+-- Every other read in this system derives its organisation from the resource being touched (§11),
+-- so `app.org_id` is always known before the query runs. "Which organisations am I in?" is the one
+-- question in the product that cannot work that way: it is rooted at a person, spans every tenant
+-- they belong to, and the answer is what tells a client which organisation to ask about next. Under
+-- the 0004 predicate alone the request path answers it with zero rows, forever.
+--
+-- The two other ways out were both worse. Routing it through `forge_bypass` puts a request-path
+-- query on the connection that sees every tenant and leaves a `WHERE user_id = $1` as the only
+-- thing between one account and another's organisations -- the opposite of §09's "row-level security
+-- makes a guard bug a non-event rather than a breach", and against the choice ADR 015 already made
+-- for invitations ("this keeps acceptance inside the policy instead of routing it around it through
+-- forge_bypass"). Making `memberships` a root table is not available either: it carries `org_id`
+-- and is the edge every tenant-owned join hangs off.
+--
+-- So the read stays inside the policy, and the policy learns the only other identity the request
+-- has already proven: the session's user.
+--
+-- ## What this does and does not widen
+--
+-- USING only. `WITH CHECK` is untouched and still `org_id`-only, so nothing here lets a row be
+-- written, moved or stamped outside a tenant -- a membership is still created only inside the
+-- organisation it belongs to.
+--
+-- One table only, and one column of it. `app.user_id` appears in no other policy, so a transaction
+-- carrying it and no `app.org_id` reads the caller's own membership rows and *nothing else*: every
+-- other tenant-owned table still answers zero rows, because their predicates never mention it.
+--
+-- It is also still exactly one policy on this table, which is what `rls.spec.ts` requires. ALTER
+-- rather than a second permissive policy, so the whole predicate is readable in one place instead
+-- of being the union of two that have to be read together.
+--
+-- NULLIF is 0004's, for 0004's reason, and it is what makes this safe on a pooled connection: a
+-- transaction-scoped set reverts the *value* at commit -- to the empty string, not to
+-- non-existence -- so without it every later query on that backend would compare against `''::uuid`
+-- and raise 22P02. With it, "no user in scope" collapses onto NULL and the clause is simply never
+-- true. `apps/api/src/database/tenant-transaction.ts` is the only place that sets it, and sets it
+-- transaction-scoped.
+--
+-- The index this finally uses has been there since 0000: `memberships_user_id_idx` on `(user_id)`
+-- alone, which is the only query shape in the schema that could ever have wanted it.
+
+ALTER POLICY "tenant_isolation" ON "memberships"
+  USING      (org_id  = nullif(current_setting('app.org_id',  true), '')::uuid
+           or user_id = nullif(current_setting('app.user_id', true), '')::uuid)
+  WITH CHECK (org_id  = nullif(current_setting('app.org_id',  true), '')::uuid);

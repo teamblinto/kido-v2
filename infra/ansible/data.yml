@@ -1,0 +1,241 @@
+---
+# The data pool (spec 025 · T022, T023 · research R6, R9 · architecture § 01).
+#
+# THREE OpenBao Raft voters, and three is structural rather than incidental:
+#
+#   * `openbao_raft_voters` is asserted to be exactly 3 before a byte of configuration is
+#     written, so a two-node data group fails this play at its first task rather than
+#     producing a cluster whose quorum is two;
+#   * the witness is named explicitly and must be present and must carry
+#     `openbao_raft_role: witness`, so it cannot be dropped from the inventory quietly;
+#   * every node's `retry_join` list is derived from the whole `data` group, so the peers are
+#     whatever the inventory says and never a hand-maintained list.
+#
+# § 01: "Two OpenBao Raft voters have a quorum of two, so losing either node takes the secret
+# store — and therefore every tenant credential, and therefore every run — offline. The third
+# data-plane node exists for that vote; it can be small, because it stores nothing."
+#
+# What this play does NOT do, deliberately: initialise, split the unseal keys, unseal, mount
+# `transit`, create `forge-kek`, write the `forge-platform` policy or issue the platform token.
+# Those are docs/runbooks/openbao.md § 2–§ 5, performed by people with the key holders present
+# (FR-021, FR-022). Automating them would put the shares somewhere a machine can reach, which
+# is the failure the split exists to prevent. This play delivers three nodes that are
+# installed, configured, running and sealed, ready for § 2.
+
+- name: Data pool — OpenBao on Raft, three voters
+  hosts: data
+  become: true
+  # Every node checks the topology for itself, so a converge that touches one node still
+  # refuses a pool that has lost its third voter.
+  strategy: linear
+
+  vars:
+    openbao_raft_voters: "{{ groups['data'] | length }}"
+
+  handlers:
+    # A material change (runbook § 7) is: mounting or unmounting a secrets engine, creating or
+    # rotating forge-kek, editing forge-platform, issuing or revoking the platform token,
+    # adding or removing a Raft peer. The last of those is the one this play can make, so it
+    # notifies this handler and a snapshot is taken after the change rather than only at 03:15.
+    - name: Snapshot OpenBao after a material change
+      ansible.builtin.command:
+        cmd: '{{ openbao_snapshot_script }} material-change'
+      changed_when: true
+      listen: openbao material change
+
+    - name: Restart OpenBao
+      ansible.builtin.systemd_service:
+        name: openbao
+        state: restarted
+        daemon_reload: true
+      listen: openbao config changed
+
+  tasks:
+    - name: Refuse a data pool that cannot hold a quorum of two failures apart
+      # The whole point of the pool. Three voters, an odd number; a two-voter cluster has a
+      # quorum of two and dies with either node (§ 01, FR-019).
+      ansible.builtin.assert:
+        that:
+          - openbao_raft_voters | int == 3
+          - groups['data'] | length == 3
+        fail_msg: >-
+          The data pool must have exactly three OpenBao Raft voters, not
+          {{ openbao_raft_voters }}. Two voters have a quorum of two, so losing either takes
+          the secret store — and every tenant credential — offline (architecture § 01,
+          research R6). Add the witness back to inventories/{{ forge_environment }}/hosts.yml.
+        success_msg: "Three Raft voters: {{ groups['data'] | join(', ') }}"
+
+    - name: Refuse a pool whose third voter is not a declared witness
+      # Three nodes of which two are witnesses, or none, is not the topology § 01 specifies.
+      ansible.builtin.assert:
+        that:
+          - >-
+            groups['data']
+            | map('extract', hostvars, 'openbao_raft_role')
+            | select('equalto', 'witness') | list | length == 1
+          - >-
+            groups['data']
+            | map('extract', hostvars, 'openbao_raft_role')
+            | select('equalto', 'voter') | list | length == 2
+        fail_msg: >-
+          Exactly one data node must declare openbao_raft_role: witness and two must declare
+          voter. The witness votes and stores nothing; it is not optional (§ 01).
+
+    - name: Ensure the openbao system user
+      ansible.builtin.user:
+        name: openbao
+        system: true
+        shell: /usr/sbin/nologin
+        home: '{{ openbao_data_dir }}'
+        create_home: false
+
+    - name: Install bao and the snapshot shipper
+      ansible.builtin.package:
+        name: '{{ openbao_packages }}'
+        state: present
+
+    - name: Create OpenBao's directories
+      ansible.builtin.file:
+        path: '{{ item.path }}'
+        state: directory
+        owner: openbao
+        group: openbao
+        mode: '{{ item.mode }}'
+      loop:
+        - { path: '{{ openbao_config_dir }}', mode: '0750' }
+        - { path: '{{ openbao_tls_dir }}', mode: '0750' }
+        - { path: '{{ openbao_data_dir }}', mode: '0700' }
+        - { path: '{{ openbao_snapshot_dir }}', mode: '0700' }
+
+    - name: Install the listener TLS material
+      # Real certificates, always. There is no insecure variant: the DEK crosses this
+      # connection, and the constitution forbids a switch that relaxes transport security
+      # (runbook § 1).
+      ansible.builtin.copy:
+        content: '{{ item.content }}'
+        dest: '{{ openbao_tls_dir }}/{{ item.name }}'
+        owner: openbao
+        group: openbao
+        mode: '{{ item.mode }}'
+      loop:
+        - { name: openbao.crt, content: '{{ openbao_tls_cert }}', mode: '0644' }
+        - { name: openbao.key, content: '{{ openbao_tls_key }}', mode: '0600' }
+      loop_control:
+        label: '{{ item.name }}'
+      no_log: true
+      notify: openbao config changed
+
+    - name: Render openbao.hcl — Raft, and every other voter as a retry_join peer
+      ansible.builtin.template:
+        src: openbao.hcl.j2
+        dest: '{{ openbao_config_dir }}/openbao.hcl'
+        owner: openbao
+        group: openbao
+        mode: '0640'
+        validate: '/usr/bin/bao operator diagnose -config=%s -skip=listener || true'
+      register: openbao_config
+      notify:
+        - openbao config changed
+        # Adding or removing a Raft peer is a material change; the peer list lives in this
+        # file, so a change to it is the signal (runbook § 7).
+        - openbao material change
+
+    - name: Install the OpenBao unit
+      ansible.builtin.template:
+        src: openbao.service.j2
+        dest: /etc/systemd/system/openbao.service
+        owner: root
+        group: root
+        mode: '0644'
+      notify: openbao config changed
+
+    # --- T023 · snapshots -------------------------------------------------------------
+    # On a schedule AND after any material change, stored outside the deployment they
+    # protect (FR-020, runbook § 7).
+
+    - name: Install the snapshot script
+      ansible.builtin.template:
+        src: openbao-snapshot.sh.j2
+        dest: '{{ openbao_snapshot_script }}'
+        owner: root
+        group: openbao
+        mode: '0750'
+
+    - name: Install the snapshot token
+      # `read` on sys/storage/raft/snapshot and nothing else (runbook § 7.2). Not the platform
+      # token, not root: a snapshot job that could also decrypt is a snapshot job worth
+      # stealing.
+      ansible.builtin.copy:
+        content: '{{ openbao_snapshot_token }}'
+        dest: '{{ openbao_snapshot_token_file }}'
+        owner: openbao
+        group: openbao
+        mode: '0400'
+      no_log: true
+
+    - name: Install the snapshot destination credentials
+      # Write-mostly credentials for a bucket at a different provider, account and region
+      # from this pool. Object-locked and versioned there, so a compromised data node can add
+      # a snapshot and cannot remove one (§ 16).
+      ansible.builtin.copy:
+        content: |
+          OPENBAO_SNAPSHOT_BUCKET={{ openbao_snapshot_bucket }}
+          OPENBAO_SNAPSHOT_ENDPOINT={{ openbao_snapshot_endpoint }}
+          AWS_ACCESS_KEY_ID={{ openbao_snapshot_access_key_id }}
+          AWS_SECRET_ACCESS_KEY={{ openbao_snapshot_secret_access_key }}
+          AWS_DEFAULT_REGION={{ openbao_snapshot_region }}
+        dest: '{{ openbao_snapshot_env_file }}'
+        owner: openbao
+        group: openbao
+        mode: '0400'
+      no_log: true
+
+    - name: Refuse a snapshot destination inside the deployment it protects
+      # FR-020's "stored outside the deployment they protect", checked rather than intended:
+      # the endpoint may not be any host in this fleet.
+      ansible.builtin.assert:
+        that:
+          - openbao_snapshot_endpoint is not search(forge_internal_domain | regex_escape)
+          - openbao_snapshot_endpoint is not search(inventory_hostname | regex_escape)
+        fail_msg: >-
+          openbao_snapshot_endpoint ({{ openbao_snapshot_endpoint }}) resolves into this
+          deployment. A snapshot stored on the thing it restores is not a backup (FR-020,
+          runbook § 1).
+
+    - name: Install the snapshot service and timer
+      ansible.builtin.template:
+        src: '{{ item }}.j2'
+        dest: '/etc/systemd/system/{{ item }}'
+        owner: root
+        group: root
+        mode: '0644'
+      loop:
+        - openbao-snapshot.service
+        - openbao-snapshot.timer
+      notify: openbao config changed
+
+    - name: Start OpenBao — sealed, awaiting the runbook's § 2 and § 4
+      ansible.builtin.systemd_service:
+        name: openbao
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Enable the daily snapshot timer
+      ansible.builtin.systemd_service:
+        name: openbao-snapshot.timer
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Flush handlers so a peer change is snapshotted before this play ends
+      ansible.builtin.meta: flush_handlers
+
+    - name: Report where the unseal has to be done by a person
+      ansible.builtin.debug:
+        msg: >-
+          {{ inventory_hostname }} ({{ openbao_raft_role }}) is running and sealed. Three
+          voters: {{ groups['data'] | join(', ') }}. Initialise, split the keys among the three
+          holders and unseal with docs/runbooks/openbao.md § 2–§ 4; mount transit and issue the
+          platform token with § 5. Nothing here does that for you, and that is deliberate
+          (FR-021, FR-022).

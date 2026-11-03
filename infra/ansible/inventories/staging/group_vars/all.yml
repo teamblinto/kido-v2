@@ -1,0 +1,17 @@
+---
+# Variables every pool shares. Deliberately small: the app pool's environment and the gateway
+# pool's environment have NO variable in common, so there is nothing here that could carry a
+# credential onto a gateway or daytona node (§ 01's first hard rule, FR-031).
+
+# Set by infra/deploy.sh from the digest a person typed and cosign verified (contracts § 2).
+# There is no default, on purpose: a converge without a digest fails rather than picking one.
+forge_app_repository: ghcr.io/teamblinto/forge-app
+forge_gateway_repository: ghcr.io/teamblinto/forge-gateway
+
+# Pinned by digest like every other image in the tree (FR-006).
+# Both digests were resolved live against registry-1.docker.io on 2026-09-22 and are the
+# index each tag pointed at then; the tag stays readable and the digest is what is fetched.
+forge_caddy_image: >-
+  caddy:2-alpine@sha256:de23def33b17fb5d1290b0f6c2add1d70780e52341896c00a4c8a2a2fe9d355e
+forge_node_exporter_image: >-
+  prom/node-exporter:v1.8.2@sha256:4032c6d5bfd752342c3e631c2f1de93ba6b86c41db6b167b9a35372c139e7706

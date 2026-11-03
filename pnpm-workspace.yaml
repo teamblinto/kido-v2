@@ -1,0 +1,106 @@
+packages:
+  - apps/*
+  - packages/*
+
+allowBuilds:
+  '@scarf/scarf': false
+  esbuild: true
+  # bullmq -> msgpackr's optional native accelerator. Its postinstall only probes for a prebuilt
+  # binary (shipped as platform optionalDependencies) and would fall back to node-gyp; msgpackr
+  # is pure JS without it, and a job payload is a few hundred bytes, so nothing is gained.
+  msgpackr-extract: false
+  # Only ever run under Node in `vitest`, where the interceptors are installed in-process. Its
+  # postinstall copies a service worker into a public directory for browser use, which this
+  # workspace has no use for and would then have to gitignore.
+  msw: false
+
+catalog:
+  '@anthropic-ai/sdk': 0.125.0
+  openai: 7.20.0
+  '@aws-sdk/client-s3': 3.1134.0
+  '@eslint/js': 10.0.1
+  '@fontsource-variable/geist': 5.3.0
+  '@nestjs/cli': 11.0.24
+  '@nestjs/common': 11.1.29
+  '@nestjs/config': 4.0.4
+  '@nestjs/core': 11.1.29
+  '@nestjs/platform-express': 11.1.29
+  '@nestjs/swagger': 11.4.6
+  '@nestjs/terminus': 11.1.1
+  '@nestjs/testing': 11.1.29
+  '@nestjs/throttler': 6.5.0
+  # 2.1.0 exists but was published 2026-08-13, inside pnpm's minimum-release-age window;
+  # pinning it would mean widening minimumReleaseAgeExclude. See ADR 013.
+  '@node-rs/argon2': 2.0.2
+  '@tailwindcss/vite': 4.3.3
+  '@tanstack/react-query': 5.101.4
+  '@testing-library/jest-dom': 6.9.1
+  '@testing-library/react': 16.3.2
+  '@testing-library/user-event': 14.6.4
+  '@types/compression': 1.8.1
+  '@types/cookie-parser': 1.4.10
+  '@types/node': 26.2.0
+  '@types/pg': 8.21.0
+  '@types/react': 19.2.18
+  '@types/react-dom': 19.2.4
+  '@types/supertest': 7.2.0
+  '@vitejs/plugin-react': 6.0.5
+  # Kept in lockstep with `vitest` below: the coverage provider is versioned with the runner, and a
+  # mismatched pair fails at `--coverage` — the one command T12's acceptance gate depends on.
+  '@vitest/coverage-v8': 4.1.10
+  '@zxcvbn-ts/core': 4.2.0
+  '@zxcvbn-ts/language-common': 4.1.3
+  '@zxcvbn-ts/language-en': 4.1.1
+  bullmq: 6.3.4
+  class-variance-authority: 0.7.1
+  clsx: 2.1.1
+  compression: 1.8.1
+  cookie-parser: 1.4.7
+  dependency-cruiser: 18.2.0
+  drizzle-kit: 0.31.10
+  drizzle-orm: 0.45.2
+  eslint: 10.8.1
+  eslint-config-prettier: 10.1.8
+  eslint-plugin-react-hooks: 7.1.1
+  eslint-plugin-react-refresh: 0.5.4
+  globals: 17.10.0
+  helmet: 8.3.0
+  highlight.js: 11.12.0
+  input-otp: 1.4.2
+  ioredis: 6.0.0
+  jose: 6.2.8
+  jsdom: 30.0.1
+  lucide-react: 1.31.0
+  msw: 2.15.0
+  nestjs-pino: 4.6.1
+  otpauth: 9.5.1
+  pg: 8.23.0
+  pino-http: 11.0.0
+  pino-pretty: 13.1.3
+  prettier: 3.9.6
+  qrcode.react: 4.2.0
+  radix-ui: 1.6.7
+  react: 19.2.8
+  react-dom: 19.2.8
+  react-router-dom: 7.18.2
+  reflect-metadata: 0.2.2
+  rxjs: 7.8.2
+  supertest: 7.2.2
+  tailwind-merge: 3.6.0
+  tailwindcss: 4.3.3
+  tsup: 8.5.1
+  turbo: 2.10.9
+  tw-animate-css: 1.4.0
+  typescript: 5.9.3
+  typescript-eslint: 8.67.0
+  vite: 8.2.1
+  vitest: 4.1.10
+  zod: 4.4.3
+
+injectWorkspacePackages: true
+
+minimumReleaseAgeExclude:
+  - globals@17.10.0
+  - '@aws-sdk/client-s3@3.1134.0'
+
+sharedWorkspaceLockfile: true
