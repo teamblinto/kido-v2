@@ -39,10 +39,12 @@ Daytona's wire protocol, so the API's adapter just points `DAYTONA_API_URL` at i
   DNATs to the edge container on a `10.x` network; `firewall.sh` accepts that DNAT'd path for the
   allowed ports (443) before its private-range denies.
 - Secrets: the API key is the file `/etc/sandboxd/api_key` (`SANDBOXD_API_KEY_FILE`; the worker reads
-  the same file as `DAYTONA_API_KEY_FILE`). The preview secret is generated into `/var/lib/sandboxd`.
-- The worker stays under userns-remap: it is non-root and reads the key through supplementary gid
-  3986, which dockerd maps to host gid (dockremap subgid base + 3986); `host-setup.sh` chowns the key
-  file (`0640`, not `0600`) to that gid. The api does not read the key. Only sandboxd runs in the
+  the same file as `DAYTONA_API_KEY_FILE`, and so does the api in the VPS overlay, whose preview
+  broker asks sandboxd for each route's upstream). The preview secret is generated into
+  `/var/lib/sandboxd`.
+- The worker (and the overlay's api) stay under userns-remap: non-root, they read the key through
+  supplementary gid 3986, which dockerd maps to host gid (dockremap subgid base + 3986);
+  `host-setup.sh` chowns the key file (`0640`, not `0600`) to that gid. Only sandboxd runs in the
   host user namespace.
 
 ## Deploy (single 8 GB VPS, Ubuntu 24.04)
@@ -93,8 +95,8 @@ are not production-hardened, and the real deployment path is `infra/ansible`:
   compose network);
 - the gateway uses the plain broker over a shared network namespace, not mTLS. It therefore sits
   in the api's network namespace: a gateway compromise reaches everything the api can (the stores,
-  the broker, sandboxd's control port). If the api container restarts on its own, the gateway is
-  left in the dead namespace and turns unhealthy: `docker compose restart gateway`;
+  the broker, sandboxd's control port). If the api container is recreated or restarts, the gateway is
+  left in the dead namespace and turns unhealthy: `docker compose up -d gateway`;
 - no object store is configured unless you add `OBJECT_STORE_*`, so features that need one
   (repository mirrors, deployed sites, some checkpoint artifacts) are unavailable;
 - there are no backups and no replication.

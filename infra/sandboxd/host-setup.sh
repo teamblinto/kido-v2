@@ -25,7 +25,7 @@ YES=0 FORCE=0 DATA_DISK="" LOOP_SIZE=40G DATA_ROOT=/var/lib/docker-sbx SWAP_SIZE
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOOP_IMG=/var/lib/sbx-xfs.img
 DAEMON=/etc/docker/daemon.json
-SANDBOXD_GID=3986 # group that may read /etc/sandboxd/api_key (compose group_add on the worker)
+SANDBOXD_GID=3986 # group that may read /etc/sandboxd/api_key (compose group_add: worker, VPS overlay api)
 
 while (($#)); do
   case "$1" in

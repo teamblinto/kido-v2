@@ -81,11 +81,15 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-    environment:
-      &vps-app-env # An exact Claude Code version for agent homes, never `stable`: what runs is what we chose.
+    # AGENT_HOME_CLAUDE_VERSION: an exact Claude Code version, never `stable`: what runs is what
+    # we chose. DAYTONA_*: the preview broker in this process asks sandboxd for each route's
+    # signed upstream, so the api needs sandboxd and its key too (read like the worker reads it).
+    environment: &vps-app-env
       AGENT_HOME_CLAUDE_VERSION: ${AGENT_HOME_CLAUDE_VERSION:?pin an exact x.y.z in .env}
       APP_URL: https://${APP_HOST:?}
       CORS_ORIGINS: https://${APP_HOST:?}
+      DAYTONA_API_KEY_FILE: /run/secrets/sandboxd_api_key
+      DAYTONA_API_URL: http://172.30.2.1:3986
       HOOKS_HOST: ${HOOKS_HOST:?}
       PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:?}
       PREVIEW_SIGNING_KEY: ${PREVIEW_SIGNING_KEY:?}
@@ -93,9 +97,14 @@ services:
       # A project sandbox reaches this through the host's public address (Docker DNATs it to the
       # edge); firewall.sh accepts exactly that path (SBX_HOST_ALLOW_TCP).
       SANDBOX_CALLBACK_URL: https://${APP_HOST:?}/api/v1/internal/sandbox-callbacks
+    # The key file is 0640 to host gid <dockremap subgid base>+3986 (host-setup.sh), as for the
+    # worker.
+    group_add: ['3986']
     # The gateway shares this container's network namespace, so it reaches the plain broker
     # (127.0.0.1:3001) and sandboxd's preview listener on sbx-ctl through this container.
     networks: [default, sbx-ctl]
+    secrets:
+      - sandboxd_api_key
 
   worker:
     depends_on:
@@ -114,7 +123,7 @@ services:
   # When the api container is recreated or restarts, the gateway is left in the old, dead
   # namespace: `restart: true` re-creates it on compose-driven api restarts, and the healthcheck
   # (the api's health on the shared loopback) turns it unhealthy otherwise; then
-  # `docker compose restart gateway`.
+  # `docker compose up -d gateway`.
   gateway:
     build:
       context: .
