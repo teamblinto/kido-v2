@@ -256,8 +256,9 @@ Residual risk stated plainly: agent-home credentials are readable by anyone with
   injected as `HTTP_PROXY`/`HTTPS_PROXY`/`NO_PROXY` plus `NODE_USE_ENV_PROXY=1` (Node's global
   `fetch` ignores `HTTP_PROXY` without it — affects `dev-supervisor.mjs` callbacks and the
   companion). Policy is looked up by source IP → sandbox → class/policy:
-  - agent home: Anthropic endpoints Claude Code needs (API, claude.ai login, console; exact list
-    measured in the spike), the BAIOS API host. When `network-settings` sets an allow-list (041's
+  - agent home: the Anthropic hosts Claude Code needs (`api.anthropic.com`, `claude.ai`,
+    `platform.claude.com`; measured, see `infra/sandboxd/README.md` "Agent-home egress"), the
+    BAIOS API host. When `network-settings` sets an allow-list (041's
     `AGENT_HOME_EGRESS_ALLOW_CIDRS`), it **replaces** the default — "only these", as today
     (`agent-home.service.ts:790`); fail-closed `applyEgress` is unchanged.
   - project / build: not proxied — they use the open, filtered route on `sbx-proj` above.

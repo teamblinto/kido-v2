@@ -154,6 +154,33 @@ sandboxd is never in that stack (its own Ansible play, its own host); its enviro
 credential either (the key is a file), and deploy.sh is pinned byte-for-byte by `check-fr038.sh`. Release does not publish a sandboxd
 image yet; `forge_sandboxd_image` must be one built from `apps/sandboxd/Dockerfile`.
 
+## Agent-home egress
+
+Agent homes have no route out except sandboxd's egress proxy, which admits only
+`SANDBOXD_API_HOST` (the BAIOS api) and `SANDBOXD_EGRESS_AGENT_DEFAULT`, by default:
+
+| Host                  | Why                                                                                                          |
+| --------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `api.anthropic.com`   | Claude API, feature flags, telemetry events. Measured: the only host Claude Code 2.1.311 contacted (below).  |
+| `platform.claude.com` | OAuth token exchange, refresh and revocation, also for claude.ai accounts (Anthropic's network-config docs). |
+| `claude.ai`           | claude.ai account authentication (same docs).                                                                |
+
+Sources: [code.claude.com/docs/en/network-config](https://code.claude.com/docs/en/network-config.md)
+("Network access requirements"), and a measurement on the test VPS (2026-11-03): in an agent home
+from the published `agent-home` template, `claude --version`, `claude auth login` (only until it
+printed its sign-in URL; nothing was entered) and `claude -p hi` without credentials opened 7
+tunnels, all to `api.anthropic.com:443`, and none was refused. The sign-in URL itself is
+`claude.com/cai/oauth/authorize` with `redirect_uri=https://platform.claude.com/oauth/code/callback`;
+`claude.com` and `sso.claude.com` are opened by the person's own browser, not by the CLI.
+
+Deliberately not allowed: `statsig.anthropic.com` and `console.anthropic.com` (the old defaults; not
+in Anthropic's list, not contacted, and statsig does not resolve), the Datadog telemetry intakes
+(optional, disabled by failing closed), `downloads.claude.ai` (the binary is baked into the image
+and `DISABLE_AUTOUPDATER=1`), `mcp-proxy.anthropic.com` (claude.ai connectors; homes only use
+`mcp__baios__*` tools), plugin and marketplace hosts. **Not yet verified:** a full sign-in plus one
+real turn, which needs a person with a real subscription; if it is refused, the refused host is in
+sandboxd's log as `egress refused` with its reason.
+
 ## Capacity and operations
 
 - sandboxd idles at about 40 MiB; its `mem_limit` is 768 MiB because a 64 MiB upload is buffered

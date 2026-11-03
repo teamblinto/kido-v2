@@ -97,12 +97,7 @@ describe('loadConfig', () => {
       minMemAvailableBytes: 1024 * 1024 * 1024,
       storageQuota: false,
       imageAllow: [],
-      egressAgentDefault: [
-        'api.anthropic.com',
-        'claude.ai',
-        'console.anthropic.com',
-        'statsig.anthropic.com',
-      ],
+      egressAgentDefault: ['api.anthropic.com', 'claude.ai', 'platform.claude.com'],
     });
     expect(c.previewSecret.length).toBeGreaterThanOrEqual(32);
     expect(loadConfig(env).previewSecret.equals(c.previewSecret)).toBe(true);

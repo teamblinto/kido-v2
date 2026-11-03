@@ -139,11 +139,13 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     minMemAvailableBytes: positiveInt(env, 'SANDBOXD_MIN_MEM_AVAILABLE_MB', 1024) * 1024 * 1024,
     imageAllow: list(env.SANDBOXD_IMAGE_ALLOW),
     apiHost: env.SANDBOXD_API_HOST ?? '',
+    // Claude Code's documented hosts a hosted home needs (code.claude.com/docs/en/network-config:
+    // API + flags + telemetry events, claude.ai sign-in, OAuth token exchange/refresh), and the
+    // only ones it was seen to contact (infra/sandboxd/README.md "Agent-home egress").
     egressAgentDefault: list(env.SANDBOXD_EGRESS_AGENT_DEFAULT, [
       'api.anthropic.com',
       'claude.ai',
-      'console.anthropic.com',
-      'statsig.anthropic.com',
+      'platform.claude.com',
     ]),
     storageQuota: env.SANDBOXD_STORAGE_QUOTA === '1',
     dns: dnsList(env.SANDBOXD_DNS),
