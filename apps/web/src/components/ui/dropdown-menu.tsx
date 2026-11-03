@@ -19,8 +19,14 @@ function DropdownMenuContent({
         className={cn(
           'bg-raised border-line shadow-popover z-50 overflow-hidden rounded-xl border',
           'max-h-(--radix-dropdown-menu-content-available-height) overflow-y-auto',
+          // Grows out of its trigger (Radix's computed origin) and drifts in from that side.
+          'origin-(--radix-dropdown-menu-content-transform-origin)',
           'data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=closed]:zoom-out-95',
+          'data-[state=closed]:ease-exit data-[state=closed]:duration-(--duration-fast)',
           'data-[state=open]:animate-in data-[state=open]:fade-in-0 data-[state=open]:zoom-in-95',
+          'data-[state=open]:ease-standard data-[state=open]:duration-(--duration-base)',
+          'data-[side=bottom]:slide-in-from-top-1 data-[side=top]:slide-in-from-bottom-1',
+          'data-[side=left]:slide-in-from-right-1 data-[side=right]:slide-in-from-left-1',
           className,
         )}
         {...props}

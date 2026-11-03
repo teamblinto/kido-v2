@@ -158,6 +158,16 @@
   --shadow-palette: 0 18px 48px -8px rgb(8 18 15 / 0.28);
   --shadow-modal: 0 20px 56px -10px rgb(8 18 15 / 0.3);
 
+  /*
+   * Motion. Short and soft: things arrive with `ease-standard` and settle, nothing bounces.
+   * `ease-standard` / `ease-exit` are utilities; the durations live in `:root` below and are used
+   * as `duration-(--duration-base)`. Tailwind's bare `transition` takes the same defaults.
+   */
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-exit: cubic-bezier(0.4, 0, 1, 1);
+  --default-transition-duration: 150ms;
+  --default-transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+
   --animate-caret-blink: caret-blink 1.25s ease-out infinite;
   --animate-breathe: breathe 2s ease-in-out infinite;
 
@@ -205,6 +215,27 @@
   /* One consistent focus treatment across every interactive surface. */
   :focus-visible {
     @apply outline-ring outline-2 outline-offset-2;
+  }
+
+  /*
+   * A light fade as a screen arrives. `#root`'s child is the routed page (the providers render no
+   * element), so a navigation to another page mounts a new one and plays this once. Opacity only,
+   * and `backwards` rather than `both`: a lingering transform would trap the page's fixed layers.
+   */
+  #root > * {
+    animation: route-in var(--duration-base) var(--ease-standard) backwards;
+  }
+}
+
+:root {
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --duration-slow: 320ms;
+}
+
+@keyframes route-in {
+  from {
+    opacity: 0;
   }
 }
 

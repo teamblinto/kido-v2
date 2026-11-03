@@ -32,7 +32,7 @@ function TabsTrigger({
     <TabsPrimitive.Trigger
       data-slot="tabs-trigger"
       className={cn(
-        'text-body-sm text-faint hover:text-subdued shrink-0 rounded-sm whitespace-nowrap transition-colors',
+        'text-body-sm text-faint hover:text-subdued shrink-0 rounded-sm whitespace-nowrap transition-colors duration-(--duration-fast)',
         'data-[state=active]:text-label-sm data-[state=active]:text-foreground data-[state=active]:font-medium',
         className,
       )}
@@ -48,7 +48,11 @@ function TabsContent({
   return (
     <TabsPrimitive.Content
       data-slot="tabs-content"
-      className={cn('outline-none', className)}
+      // The panel a tab reveals fades in; switching tabs never slides content about.
+      className={cn(
+        'data-[state=active]:animate-in data-[state=active]:fade-in-0 data-[state=active]:duration-(--duration-base) outline-none',
+        className,
+      )}
       {...props}
     />
   );

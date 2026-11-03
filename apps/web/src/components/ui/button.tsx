@@ -6,7 +6,8 @@ import { cn } from '@/lib/utils';
 const buttonVariants = cva(
   cn(
     'inline-flex shrink-0 items-center justify-center gap-2 rounded-lg font-medium whitespace-nowrap',
-    'text-label-md transition-colors outline-none',
+    // `transition` takes the motion tokens' defaults; the press is a 2% dip, not a bounce.
+    'text-label-md transition duration-(--duration-fast) outline-none active:scale-[0.98]',
     'disabled:pointer-events-none disabled:opacity-60',
     "[&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-4",
   ),
