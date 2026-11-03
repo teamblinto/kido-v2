@@ -21,6 +21,7 @@ on, so that one 8 GB VPS can serve ~10 people building at once and more hosts ca
 ## 2. Goals, non-goals, anti-goals
 
 Goals
+
 - G1. Every sandbox operation BAIOS uses today works on Docker: create/start/stop/remove, labels,
   exec, files (list/info/download/upload/find/search), long-lived sessions, template images,
   per-port preview with an upstream token, egress allow-list.
@@ -33,12 +34,14 @@ Goals
 - G5. Clear path to N hosts without re-architecture.
 
 Non-goals
+
 - No Kubernetes, Nomad, or Firecracker/Kata in this spec (§12 says when to revisit).
 - No change to the agent runtime, run streaming, leases, checkpoints, preview gateway logic, or the
   web app beyond what the swap needs.
 - No new product features (terminals, PTY UI, per-org billing quotas).
 
 Anti-goals (failure even if it "works")
+
 - BAIOS collecting, storing, relaying or reading anyone's Claude credentials or `setup-token`
   output; modifying the `claude` binary; using the Agent SDK with subscription login.
 - The API process (or anything reachable from a sandbox) holding the Docker socket.
@@ -61,6 +64,7 @@ Source: https://code.claude.com/docs/en/legal-and-compliance.md
 - Agent SDK docs: no claude.ai login for third-party products "unless previously approved".
 
 Consequences for this design
+
 - The agent home runs the published `claude` binary, pinned, `DISABLE_AUTOUPDATER=1` (unchanged from
   041). Credentials live only in that home's own filesystem (`CLAUDE_CONFIG_DIR`). No BAIOS code,
   sandboxd included, reads `.credentials.json` or the keychain. (T3 Code's
@@ -81,12 +85,13 @@ The API talks to Daytona through one hand-written REST client (`daytona.adapter.
 zod-validated in `daytona.schemas.ts`), referenced by 14 non-spec files and faked at the HTTP level
 by `test/support/fake-daytona.ts` for ~30 specs.
 
-**Decision:** build `apps/sandboxd`, a small Node service that implements *the subset of the Daytona
-v0.190 REST + toolbox API that `daytona.adapter.ts` calls*, backed by the Docker Engine API. The API
+**Decision:** build `apps/sandboxd`, a small Node service that implements _the subset of the Daytona
+v0.190 REST + toolbox API that `daytona.adapter.ts` calls_, backed by the Docker Engine API. The API
 keeps its adapter, its port, its tests and its fake; the URL it points at changes, plus the small
 API edits listed in §14a.
 
 Why
+
 - Smallest diff in the API: no call-site rewrites, no test rewrites beyond config (image names).
 - Parity is provable: the existing `*-real` suites (`sandbox-real`, `sandbox-lifecycle-real`,
   `checkpoints-real`, `agent-real`, gateway `preview-real`) already exercise a real Daytona by URL;
@@ -100,6 +105,7 @@ fake; **no Daytona source is copied or read for implementation.** The Daytona-de
 `daytonaio/sandbox:0.5.0-slim` is replaced by our own base image (§7).
 
 Alternatives considered and dropped
+
 - Rewrite `SANDBOX_PORT`/adapter around a new vendor-neutral provider interface: cleaner names, but
   touches ~9 injection sites and ~30 specs for no behavioural gain. Renaming (`daytona_id` → `sandbox_id`
   etc.) is a later cosmetic follow-up.
@@ -148,31 +154,31 @@ Metadata Docker can't mutate (labels, snapshot name, network policy, auto-archiv
 `node:sqlite` DB (built into Node 24, no dependency) on a host volume; Docker is the source of truth
 for runtime state.
 
-| Daytona call used by the adapter | sandboxd implementation |
-|---|---|
-| `POST /sandbox` (snapshot, labels, autoArchiveInterval) | `docker create` from the image tagged by snapshot name, class-specific runtime/limits (§7–8); start now if capacity allows, else return state `starting` and start it from a FIFO queue when capacity frees (§12); DTO incl. `toolboxProxyUrl` (sandboxd's own toolbox base) and `runnerId` (= nodeId) |
-| `GET /sandbox/{id}` | `docker inspect` → map to Daytona states (`started/stopped/starting/stopping/error/archived`) |
-| `POST …/start`, `POST …/stop` | `docker start` / `docker stop -t 10` (disk persists) |
-| `DELETE /sandbox/{id}` | `docker rm -f`, drop metadata |
-| `PUT …/labels`, list by labels | sqlite |
-| `POST …/snapshot {name}` | `docker commit` → tag `forge-snap/<name>` (see §7 for why commit works under gVisor) |
-| `GET/DELETE /snapshots/{name}` | `docker image inspect` / `docker rmi` |
-| `GET …/ports/{port}/signed-preview-url` | mint HMAC token (sandbox, port, exp) → return sandboxd preview URL + token (§10) |
-| `POST …/network-settings {allowList, blockAll}` | store policy; egress proxy enforces it per source IP (§9) |
-| toolbox `process/execute` (cmd, cwd, timeout) | `docker exec` as the sandbox user, merged output, hard timeout kills the exec'd process group |
-| toolbox `process/session/{id}/exec`, `DELETE session` | detached `docker exec` tracked by session id; stop = kill its process group |
-| toolbox files: list / info / download / upload / find / search, workDir, realpath(s) | performed **inside** the container via `docker exec` (stat/cat/`tee` from stdin/find/rg/realpath). The container is the jail; sandboxd never touches tenant files from the host side (avoids host-side symlink escapes) |
+| Daytona call used by the adapter                                                     | sandboxd implementation                                                                                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `POST /sandbox` (snapshot, labels, autoArchiveInterval)                              | `docker create` from the image tagged by snapshot name, class-specific runtime/limits (§7–8); start now if capacity allows, else return state `starting` and start it from a FIFO queue when capacity frees (§12); DTO incl. `toolboxProxyUrl` (sandboxd's own toolbox base) and `runnerId` (= nodeId) |
+| `GET /sandbox/{id}`                                                                  | `docker inspect` → map to Daytona states (`started/stopped/starting/stopping/error/archived`)                                                                                                                                                                                                          |
+| `POST …/start`, `POST …/stop`                                                        | `docker start` / `docker stop -t 10` (disk persists)                                                                                                                                                                                                                                                   |
+| `DELETE /sandbox/{id}`                                                               | `docker rm -f`, drop metadata                                                                                                                                                                                                                                                                          |
+| `PUT …/labels`, list by labels                                                       | sqlite                                                                                                                                                                                                                                                                                                 |
+| `POST …/snapshot {name}`                                                             | `docker commit` → tag `forge-snap/<name>` (see §7 for why commit works under gVisor)                                                                                                                                                                                                                   |
+| `GET/DELETE /snapshots/{name}`                                                       | `docker image inspect` / `docker rmi`                                                                                                                                                                                                                                                                  |
+| `GET …/ports/{port}/signed-preview-url`                                              | mint HMAC token (sandbox, port, exp) → return sandboxd preview URL + token (§10)                                                                                                                                                                                                                       |
+| `POST …/network-settings {allowList, blockAll}`                                      | store policy; egress proxy enforces it per source IP (§9)                                                                                                                                                                                                                                              |
+| toolbox `process/execute` (cmd, cwd, timeout)                                        | `docker exec` as the sandbox user, merged output, hard timeout kills the exec'd process group                                                                                                                                                                                                          |
+| toolbox `process/session/{id}/exec`, `DELETE session`                                | detached `docker exec` tracked by session id; stop = kill its process group                                                                                                                                                                                                                            |
+| toolbox files: list / info / download / upload / find / search, workDir, realpath(s) | performed **inside** the container via `docker exec` (stat/cat/`tee` from stdin/find/rg/realpath). The container is the jail; sandboxd never touches tenant files from the host side (avoids host-side symlink escapes)                                                                                |
 
 Response shapes must satisfy `daytona.schemas.ts` exactly; anything the adapter doesn't read is
 omitted. Unknown endpoints return 404.
 
 ## 7. Container classes and images
 
-| Class | Who creates it | Runtime | Limits (start values) | Contents |
-|---|---|---|---|---|
-| Project sandbox | `sandbox-claim`, `pool-refill` | gVisor `runsc` | 1 vCPU (burst 2), 1.5 GiB mem, swap 0.5 GiB, 512 PIDs, 5 GiB disk | template image; dev server via `dev-supervisor.mjs` |
-| Agent home | `agent-home.service` | `runc`, hardened (§8) | 0.5 vCPU, 768 MiB, 128 PIDs, 2 GiB disk | `claude` CLI pinned + companion bundle; no built-in tools (041) |
-| Build / template | `build-sandbox`, `template-publisher` | `runsc` | 2 vCPU, 2 GiB, 1024 PIDs, 10 GiB | template base |
+| Class            | Who creates it                        | Runtime               | Limits (start values)                                             | Contents                                                        |
+| ---------------- | ------------------------------------- | --------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------- |
+| Project sandbox  | `sandbox-claim`, `pool-refill`        | gVisor `runsc`        | 1 vCPU (burst 2), 1.5 GiB mem, swap 0.5 GiB, 512 PIDs, 5 GiB disk | template image; dev server via `dev-supervisor.mjs`             |
+| Agent home       | `agent-home.service`                  | `runc`, hardened (§8) | 0.5 vCPU, 768 MiB, 128 PIDs, 2 GiB disk                           | `claude` CLI pinned + companion bundle; no built-in tools (041) |
+| Build / template | `build-sandbox`, `template-publisher` | `runsc`               | 2 vCPU, 2 GiB, 1024 PIDs, 10 GiB                                  | template base                                                   |
 
 - The class comes from the labels the API already sends (`baios=agent-home`, template/build
   labels); sandboxd maps label → class in one table; unknown labels → project class (the most
@@ -199,6 +205,7 @@ omitted. Unknown endpoints return 404.
 ## 8. Isolation and hardening
 
 Every sandbox container:
+
 - non-root uid 1000; `--cap-drop ALL`; `--security-opt no-new-privileges`; Docker default seccomp
   (runc) / gVisor's own syscall filtering (runsc); no `--privileged`, no host mounts, no Docker
   socket, no device access.
@@ -211,6 +218,7 @@ Every sandbox container:
   today (callback token, project env, device token).
 
 sandboxd itself:
+
 - The only process with the Docker socket. Runs as a compose service with `network_mode: host`,
   listening on a private address only; never exposed by Caddy.
 - Authenticated by a bearer key. On real deployments the key comes from a compose secret file, not
@@ -288,19 +296,20 @@ Residual risk stated plainly: agent-home credentials are readable by anyone with
 
 Budget (steady state, start values; verified under load in the plan):
 
-| Item | Memory |
-|---|---|
-| OS + dockerd + containerd | ~0.4 GiB |
-| api + worker (Node) | ~0.7 GiB |
-| Postgres | ~0.5 GiB |
-| 4× Redis (existing maxmemory caps) | ~0.3 GiB |
-| OpenBao, Caddy, gateway, sandboxd | ~0.3 GiB |
-| **Platform subtotal** | **~2.2 GiB** |
-| 10 project sandboxes, dev server running (~400 MiB + gVisor ~40 MiB) | ~4.4 GiB |
-| 10 agent homes (companion idle ~80 MiB; ~350 MiB while a turn runs, assume half busy) | ~2.1 GiB |
-| **Total** | **~8.7 GiB** |
+| Item                                                                                  | Memory       |
+| ------------------------------------------------------------------------------------- | ------------ |
+| OS + dockerd + containerd                                                             | ~0.4 GiB     |
+| api + worker (Node)                                                                   | ~0.7 GiB     |
+| Postgres                                                                              | ~0.5 GiB     |
+| 4× Redis (existing maxmemory caps)                                                    | ~0.3 GiB     |
+| OpenBao, Caddy, gateway, sandboxd                                                     | ~0.3 GiB     |
+| **Platform subtotal**                                                                 | **~2.2 GiB** |
+| 10 project sandboxes, dev server running (~400 MiB + gVisor ~40 MiB)                  | ~4.4 GiB     |
+| 10 agent homes (companion idle ~80 MiB; ~350 MiB while a turn runs, assume half busy) | ~2.1 GiB     |
+| **Total**                                                                             | **~8.7 GiB** |
 
 That is over 8 GiB, so:
+
 - 4 GiB swap (swapfile, `vm.swappiness=10`) as a shock absorber, and limits are ceilings, not
   reservations.
 - **Admission control in sandboxd, by queueing**: when host `MemAvailable` < 1 GiB or running
@@ -323,6 +332,7 @@ image so first boot avoids most installs, and the existing warm pool (`pool-refi
 latency.
 
 Scaling path (not built now, design doesn't block it)
+
 1. Move Postgres/Redis/OpenBao to their own box when the API host gets tight.
 2. Add sandbox hosts: each runs sandboxd only. A thin router mode of sandboxd (same API) places new
    sandboxes on the host with the most headroom and forwards by the `<nodeId>-` id prefix; the API
@@ -345,6 +355,7 @@ Scaling path (not built now, design doesn't block it)
 ## 14. Rollout and testing
 
 Order matters; each step is independently shippable.
+
 1. **Spike (throwaway, first):** on a fresh Ubuntu 24.04 VPS — install gVisor with
    `--overlay2=none`, userns-remap, XFS pquota. Confirm: `docker commit` captures writes under runsc;
    `--storage-opt size` enforced; Vite dev server + HMR through a WebSocket proxy; npm install time

@@ -101,6 +101,7 @@ infra/sandboxd/
 **Files:** Create `apps/sandboxd/{package.json,tsconfig.json,eslint.config.mjs,vitest.config.mts}`, `src/{config,log,http,store,main}.ts`, `test/{config,http,store}.spec.ts`. Add `dockerode` + `@types/dockerode` to the pnpm catalog.
 
 **Interfaces — Produces:**
+
 - `loadConfig(env: NodeJS.ProcessEnv): Config` where `Config = { nodeId: string; apiKey: string; listen: {host:string; port:number}; previewListen: {host;port}; previewPublicUrl: string; previewSecret: Buffer; egressListen: {host;port}; dataDir: string; runtimeProject: string; maxRunning: number; minMemAvailableBytes: number; imageAllow: string[]; apiHost: string /* BAIOS API/callback host allowed through proxy & firewall */; egressAgentDefault: string[] }`. Env: `SANDBOXD_NODE_ID` (default `n1`), `SANDBOXD_API_KEY` | `SANDBOXD_API_KEY_FILE` (exactly one), `SANDBOXD_LISTEN` (`127.0.0.1:3986`), `SANDBOXD_PREVIEW_LISTEN` (`127.0.0.1:3987`), `SANDBOXD_PREVIEW_PUBLIC_URL` (default `http://<preview listen>`), `SANDBOXD_PREVIEW_SECRET_FILE` (generated into dataDir if absent), `SANDBOXD_EGRESS_LISTEN` (bridge gateway of `sbx-agent`, port 3988), `SANDBOXD_DATA_DIR` (`/var/lib/sandboxd`), `SANDBOXD_RUNTIME_PROJECT` (`runsc`), `SANDBOXD_MAX_RUNNING` (22), `SANDBOXD_MIN_MEM_AVAILABLE_MB` (1024), `SANDBOXD_IMAGE_ALLOW` (comma list), `SANDBOXD_API_HOST`, `SANDBOXD_EGRESS_AGENT_DEFAULT` (comma list of hostnames; default `api.anthropic.com,claude.ai,console.anthropic.com,statsig.anthropic.com` — refined after spike).
 - `log(level: 'info'|'warn'|'error', msg: string, fields?: Record<string, unknown>): void`.
 - `router()` with `route(method, pattern: string /* '/sandbox/:id/start' */, handler: (req, res, params, url) => Promise<void>)`, `sendJson(res, status, body)`, `HttpError(status, message)`; `requireBearer(req, key)` uses `crypto.timingSafeEqual`.
@@ -117,6 +118,7 @@ infra/sandboxd/
 **Files:** Create `src/docker.ts`, `src/classes.ts`, `test/fake-docker.ts`, `test/classes.spec.ts`, `test/docker.int-spec.ts`.
 
 **Interfaces — Produces:**
+
 - `interface DockerPort { create(spec: ContainerSpec): Promise<string /*containerId*/>; start(cid): Promise<void>; stop(cid, timeoutS: number): Promise<void>; remove(cid): Promise<void> /* force, 404 ok */; inspect(cid): Promise<{ status: 'created'|'running'|'paused'|'restarting'|'removing'|'exited'|'dead'; ip: string|null; startedAt: string } | null>; commit(cid, repoTag: string): Promise<void>; imageExists(ref): Promise<boolean>; removeImage(ref): Promise<'removed'|'missing'|'in-use'>; exec(cid, opts: ExecOpts): Promise<ExecOutcome>; execDetached(cid, opts: Omit<ExecOpts,'stdin'|'timeoutMs'>): Promise<void>; ensureNetwork(name, opts: {internal: boolean}): Promise<void>; events(onEvent: (e: {action: string; cid: string; labels: Record<string,string>}) => void): () => void; ping(): Promise<boolean> }`.
 - `ExecOpts = { argv: string[]; cwd?: string; env?: Record<string,string>; stdin?: Buffer; timeoutMs: number; maxOutputBytes: number; user?: string /* default '1000:1000' */ }`; `ExecOutcome = { timedOut: false; exitCode: number; output: Buffer /* merged, capped */; truncated: boolean } | { timedOut: true }`.
 - `ContainerSpec = { name: string; image: string; labels: Record<string,string>; env: string[]; hostConfig: object; network: 'sbx-agent'|'sbx-proj' }`.
@@ -137,18 +139,18 @@ infra/sandboxd/
 **Interfaces — Consumes:** Task 2 `Store`, router; Task 3 `DockerPort`, `containerSpec`, `classOf`.
 **Produces:** routes (all bearer-auth):
 
-| Route | Behaviour |
-|---|---|
-| `POST /sandbox` `{snapshot, labels, autoArchiveInterval, autoStopInterval}` | image = snapshot name resolved as: `forge-snap/<snapshot>:latest` if exists, else `snapshot` verbatim if allow-listed, else 400. Insert row, create container, `admission.request(id)`; 200 with dto |
-| `GET /sandbox/:id` | dto; 404 if no row |
-| `POST /sandbox/:id/start` / `stop` | start → `admission.request`; stop → `docker.stop(10)`, desired `stopped`, drop from queue; 200 `{}` |
-| `DELETE /sandbox/:id?force=true` | remove container + row; 404 if unknown |
-| `PUT /sandbox/:id/labels` `{labels}` | replace labels; 200 dto |
-| `GET /sandbox?labels=<json>&cursor=` | `{items: dto[], nextCursor: null}` (one page) |
-| `POST /sandbox/:id/snapshot` `{name}` | `docker.commit(cid, 'forge-snap/<name>:latest')`; 200 `{}` |
-| `GET /snapshots/:name` | `{name, state: 'active', errorReason: null}` or 404 |
-| `DELETE /snapshots/:name` | removeImage: removed/missing → 200/404, in-use → 409 |
-| `POST /sandbox/:id/network-settings` `{networkAllowList: string /* comma */, networkBlockAll: boolean}` | store; egress picks it up (Task 7); 200 `{}` |
+| Route                                                                                                   | Behaviour                                                                                                                                                                                            |
+| ------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /sandbox` `{snapshot, labels, autoArchiveInterval, autoStopInterval}`                             | image = snapshot name resolved as: `forge-snap/<snapshot>:latest` if exists, else `snapshot` verbatim if allow-listed, else 400. Insert row, create container, `admission.request(id)`; 200 with dto |
+| `GET /sandbox/:id`                                                                                      | dto; 404 if no row                                                                                                                                                                                   |
+| `POST /sandbox/:id/start` / `stop`                                                                      | start → `admission.request`; stop → `docker.stop(10)`, desired `stopped`, drop from queue; 200 `{}`                                                                                                  |
+| `DELETE /sandbox/:id?force=true`                                                                        | remove container + row; 404 if unknown                                                                                                                                                               |
+| `PUT /sandbox/:id/labels` `{labels}`                                                                    | replace labels; 200 dto                                                                                                                                                                              |
+| `GET /sandbox?labels=<json>&cursor=`                                                                    | `{items: dto[], nextCursor: null}` (one page)                                                                                                                                                        |
+| `POST /sandbox/:id/snapshot` `{name}`                                                                   | `docker.commit(cid, 'forge-snap/<name>:latest')`; 200 `{}`                                                                                                                                           |
+| `GET /snapshots/:name`                                                                                  | `{name, state: 'active', errorReason: null}` or 404                                                                                                                                                  |
+| `DELETE /snapshots/:name`                                                                               | removeImage: removed/missing → 200/404, in-use → 409                                                                                                                                                 |
+| `POST /sandbox/:id/network-settings` `{networkAllowList: string /* comma */, networkBlockAll: boolean}` | store; egress picks it up (Task 7); 200 `{}`                                                                                                                                                         |
 
 - dto `{ id, state, labels, createdAt, runnerId: cfg.nodeId, toolboxProxyUrl: '<SANDBOXD public base>/toolbox', user: 'daytona' }`; `state` mapping: no container yet or desired `queued` → `starting`; running → `started`; created/exited with desired `started` → `starting`; exited/created with desired `stopped` → `stopped`; restarting → `starting`; removing → `destroying`; dead → `error`.
 - `Admission { request(id): void; tick(): Promise<void>; size(): number }` — FIFO; `tick` every 2 s and on any `die`/stop event: while queue non-empty and `running < maxRunning` and `memAvailable() >= min` → start head. `memAvailable()` reads `MemAvailable` from `/proc/meminfo` (injectable for tests). On boot: rows with desired `started|queued` whose container isn't running → enqueue in `createdAt` order.
@@ -166,19 +168,19 @@ infra/sandboxd/
 
 **Interfaces — Consumes:** `DockerPort.exec/execDetached`, `Store`. **Produces:** routes under `/toolbox/:id/…` (bearer-auth; sandbox must be running, else 404 so the adapter re-looks-up once and then reports the real state). Behaviour must match `fake-daytona.ts` for each route — read its handler for the exact output format before implementing each one.
 
-| Route | In-container argv (never interpolate caller strings into shell) | Answer |
-|---|---|---|
-| `GET work-dir` | — | `{dir: '/home/daytona'}` |
-| `GET files?path=` | `find <p> -mindepth 1 -maxdepth 1 -printf '%y\t%s\t%f\0'` after `test -d` | `[{name,isDir,size}]`; missing 404; not a dir 400 |
-| `GET files/info?path=` | `stat -L -c '%F\t%s\t%n' -- <p>` | `{name: basename, isDir, size}`; 404 |
-| `GET files/download?path=` | `test -f` then `cat -- <p>` (cap 64 MiB) | raw bytes, `application/octet-stream`; dir 400; missing 404 |
-| `POST files/upload?path=` multipart `file` | `sh -c 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"' sh <p>` with stdin | 200 `{}` |
-| `GET files/find?path=&pattern=` | `rg --json --fixed-strings --max-count 50 --max-filesize 1M -- <pattern> <p>` (exclude same vendor dirs the fake excludes) | `[{file, line, content}]`; missing 404 |
-| `GET files/search?path=&pattern=` | `find <p> -name <pattern> -not -path '*/node_modules/*' …` | `{files: [...]}` |
-| `POST process/execute` `{command, cwd, envs, timeout}` | `['sh','-c',command]`, cwd, env, timeoutMs = timeout×1000, cap 1 MiB | `{exitCode, result}`; timeout → 408 `{}` |
-| `POST process/session` `{sessionId}` | record in store (`sessions` table: sandboxId, sessionId) | 200 `{}` |
-| `POST process/session/:sid/exec` `{command, runAsync: true}` | `execDetached(['setsid','sh','-c','echo $$ > /tmp/.sbx-session-<sid>; exec sh -c "$1"','sh',command])` | 200 `{}` |
-| `DELETE process/session/:sid` | `sh -c 'kill -TERM -$(cat /tmp/.sbx-session-$1) 2>/dev/null; rm -f /tmp/.sbx-session-$1' sh <sid>`; unknown sid → 404 | 200 `{}` |
+| Route                                                        | In-container argv (never interpolate caller strings into shell)                                                            | Answer                                                      |
+| ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
+| `GET work-dir`                                               | —                                                                                                                          | `{dir: '/home/daytona'}`                                    |
+| `GET files?path=`                                            | `find <p> -mindepth 1 -maxdepth 1 -printf '%y\t%s\t%f\0'` after `test -d`                                                  | `[{name,isDir,size}]`; missing 404; not a dir 400           |
+| `GET files/info?path=`                                       | `stat -L -c '%F\t%s\t%n' -- <p>`                                                                                           | `{name: basename, isDir, size}`; 404                        |
+| `GET files/download?path=`                                   | `test -f` then `cat -- <p>` (cap 64 MiB)                                                                                   | raw bytes, `application/octet-stream`; dir 400; missing 404 |
+| `POST files/upload?path=` multipart `file`                   | `sh -c 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"' sh <p>` with stdin                                                 | 200 `{}`                                                    |
+| `GET files/find?path=&pattern=`                              | `rg --json --fixed-strings --max-count 50 --max-filesize 1M -- <pattern> <p>` (exclude same vendor dirs the fake excludes) | `[{file, line, content}]`; missing 404                      |
+| `GET files/search?path=&pattern=`                            | `find <p> -name <pattern> -not -path '*/node_modules/*' …`                                                                 | `{files: [...]}`                                            |
+| `POST process/execute` `{command, cwd, envs, timeout}`       | `['sh','-c',command]`, cwd, env, timeoutMs = timeout×1000, cap 1 MiB                                                       | `{exitCode, result}`; timeout → 408 `{}`                    |
+| `POST process/session` `{sessionId}`                         | record in store (`sessions` table: sandboxId, sessionId)                                                                   | 200 `{}`                                                    |
+| `POST process/session/:sid/exec` `{command, runAsync: true}` | `execDetached(['setsid','sh','-c','echo $$ > /tmp/.sbx-session-<sid>; exec sh -c "$1"','sh',command])`                     | 200 `{}`                                                    |
+| `DELETE process/session/:sid`                                | `sh -c 'kill -TERM -$(cat /tmp/.sbx-session-$1) 2>/dev/null; rm -f /tmp/.sbx-session-$1' sh <sid>`; unknown sid → 404      | 200 `{}`                                                    |
 
 - Validate: `path` absolute, no NUL, ≤ 4096 chars; `sessionId` `/^[A-Za-z0-9_.-]{1,64}$/`; `timeout` 1–600; body ≤ 64 MiB (upload) / 1 MiB (JSON). Log `x-forge-operation-id`/`x-forge-lease-epoch` per call.
 
@@ -202,6 +204,7 @@ infra/sandboxd/
 **Files:** Create `src/egress.ts`, `test/egress.spec.ts`.
 
 **Interfaces — Consumes:** `Store` (networkAllow/BlockAll), docker inspect for IP→sandbox map (refresh on start/die events; `Map<ip, sandboxId>`). **Produces:** `startEgressProxy(cfg, deps: { sandboxForIp(ip): SandboxRow|undefined; resolve(host): Promise<string[]> }): http.Server`.
+
 - Policy: allowed host set = row.networkAllow (if non-null: entries are hostnames or CIDRs; replaces default) else `cfg.egressAgentDefault` ∪ `{cfg.apiHost}`; `networkBlockAll` → refuse all. Match host exactly or as subdomain of a listed name (`api.anthropic.com` matches itself only; `.anthropic.com` form allows subdomains). Resolve, and refuse if any resolved address is private/loopback/link-local/CGNAT/multicast/`169.254.169.254`, unless host == `cfg.apiHost`; CIDR entries match resolved IPs. Connect to the resolved IP (not re-resolving). `CONNECT host:443` only ports 443/80; plain HTTP forward for `http://` absolute URIs. Unknown source IP → 403. Refusals: 403 + log `{sandboxId, host, reason}`.
 
 - [ ] **Step 1:** Tests (local servers + injected resolver): allowed host CONNECT tunnels bytes; not-listed host → 403; host resolving to `10.0.0.5` → 403; host resolving to `169.254.169.254` → 403; apiHost resolving to private IP → allowed; CIDR entry `1.2.3.0/24` allows host resolving to `1.2.3.4`; `networkBlockAll` → 403; unknown client IP → 403; port 22 CONNECT → 403.
@@ -213,6 +216,7 @@ infra/sandboxd/
 **Files:** Create `src/network.ts`, `infra/sandboxd/firewall.sh`, `test/network.spec.ts`.
 
 **Interfaces — Produces:** `ensureNetworks(docker)`: `sbx-agent` (`Internal: true`, `com.docker.network.bridge.enable_icc: 'false'`, subnet `172.30.0.0/24`), `sbx-proj` (`Internal: false`, icc false, subnet `172.30.1.0/24`). `applyFirewall(): Promise<void>` runs `firewall.sh apply`; `checkFirewall(): Promise<boolean>` runs `firewall.sh check` (exit 0 = rules present) → `/healthz.firewall`. Skipped (reported `firewall: 'skipped'`) when not Linux or `SANDBOXD_FIREWALL=off` (local dev only; refused when `SANDBOXD_REAL=1`).
+
 - `firewall.sh apply|check`, own chains `SBX-FWD` (jumped from `DOCKER-USER`) and `SBX-IN` (jumped from `INPUT`), idempotent (flush own chains, re-add jumps only if absent). For `sbx-proj` sources: allow ESTABLISHED,RELATED; drop to 10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16, 127/8, 224/4, both sandbox subnets; drop tcp dport 25,465,587; `hashlimit` new connections 20/s burst 50 per source; accept rest. `SBX-IN` for both subnets: accept tcp dport `$SBX_EGRESS_PORT` from `sbx-agent` only, tcp 443 to host (Caddy, for callback/API), drop everything else to the host. Values via env (`SBX_EGRESS_PORT`, subnets).
 
 - [ ] **Step 1:** `network.spec.ts`: `ensureNetworks` calls FakeDocker with exact options; `firewall.sh` passes `shellcheck` (skip if absent) and `bash -n`; `apply` twice then `iptables -S SBX-FWD` count unchanged (Linux + root only; else skip with banner).
