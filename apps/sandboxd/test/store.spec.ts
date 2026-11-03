@@ -43,3 +43,19 @@ describe('Store', () => {
     s2.close();
   });
 });
+
+describe('Store sessions', () => {
+  it('adds, checks, removes and clears per sandbox', () => {
+    const s = new Store(mkdtempSync(join(tmpdir(), 'sbxd-')));
+    s.addSession('a', 'x');
+    s.addSession('a', 'x');
+    s.addSession('a', 'y');
+    s.addSession('b', 'x');
+    expect(s.hasSession('a', 'x')).toBe(true);
+    s.removeSession('a', 'x');
+    expect(s.hasSession('a', 'x')).toBe(false);
+    s.removeSessionsFor('a');
+    expect([s.hasSession('a', 'y'), s.hasSession('b', 'x')]).toEqual([false, true]);
+    s.close();
+  });
+});

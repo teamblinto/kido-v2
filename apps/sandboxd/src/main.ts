@@ -8,6 +8,7 @@ import { watchEvents } from './events.ts';
 import { log } from './log.ts';
 import { registerSandboxRoutes } from './sandboxes.ts';
 import { Store } from './store.ts';
+import { clearStaleSessions, registerToolboxRoutes } from './toolbox.ts';
 
 const config = loadConfig(process.env);
 const store = new Store(config.dataDir);
@@ -26,6 +27,8 @@ api.route(
   { auth: false },
 );
 registerSandboxRoutes(api, { cfg: config, store, docker, admission });
+registerToolboxRoutes(api, { cfg: config, store, docker });
+await clearStaleSessions(store, docker);
 
 const unwatch = watchEvents(docker, admission);
 await admission.recover();

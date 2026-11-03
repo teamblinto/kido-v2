@@ -43,7 +43,10 @@ export class Store {
       CREATE TABLE IF NOT EXISTS sandbox (
         id TEXT PRIMARY KEY, container_id TEXT, image TEXT NOT NULL, class TEXT NOT NULL,
         labels TEXT NOT NULL, desired TEXT NOT NULL, network_allow TEXT,
-        network_block_all INTEGER NOT NULL, created_at TEXT NOT NULL, queued_at TEXT)`);
+        network_block_all INTEGER NOT NULL, created_at TEXT NOT NULL, queued_at TEXT);
+      CREATE TABLE IF NOT EXISTS sessions (
+        sandbox_id TEXT NOT NULL, session_id TEXT NOT NULL, created_at TEXT NOT NULL,
+        PRIMARY KEY (sandbox_id, session_id))`);
   }
 
   insert(r: SandboxRow): void {
@@ -93,6 +96,29 @@ export class Store {
 
   remove(id: string): void {
     this.db.prepare('DELETE FROM sandbox WHERE id=?').run(id);
+    this.removeSessionsFor(id);
+  }
+
+  addSession(sandboxId: string, sessionId: string): void {
+    this.db
+      .prepare('INSERT OR IGNORE INTO sessions VALUES (?,?,?)')
+      .run(sandboxId, sessionId, new Date().toISOString());
+  }
+
+  hasSession(sandboxId: string, sessionId: string): boolean {
+    return !!this.db
+      .prepare('SELECT 1 FROM sessions WHERE sandbox_id=? AND session_id=?')
+      .get(sandboxId, sessionId);
+  }
+
+  removeSession(sandboxId: string, sessionId: string): void {
+    this.db
+      .prepare('DELETE FROM sessions WHERE sandbox_id=? AND session_id=?')
+      .run(sandboxId, sessionId);
+  }
+
+  removeSessionsFor(sandboxId: string): void {
+    this.db.prepare('DELETE FROM sessions WHERE sandbox_id=?').run(sandboxId);
   }
 
   close(): void {

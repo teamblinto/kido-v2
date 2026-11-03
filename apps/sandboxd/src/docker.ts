@@ -147,9 +147,11 @@ export class DockerodePort implements DockerPort {
     const pidFile = `/tmp/.sbx-exec-${randomBytes(8).toString('hex')}`;
     const user = opts.user ?? '1000:1000';
     const exec = await this.docker.getContainer(cid).exec({
-      // setsid makes the shell a group leader so a timeout can kill the whole tree.
+      // setsid makes the shell a group leader so a timeout can kill the whole tree; -w because
+      // exec'd processes are already group leaders, so setsid would fork and exit 0 at once.
       Cmd: [
         'setsid',
+        '-w',
         'sh',
         '-c',
         `echo $$ > ${pidFile}; "$@"; rc=$?; rm -f ${pidFile}; exit $rc`,
@@ -182,7 +184,13 @@ export class DockerodePort implements DockerPort {
     let timer: NodeJS.Timeout | undefined;
     const outcome = await Promise.race([
       new Promise<'done'>((resolve, reject) => {
-        stream.on('end', () => resolve('done'));
+        // With stdin the half-closed socket can end before the process does: wait for it.
+        stream.on('end', () => {
+          const settle = async (): Promise<void> => {
+            while ((await exec.inspect()).Running) await new Promise((r) => setTimeout(r, 20));
+          };
+          settle().then(() => resolve('done'), reject);
+        });
         stream.on('error', reject);
       }),
       new Promise<'timeout'>((resolve) => {
