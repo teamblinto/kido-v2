@@ -2,6 +2,7 @@ import { createHmac, timingSafeEqual } from 'node:crypto';
 import {
   createServer,
   request,
+  type IncomingHttpHeaders,
   type IncomingMessage,
   type Server,
   type ServerResponse,
@@ -93,7 +94,11 @@ interface Deps {
 }
 
 /** Token is the only auth; it decides which sandbox and port are dialled. */
-async function resolve(d: Deps, req: IncomingMessage): Promise<Target> {
+async function resolve(
+  d: Deps,
+  req: IncomingMessage,
+  seen: { sandboxId?: string; port?: number },
+): Promise<Target> {
   const raw = req.headers[HEADER];
   const t = verifyPreviewToken(
     d.cfg.previewSecret,
@@ -101,6 +106,8 @@ async function resolve(d: Deps, req: IncomingMessage): Promise<Target> {
     Math.floor(Date.now() / 1000),
   );
   if (!t) throw new HttpError(401, 'invalid preview token');
+  seen.sandboxId = t.sandboxId;
+  seen.port = t.port;
   const row = d.store.get(t.sandboxId);
   if (!row) throw new HttpError(404, 'sandbox not found');
   const c = row.containerId ? await d.docker.inspect(row.containerId) : null;
@@ -109,18 +116,14 @@ async function resolve(d: Deps, req: IncomingMessage): Promise<Target> {
 }
 
 /** Request headers with the token removed and host pointed at the upstream. */
-function upstreamHeaders(req: IncomingMessage, t: Target): string[] {
-  const out: string[] = [];
-  for (let i = 0; i < req.rawHeaders.length; i += 2) {
-    const k = req.rawHeaders[i]!.toLowerCase();
-    if (k !== HEADER && k !== 'host') out.push(req.rawHeaders[i]!, req.rawHeaders[i + 1]!);
-  }
-  out.push('host', `${t.ip}:${t.port}`);
-  return out;
+function upstreamHeaders(req: IncomingMessage, t: Target): IncomingHttpHeaders {
+  const rest = { ...req.headers };
+  delete rest[HEADER];
+  return { ...rest, host: `${t.ip}:${t.port}` };
 }
 
 export function createPreviewServer(d: Deps): Server {
-  const done = (t: Target | undefined, status: number, t0: number) =>
+  const done = (t: { sandboxId?: string; port?: number }, status: number, t0: number) =>
     log('info', 'preview', {
       op: 'preview',
       sandboxId: t?.sandboxId,
@@ -131,25 +134,30 @@ export function createPreviewServer(d: Deps): Server {
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const t0 = performance.now();
-    let target: Target | undefined;
+    const target: { sandboxId?: string; port?: number } = {};
     const fail = (err: unknown) => {
       if (res.headersSent) return void res.destroy();
       const status = err instanceof HttpError ? err.status : 502;
+      if ((err as NodeJS.ErrnoException).code === 'ECONNREFUSED') {
+        res.setHeader('x-sandboxd-upstream', 'refused');
+      }
       sendJson(res, status, { message: err instanceof HttpError ? err.message : 'bad gateway' });
       done(target, status, t0);
     };
-    resolve(d, req)
+    resolve(d, req, target)
       .then((t) => {
-        target = t;
         // No total timeout (HMR/streaming); only the connect phase is bounded.
         const up = request({
           host: t.ip,
           port: t.port,
           method: req.method,
           path: req.url,
-          headers: upHeaders(req, t),
+          headers: upstreamHeaders(req, t),
         });
-        const timer = setTimeout(() => up.destroy(new Error('connect timeout')), CONNECT_TIMEOUT_MS);
+        const timer = setTimeout(
+          () => up.destroy(new Error('connect timeout')),
+          CONNECT_TIMEOUT_MS,
+        );
         up.once('socket', (s) => {
           if (s.connecting) s.once('connect', () => clearTimeout(timer));
           else clearTimeout(timer);
@@ -176,7 +184,8 @@ export function createPreviewServer(d: Deps): Server {
   server.on('upgrade', (req: IncomingMessage, client: Socket, head: Buffer) => {
     const t0 = performance.now();
     client.on('error', () => client.destroy());
-    resolve(d, req)
+    const seen: { sandboxId?: string; port?: number } = {};
+    resolve(d, req, seen)
       .then((t) => {
         const up = connect({ host: t.ip, port: t.port });
         const kill = () => {
@@ -191,9 +200,11 @@ export function createPreviewServer(d: Deps): Server {
         client.on('close', kill);
         up.once('connect', () => {
           up.setTimeout(0);
-          const h = upstreamHeaders(req, t);
           let msg = `${req.method} ${req.url} HTTP/1.1\r\n`;
-          for (let i = 0; i < h.length; i += 2) msg += `${h[i]}: ${h[i + 1]}\r\n`;
+          for (const [k, v] of Object.entries(upstreamHeaders(req, t))) {
+            for (const x of [v ?? []].flat())
+              msg += `${k}: ${x}\r\n`;
+          }
           up.write(`${msg}\r\n`);
           if (head.length) up.write(head);
           up.pipe(client);
@@ -202,15 +213,9 @@ export function createPreviewServer(d: Deps): Server {
         });
       })
       .catch((err: unknown) => {
-        done(undefined, err instanceof HttpError ? err.status : 502, t0);
+        done(seen, err instanceof HttpError ? err.status : 502, t0);
         client.destroy();
       });
   });
   return server;
-}
-
-function upHeaders(req: IncomingMessage, t: Target) {
-  const rest = { ...req.headers };
-  delete rest[HEADER];
-  return { ...rest, host: `${t.ip}:${t.port}` };
 }

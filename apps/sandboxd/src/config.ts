@@ -66,6 +66,20 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     throw new Error(`preview secret file ${secretFile} must hold at least 32 bytes`);
   }
 
+  const publicUrl = env.SANDBOXD_PREVIEW_PUBLIC_URL;
+  if (publicUrl !== undefined) {
+    let proto: string | undefined;
+    try {
+      proto = new URL(publicUrl).protocol;
+    } catch {
+      /* falls through to the error */
+    }
+    if (proto !== 'http:' && proto !== 'https:') {
+      throw new Error(
+        `SANDBOXD_PREVIEW_PUBLIC_URL must be an absolute http(s) URL, got "${publicUrl}"`,
+      );
+    }
+  }
   const listen = hostPort(env.SANDBOXD_LISTEN ?? '127.0.0.1:3986');
   const previewListen = hostPort(env.SANDBOXD_PREVIEW_LISTEN ?? '127.0.0.1:3987');
   return {

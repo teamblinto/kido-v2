@@ -358,6 +358,28 @@ describe('proxyRequest', () => {
     expect(reply.headers['x-robots-tag']).toBe('noindex');
   });
 
+  it('shows the not-serving page when sandboxd reports its upstream refused, and relays no marker', async () => {
+    const gatewayPort = await serve((_req, res) => {
+      res.writeHead(502, { 'x-sandboxd-upstream': 'refused' });
+      res.end('{"message":"bad gateway"}');
+    });
+
+    const reply = await get(gatewayPort);
+
+    expect(reply.status).toBe(503);
+    expect(reply.body).toBe(NOT_SERVING_PAGE.body);
+    expect(reply.headers['x-sandboxd-upstream']).toBeUndefined();
+  });
+
+  it('never relays x-sandboxd-upstream on other responses', async () => {
+    const gatewayPort = await serve((_req, res) => {
+      res.writeHead(200, { 'x-sandboxd-upstream': 'other' });
+      res.end('ok');
+    });
+
+    expect((await get(gatewayPort)).headers['x-sandboxd-upstream']).toBeUndefined();
+  });
+
   it('answers 503 "nothing is serving yet" when the upstream refuses the connection', async () => {
     const gatewayPort = await serve((_req, res) => res.end());
     const closed = port(upstream!);

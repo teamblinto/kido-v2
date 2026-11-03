@@ -22,6 +22,17 @@ describe('loadConfig', () => {
       'secret',
     );
   });
+  it('requires previewPublicUrl to be an absolute http(s) URL', () => {
+    const env = { SANDBOXD_API_KEY: 'k', SANDBOXD_DATA_DIR: dir() };
+    for (const bad of ['pv.example.com', 'ftp://x.test', '/rel'])
+      expect(() => loadConfig({ ...env, SANDBOXD_PREVIEW_PUBLIC_URL: bad })).toThrow(
+        /SANDBOXD_PREVIEW_PUBLIC_URL/,
+      );
+    expect(
+      loadConfig({ ...env, SANDBOXD_PREVIEW_PUBLIC_URL: 'https://pv.example.com' })
+        .previewPublicUrl,
+    ).toBe('https://pv.example.com');
+  });
   it('applies defaults and generates the preview secret once', () => {
     const d = dir();
     const env = { SANDBOXD_API_KEY: 'k', SANDBOXD_DATA_DIR: d };

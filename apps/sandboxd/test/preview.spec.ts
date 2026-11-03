@@ -1,6 +1,11 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer, request, type Server } from 'node:http';
-import { createServer as netServer, type AddressInfo, type Server as NetServer, type Socket } from 'node:net';
+import {
+  createServer as netServer,
+  type AddressInfo,
+  type Server as NetServer,
+  type Socket,
+} from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -175,6 +180,14 @@ describe('preview proxy', () => {
     dead.close();
     expect((await get('/', tok('sA', p))).status).toBe(502);
   });
+  it('flags a refused upstream with x-sandboxd-upstream: refused', async () => {
+    const dead = netServer();
+    const p = await listen(dead);
+    dead.close();
+    const r = await get('/', tok('sA', p));
+    expect(r.status).toBe(502);
+    expect(r.headers.get('x-sandboxd-upstream')).toBe('refused');
+  });
   it('routes by token sandbox: B token never reaches A', async () => {
     await get('/', tok('sB'));
     expect(upSeen).toHaveLength(0);
@@ -212,6 +225,23 @@ describe('preview proxy', () => {
     });
     expect(got).toBe('echo:ping');
     sock!.destroy();
+  });
+  it('strips the token header on the upgrade path', async () => {
+    const seen = new Promise<string>((ok) => {
+      upstream.once('upgrade', (r) => {
+        ok(JSON.stringify(r.headers));
+      });
+    });
+    const { sock } = await upgrade(tok('sA'));
+    const headers = await seen;
+    expect(headers).not.toContain('x-daytona-preview-token');
+    expect(headers).toContain(`127.0.0.1:${upPort}`);
+    sock!.destroy();
+  });
+  it('closes upgrades for unknown and stopped sandboxes', async () => {
+    expect((await upgrade(tok('zz'))).closed).toBe(true);
+    expect((await upgrade(tok('sB'))).closed).toBe(true);
+    expect(wsHits).toBe(0);
   });
   it('bad token on upgrade closes socket without contacting upstream', async () => {
     expect((await upgrade('x.y')).closed).toBe(true);

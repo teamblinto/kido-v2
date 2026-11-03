@@ -175,6 +175,7 @@ export function inboundHeaders(
   }
   const clean = stripHopByHop(headers);
   delete clean['x-daytona-preview-token'];
+  delete clean['x-sandboxd-upstream'];
   if (setCookie === undefined) {
     delete clean['set-cookie'];
   } else {
@@ -221,6 +222,12 @@ export function proxyRequest(
         timeout: opts.upstreamTimeoutMs,
       },
       (inbound) => {
+        if (inbound.headers['x-sandboxd-upstream'] === 'refused') {
+          // sandboxd's own dial was refused: same UX as a refused direct dial.
+          inbound.resume();
+          send(res, NOT_SERVING_PAGE);
+          return;
+        }
         const clean = inboundHeaders(inbound.headers, route.visibility);
         if (clean === undefined) {
           inbound.resume();
