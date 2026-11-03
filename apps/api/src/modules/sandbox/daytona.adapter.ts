@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { readFileSync } from 'node:fs';
 import { posix } from 'node:path';
 import type { ZodType } from 'zod';
 
@@ -92,6 +93,18 @@ const quote = (argument: string): string => `'${argument.replaceAll("'", String.
  * caller's question — a missing path, a directory where a file was asked for — is a
  * `SandboxGuardError` and is not logged: it is an outcome, not a failure.
  */
+/** The real-deployment key form (ADR 027): read once at boot; the error names the path, never the key. */
+function readKeyFile(path: string): string {
+  let key: string;
+  try {
+    key = readFileSync(path, 'utf8').trim();
+  } catch {
+    throw new Error(`DAYTONA_API_KEY_FILE ${path} is missing or unreadable`);
+  }
+  if (key === '') throw new Error(`DAYTONA_API_KEY_FILE ${path} is empty`);
+  return key;
+}
+
 @Injectable()
 export class DaytonaAdapter {
   private readonly api: { readonly key: string; readonly url: string } | undefined;
@@ -104,7 +117,9 @@ export class DaytonaAdapter {
     @Inject(CLOCK) private readonly clock: ClockPort,
   ) {
     const url = config.get('DAYTONA_API_URL', { infer: true });
-    const key = config.get('DAYTONA_API_KEY', { infer: true });
+    const keyFile = config.get('DAYTONA_API_KEY_FILE', { infer: true });
+    const key =
+      keyFile === undefined ? config.get('DAYTONA_API_KEY', { infer: true }) : readKeyFile(keyFile);
 
     // The env schema makes these both-or-neither; `not-configured` is the neither.
     this.api = url && key ? { key, url: url.replace(/\/$/, '') } : undefined;

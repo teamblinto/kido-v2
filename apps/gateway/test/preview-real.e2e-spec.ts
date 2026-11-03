@@ -28,8 +28,8 @@ if (!configured) {
 
 const API = (process.env.DAYTONA_API_URL ?? '').replace(/\/$/, '');
 const KEY = process.env.DAYTONA_API_KEY ?? '';
-/** The image the local stack pulls on first boot (`infra/daytona/compose.yaml` `DEFAULT_SNAPSHOT`). */
-const SNAPSHOT = process.env.DAYTONA_SNAPSHOT ?? 'daytonaio/sandbox:0.5.0-slim';
+/** The sandbox base image (sandboxd: infra/sandboxd; Daytona stack: its `DEFAULT_SNAPSHOT`). */
+const SNAPSHOT = process.env.DAYTONA_SNAPSHOT ?? 'forge/sandbox-base:1';
 const OWNER = `forge-017-walk-${String(process.pid)}`;
 const DOMAIN = 'forge-preview.localhost';
 const LABEL = '0123456789abcdef0123';

@@ -1,5 +1,8 @@
 import { Logger } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FakeClock } from '../../common/clock/fake-clock';
@@ -33,7 +36,7 @@ describe('DaytonaAdapter', () => {
   });
 
   function adapter(
-    env: Partial<Record<'DAYTONA_API_KEY' | 'DAYTONA_API_URL', string>> = {
+    env: Partial<Record<'DAYTONA_API_KEY' | 'DAYTONA_API_KEY_FILE' | 'DAYTONA_API_URL', string>> = {
       DAYTONA_API_KEY: fake.apiKey,
       DAYTONA_API_URL: fake.apiUrl,
     },
@@ -558,5 +561,30 @@ describe('DaytonaAdapter', () => {
       retryable: false,
     });
     expect(String(warn.mock.calls.at(-1)![0])).not.toContain('dtn_wrong');
+  });
+
+  describe('DAYTONA_API_KEY_FILE', () => {
+    it('reads the key from the file once, trimmed, and sends it as the bearer', async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'daytona-key-'));
+      const file = join(dir, 'key');
+      writeFileSync(
+        file,
+        `${fake.apiKey}
+`,
+      );
+      try {
+        const daytona = adapter({ DAYTONA_API_KEY_FILE: file, DAYTONA_API_URL: fake.apiUrl });
+        rmSync(file); // construction already read it
+        expect(await daytona.workDir(fake.sandboxId)).toBe(fake.workDir);
+      } finally {
+        rmSync(dir, { force: true, recursive: true });
+      }
+    });
+
+    it('fails at construction, naming the path, when the file is missing', () => {
+      expect(() =>
+        adapter({ DAYTONA_API_KEY_FILE: '/nonexistent/key', DAYTONA_API_URL: fake.apiUrl }),
+      ).toThrow(/DAYTONA_API_KEY_FILE \/nonexistent\/key is missing or unreadable/);
+    });
   });
 });

@@ -659,6 +659,25 @@ describe('AgentHomeService', () => {
         ).rejects.toThrow('fenced');
       });
 
+      // sandboxd answers `starting` while it waits for a capacity slot (design §14a): in progress, not failure.
+      it('keeps polling a `starting` sandbox until it is started', async () => {
+        const { daytona, service } = build({
+          config: { AGENT_HOME_RUNNER_BUNDLE: bundle },
+          row: home({ state: 'stopped' }),
+          timings: { onlineMs: 2_000, sandboxReadyMs: 2_000 },
+        });
+        daytona.describe
+          .mockResolvedValueOnce({ state: 'starting' })
+          .mockResolvedValueOnce({ state: 'starting' })
+          .mockResolvedValueOnce({ state: 'starting' })
+          .mockResolvedValue({ state: 'started' });
+
+        await service.wake(DEVICE);
+
+        expect(daytona.describe.mock.calls.length).toBeGreaterThanOrEqual(4);
+        expect(daytona.start).not.toHaveBeenCalled();
+      });
+
       it('caps the whole wait, a lock held elsewhere included, at onlineMs', async () => {
         const { daytona, redis, service } = build({ row: home({ state: 'stopped' }) });
         redis.values.set('local-agent:home-start:b0410000-0000-4000-8000-0000000000e1', 'other');

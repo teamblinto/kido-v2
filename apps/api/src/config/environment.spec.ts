@@ -489,6 +489,50 @@ describe('validateEnvironment', () => {
         expect(daytona?.message).toMatch(/is local-only \(ADR 027\)$/);
       },
     );
+
+    describe('DAYTONA_API_KEY_FILE', () => {
+      const FILE = {
+        DAYTONA_API_KEY_FILE: '/run/secrets/sandboxd-key',
+        DAYTONA_API_URL: 'http://sandboxd.internal:3986',
+      };
+
+      it.each(['staging', 'production'])(
+        'accepts URL + key file on a real deployment (%s)',
+        (deploy) => {
+          const result = environmentSchema.safeParse(
+            validEnvironment({ ...FILE, ...OPENBAO, DEPLOY_ENV: deploy }),
+          );
+          // Other real-deployment requirements fail here; none may name a Daytona key.
+          expect(
+            result.error?.issues.filter((issue) => String(issue.path[0]).startsWith('DAYTONA')),
+          ).toEqual([]);
+        },
+      );
+
+      it('still refuses URL + env key on a real deployment', () => {
+        expect(() =>
+          validateEnvironment(
+            validEnvironment({ ...DAYTONA, ...OPENBAO, DEPLOY_ENV: 'production' }),
+          ),
+        ).toThrow(/is local-only \(ADR 027\)/);
+      });
+
+      it('refuses both key forms', () => {
+        expect(() =>
+          validateEnvironment(
+            validEnvironment({ ...DAYTONA, DAYTONA_API_KEY_FILE: FILE.DAYTONA_API_KEY_FILE }),
+          ),
+        ).toThrow(/mutually exclusive/);
+      });
+
+      it('refuses a key file without the URL', () => {
+        expect(() =>
+          validateEnvironment(
+            validEnvironment({ DAYTONA_API_KEY_FILE: FILE.DAYTONA_API_KEY_FILE }),
+          ),
+        ).toThrow(/DAYTONA_API_URL/);
+      });
+    });
   });
 
   describe('build identity (spec 025 FR-033)', () => {

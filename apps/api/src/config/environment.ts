@@ -336,6 +336,7 @@ export const environmentSchema = z
     // these set fails the way `KEK_PROVIDER=env` does. Neither set means the module answers
     // every call as not configured; nothing in the API process reaches for Daytona until 011.
     DAYTONA_API_KEY: z.string().trim().min(1).optional(),
+    DAYTONA_API_KEY_FILE: z.string().trim().min(1).optional(),
     DAYTONA_API_URL: z.url().optional(),
     // The public resolvers a domain check queries (spec 028 R15), as `ip[:port]`, so a check sees
     // what the internet sees rather than a split-horizon or cached answer from the host.
@@ -802,15 +803,30 @@ export const environmentSchema = z
     // Daytona configured by halves fails on the first sandbox call rather than at boot, so
     // both-or-neither is checked here, as for OAuth. Both set on a real deployment is the env
     // KEK refusal again — same shape, same reason (ADR 027).
-    if (environment.DAYTONA_API_URL !== undefined && environment.DAYTONA_API_KEY === undefined) {
+    // The key is either in the environment (local-only) or in a file (the real-deployment form).
+    const hasDaytonaKey =
+      environment.DAYTONA_API_KEY !== undefined || environment.DAYTONA_API_KEY_FILE !== undefined;
+
+    if (
+      environment.DAYTONA_API_KEY !== undefined &&
+      environment.DAYTONA_API_KEY_FILE !== undefined
+    ) {
       ctx.addIssue({
         code: 'custom',
-        message: 'is required when DAYTONA_API_URL is set',
+        message: 'is mutually exclusive with DAYTONA_API_KEY',
+        path: ['DAYTONA_API_KEY_FILE'],
+      });
+    }
+
+    if (environment.DAYTONA_API_URL !== undefined && !hasDaytonaKey) {
+      ctx.addIssue({
+        code: 'custom',
+        message: 'is required when DAYTONA_API_URL is set (or DAYTONA_API_KEY_FILE)',
         path: ['DAYTONA_API_KEY'],
       });
     }
 
-    if (environment.DAYTONA_API_KEY !== undefined && environment.DAYTONA_API_URL === undefined) {
+    if (hasDaytonaKey && environment.DAYTONA_API_URL === undefined) {
       ctx.addIssue({
         code: 'custom',
         message: 'is required when DAYTONA_API_KEY is set',
