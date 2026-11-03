@@ -37,10 +37,7 @@ describe.skipIf(!up)('toolbox on real docker', () => {
     fetch(base + path, {
       method,
       headers: { authorization: 'Bearer key' },
-      body:
-        body === undefined || body instanceof FormData
-          ? (body)
-          : JSON.stringify(body),
+      body: body === undefined || body instanceof FormData ? body : JSON.stringify(body),
     });
   const tb = (method: string, route: string, body?: BodyInit | object) =>
     api(method, `/toolbox/${encodeURIComponent(id)}/${route}`, body);
