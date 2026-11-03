@@ -5,7 +5,7 @@
 `spike.sh` is a throwaway host check for the Docker + gVisor design (spec 042 §7-§9). It prints
 `PASS`/`FAIL`/`SKIP`/`INFO` per check and exits 1 if any check FAILs. It only creates resources
 named `sbxspike-<pid>-*` and removes them on exit; it never edits daemon config or iptables
-(except check 6, which runs `firewall.sh` once that exists, so run it only on the VPS). The
+(except check 6, which runs `firewall.sh apply` and `check` once that exists, so run it only on the VPS). The
 `node:24-slim` image is pulled if missing and left in place.
 
 Run on the VPS (as a user in the `docker` group, gVisor installed and registered):
