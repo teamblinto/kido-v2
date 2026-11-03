@@ -1,0 +1,84 @@
+---
+# The sandbox host (spec 042 · design §14 step 6, "Deployment targets (b)"): sandboxd replaces the
+# `daytona` host of the staging mesh. One node, one container, the Docker socket, and no platform
+# credential of any kind -- the same hard rule as the gateway pool (§ 01).
+#
+# The play prepares the host with `infra/sandboxd/host-setup.sh` (Docker CE, gVisor, XFS data
+# volume, swap, key file) and then runs the sandboxd container with the same settings the
+# `sandboxd` service has in compose.yaml. It is told what image to run by digest, like every
+# other play; nothing here builds one. NOTE: release.yml does not publish a sandboxd image yet, so
+# `forge_sandboxd_image` has to be one an operator built and pushed from apps/sandboxd/Dockerfile.
+#
+# The api key is generated on this host by host-setup.sh (/etc/sandboxd/api_key). The app pool
+# reads the same value as DAYTONA_API_KEY_FILE, so copy it across the mesh once, out of band;
+# this play never prints it.
+#
+# Reaching it: unlike the single-VPS compose stack (which listens on the `sbx-ctl` bridge), a mesh
+# host listens on its own WireGuard address, `sandboxd_listen_ip`, so the app and gateway hosts
+# reach it over the mesh and no TLS is needed between them. Never set it to 0.0.0.0.
+
+- name: Sandbox host — sandboxd, and nothing else
+  hosts: sandboxd
+  become: true
+
+  vars:
+    sandboxd_loop_size: 40G
+    sandboxd_docker_root: /var/lib/docker-sbx
+    sandboxd_src: /opt/sandboxd/infra/sandboxd
+
+  tasks:
+    - name: Refuse anything but a digest, and refuse a missing listen address or API host
+      ansible.builtin.assert:
+        that:
+          - forge_sandboxd_image is defined
+          - forge_sandboxd_image is match('^.+@sha256:[0-9a-f]{64}$')
+          - sandboxd_listen_ip is defined
+          - sandboxd_api_host is defined
+        fail_msg: >-
+          forge_sandboxd_image must be repository@sha256:…; sandboxd_listen_ip (this host's
+          WireGuard mesh address, never 0.0.0.0) and sandboxd_api_host (the BAIOS API host agent
+          homes may reach) must be set. SANDBOXD_REAL=1 refuses to boot without the latter.
+
+    - name: Sync infra/sandboxd (host-setup.sh, daemon.json, the base image) to the host
+      ansible.builtin.copy:
+        src: sandboxd/
+        dest: '{{ sandboxd_src }}/'
+        mode: preserve
+
+    - name: Prepare the host (Docker, gVisor, XFS pquota volume, swap, key, base image)
+      # Idempotent by construction: host-setup.sh checks before every step. It refuses to replace
+      # a different /etc/docker/daemon.json (pass --force by hand after reading it).
+      ansible.builtin.command:
+        cmd: >-
+          bash {{ sandboxd_src }}/host-setup.sh --yes
+          --loop-size {{ sandboxd_loop_size }} --data-root {{ sandboxd_docker_root }}
+      changed_when: false
+
+    - name: Run sandboxd
+      community.docker.docker_container:
+        name: sandboxd
+        image: '{{ forge_sandboxd_image }}'
+        restart_policy: unless-stopped
+        network_mode: host
+        userns_mode: host
+        read_only: true
+        capabilities: [NET_ADMIN, NET_RAW]
+        tmpfs: [/tmp]
+        memory: 256m
+        env:
+          SANDBOXD_API_HOST: '{{ sandboxd_api_host }}'
+          SANDBOXD_API_KEY_FILE: /run/secrets/sandboxd_api_key
+          SANDBOXD_DOCKER_ROOT: '{{ sandboxd_docker_root }}'
+          SANDBOXD_LISTEN: '{{ sandboxd_listen_ip }}:3986'
+          SANDBOXD_PREVIEW_LISTEN: '{{ sandboxd_listen_ip }}:3987'
+          SANDBOXD_PREVIEW_PUBLIC_URL: 'http://{{ sandboxd_listen_ip }}:3987'
+          SANDBOXD_PUBLIC_URL: 'http://{{ sandboxd_listen_ip }}:3986'
+          SANDBOXD_REAL: '1'
+          SANDBOXD_STORAGE_QUOTA: '1'
+        volumes:
+          - '{{ sandboxd_docker_root }}:{{ sandboxd_docker_root }}:ro'
+          - /var/lib/sandboxd:/var/lib/sandboxd
+          - /var/run/docker.sock:/var/run/docker.sock
+          - /etc/sandboxd/api_key:/run/secrets/sandboxd_api_key:ro
+        comparisons:
+          '*': strict

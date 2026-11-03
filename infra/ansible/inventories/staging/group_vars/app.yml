@@ -87,5 +87,7 @@ forge_app_env:
 # nowhere else.
 forge_app_worker_env:
   ANTHROPIC_API_KEY: '{{ vault_anthropic_api_key }}'
-  DAYTONA_API_URL: 'https://daytona-1.{{ forge_internal_domain }}:3986'
-  DAYTONA_API_KEY: '{{ vault_daytona_api_key }}'
+  # sandboxd (spec 042) speaks Daytona's protocol, so the adapter keeps its names. Plain http: it is
+  # reached over the WireGuard mesh. The key is a file mounted by app.yml, never an env value.
+  DAYTONA_API_URL: 'http://sandboxd-1.{{ forge_internal_domain }}:3986'
+  DAYTONA_API_KEY_FILE: /run/secrets/sandboxd_api_key

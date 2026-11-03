@@ -1,11 +1,41 @@
-# Local-only: lets the containerised worker run real agents. Values come from the git-ignored
-# root .env; Daytona is reached through the host because it is a separate Compose project.
+# Local-only (Docker Desktop on Windows/macOS): lets the containerised worker run real agents.
+# Values come from the git-ignored root .env. sandboxd (spec 042) replaces Daytona; there is no
+# separate Compose project to bootstrap any more.
+#
+# What differs from compose.yaml, and why: Docker Desktop has no host network or iptables the
+# stack can use, so sandboxd runs on the default compose network, publishes its ports on loopback
+# for tests run from the host, skips the firewall (sandboxes are NOT isolated: local dev only) and
+# uses runc, since gVisor is not installed there. The key is a local-only value, not a secret.
 services:
+  sandboxd:
+    environment:
+      SANDBOXD_API_KEY: ${DAYTONA_API_KEY:-local-sandboxd-dev-key}
+      SANDBOXD_API_KEY_FILE: !reset null
+      SANDBOXD_DOCKER_ROOT: /
+      SANDBOXD_EGRESS_LISTEN: 0.0.0.0:3988
+      SANDBOXD_FIREWALL: 'off'
+      SANDBOXD_LISTEN: 0.0.0.0:3986
+      SANDBOXD_PREVIEW_LISTEN: 0.0.0.0:3987
+      SANDBOXD_PREVIEW_PUBLIC_URL: http://127.0.0.1:3987
+      # Tests run from the host need http://127.0.0.1:3986 here; the containerised worker needs this.
+      SANDBOXD_PUBLIC_URL: ${SANDBOXD_PUBLIC_URL:-http://sandboxd:3986}
+      SANDBOXD_REAL: '0'
+      SANDBOXD_RUNTIME_PROJECT: runc
+      SANDBOXD_STORAGE_QUOTA: '0'
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:3986/healthz']
+    network_mode: !reset null
+    ports:
+      - '127.0.0.1:3986:3986'
+      - '127.0.0.1:3987:3987'
+    secrets: !reset []
   worker:
     environment:
-      DAYTONA_API_URL: http://host.docker.internal:3100/api
-      DAYTONA_API_KEY: ${DAYTONA_API_KEY:?run infra/daytona bootstrap and copy its key into .env}
+      DAYTONA_API_URL: http://sandboxd:3986
+      DAYTONA_API_KEY: ${DAYTONA_API_KEY:-local-sandboxd-dev-key}
+      DAYTONA_API_KEY_FILE: !reset null
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+    secrets: !reset []
   # The api decides at run-create whether a PLATFORM credential exists (PlatformCredentials), so
   # without the key here every run is refused 422 "model is not in the organisation's catalogue".
   api:

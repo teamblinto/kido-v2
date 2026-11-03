@@ -119,6 +119,19 @@
         comparisons:
           '*': strict
 
+    - name: Place the sandboxd API key where the worker reads it as a file
+      # ADR 027: a sandbox key held in the environment is local-only. The directory is root-only;
+      # the file itself is readable because the worker runs as a non-root user, and only the
+      # worker container has it mounted. The same value host-setup.sh generated on the sandbox host.
+      ansible.builtin.copy:
+        content: '{{ vault_sandboxd_api_key }}'
+        dest: /etc/sandboxd/api_key
+        owner: root
+        group: root
+        mode: '0444'
+        directory_mode: '0700'
+      no_log: true
+
     - name: Run the workers — forge-app as `agent,events,cron`
       # The same image and the same environment; the profile set is the whole difference. The
       # worker is the only process that may hold a model or sandbox credential (spec 013 R10),
@@ -136,6 +149,8 @@
         # active ones; a run that has not reached a boundary in 120 s is killed and resumed
         # elsewhere under a new lease epoch (spec 008).
         stop_timeout: 120
+        volumes:
+          - /etc/sandboxd/api_key:/run/secrets/sandboxd_api_key:ro
         healthcheck:
           test:
             [

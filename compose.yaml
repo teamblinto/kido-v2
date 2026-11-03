@@ -94,6 +94,11 @@ services:
     expose:
       - '3000'
     healthcheck: *app-healthcheck
+    # Memory ceilings and OOM priority (spec 042 §12): when the host runs short the kernel must
+    # kill a sandbox before the platform, so the platform gets a negative score and a cap that
+    # keeps one runaway from eating the sandboxes' share.
+    mem_limit: 512m
+    oom_score_adj: -500
     restart: unless-stopped
 
   # The worker: the same image, no listener but the liveness probe, and the profiles that do
@@ -131,11 +136,75 @@ services:
       # The only service that may carry these (013 R10): a model and a sandbox are things a
       # worker talks to, never the api. Uncomment and fill in to run real agent runs locally.
       # ANTHROPIC_API_KEY: ''
-      # DAYTONA_API_URL: ''
-      # DAYTONA_API_KEY: ''
+      # sandboxd (spec 042) speaks Daytona's protocol, so the adapter just points at it. It is
+      # on the host network, listening on the `sbx-ctl` bridge gateway (see the sandboxd
+      # service); the key is a compose secret file, never an env value (ADR 027).
+      DAYTONA_API_URL: http://172.30.2.1:3986
+      DAYTONA_API_KEY_FILE: /run/secrets/sandboxd_api_key
     healthcheck: *app-healthcheck
+    mem_limit: 768m
+    networks: [default, sbx-ctl]
+    oom_score_adj: -500
     restart: unless-stopped
+    # With userns-remap on the host, root and `app` here would map to unprivileged host ids that
+    # cannot read the key file; the platform images are ours, so only sandboxes stay remapped.
+    # `group_add` is the host gid host-setup.sh gives the key file (0640 root:3986).
+    group_add: ['3986']
+    secrets:
+      - sandboxd_api_key
     stop_grace_period: 120s
+    userns_mode: host
+
+  # The sandbox control plane that replaces Daytona (spec 042). See infra/sandboxd/README.md.
+  #
+  # Host network, because it owns host iptables rules and bind addresses on the sandbox bridges;
+  # it is the only container with the Docker socket. It listens on `sbx-ctl` (172.30.2.0/24, an
+  # internal bridge compose creates below) rather than 127.0.0.1, which the api/worker containers
+  # cannot reach, and rather than 0.0.0.0, which would expose the control plane on the public
+  # interface. Sandboxes are never attached to sbx-ctl, and firewall.sh denies them all of
+  # 172.16.0.0/12 anyway.
+  #
+  # `userns_mode: host`: dockerd runs with userns-remap, which would make root here an
+  # unprivileged host id that can neither open the socket nor load iptables rules.
+  sandboxd:
+    build:
+      context: .
+      dockerfile: apps/sandboxd/Dockerfile
+    image: forge-sandboxd
+    cap_add: [NET_ADMIN, NET_RAW]
+    environment:
+      SANDBOXD_API_HOST: ${SANDBOXD_API_HOST:-}
+      SANDBOXD_API_KEY_FILE: /run/secrets/sandboxd_api_key
+      SANDBOXD_DOCKER_ROOT: ${SANDBOXD_DOCKER_ROOT:-/var/lib/docker-sbx}
+      SANDBOXD_EGRESS_LISTEN: 172.30.0.1:3988
+      SANDBOXD_LISTEN: 172.30.2.1:3986
+      SANDBOXD_PREVIEW_LISTEN: 172.30.2.1:3987
+      SANDBOXD_PREVIEW_PUBLIC_URL: ${SANDBOXD_PREVIEW_PUBLIC_URL:-http://172.30.2.1:3987}
+      SANDBOXD_PUBLIC_URL: http://172.30.2.1:3986
+      # Real deployment: the firewall cannot be disabled and SANDBOXD_API_HOST (the BAIOS API host
+      # the proxy lets agent homes reach) is mandatory; sandboxd refuses to boot without it.
+      SANDBOXD_REAL: ${SANDBOXD_REAL:-1}
+      SANDBOXD_STORAGE_QUOTA: ${SANDBOXD_STORAGE_QUOTA:-1}
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://172.30.2.1:3986/healthz']
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    mem_limit: 256m
+    network_mode: host
+    read_only: true
+    restart: unless-stopped
+    secrets:
+      - sandboxd_api_key
+    tmpfs:
+      - /tmp
+    userns_mode: host
+    volumes:
+      # Read-only and only for GET /capacity's statfs of the Docker data root (disk alert at 70%).
+      - ${SANDBOXD_DOCKER_ROOT:-/var/lib/docker-sbx}:${SANDBOXD_DOCKER_ROOT:-/var/lib/docker-sbx}:ro
+      - /var/lib/sandboxd:/var/lib/sandboxd
+      - /var/run/docker.sock:/var/run/docker.sock
 
   # The edge (025 research R3, contracts § 3), replacing the nginx `web` service whose
   # buffering held every run's stream until the run ended. `infra/Caddyfile` is the same file
@@ -155,6 +224,7 @@ services:
     # The Caddyfile's `@hooks` matcher (spec 029 US6); the same value the api reads.
     environment:
       HOOKS_HOST: hooks.localhost
+    mem_limit: 128m
     ports:
       - '8080:8080'
     restart: unless-stopped
@@ -232,6 +302,7 @@ services:
     # the ci.yml probes reach it through `docker compose exec` instead.
     expose:
       - '8200'
+    mem_limit: 256m
     restart: unless-stopped
 
   postgres:
@@ -250,6 +321,8 @@ services:
       start_period: 10s
     ports:
       - '5432:5432'
+    mem_limit: 768m
+    oom_score_adj: -500
     restart: unless-stopped
     volumes:
       - postgres-data:/var/lib/postgresql/data
@@ -277,6 +350,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    mem_limit: 320m
     ports:
       - '6379:6379'
     restart: unless-stopped
@@ -303,6 +377,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    mem_limit: 320m
     ports:
       - '6380:6379'
     restart: unless-stopped
@@ -330,6 +405,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    mem_limit: 320m
     ports:
       - '6381:6379'
     restart: unless-stopped
@@ -359,9 +435,27 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    mem_limit: 320m
     ports:
       - '6382:6379'
     restart: unless-stopped
+
+# The control plane's bridge. Internal (no route out), compose-owned so it exists whenever the
+# services that use it do; sandboxd retries its bind until the bridge address appears.
+networks:
+  sbx-ctl:
+    name: sbx-ctl
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.name: sbx-ctl0
+    ipam:
+      config:
+        - subnet: 172.30.2.0/24
+          gateway: 172.30.2.1
+
+secrets:
+  sandboxd_api_key:
+    file: ${SANDBOXD_API_KEY_FILE:-/etc/sandboxd/api_key}
 
 volumes:
   postgres-data:

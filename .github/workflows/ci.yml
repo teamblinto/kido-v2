@@ -759,3 +759,196 @@ jobs:
       - name: Tear down
         if: always()
         run: docker compose down -v
+
+  # Spec 042 §14 step 5: the `*-real` suites exist to prove the API's Daytona adapter against a
+  # real sandbox runtime, and sandboxd is that runtime now. `quality` cannot run them (they need
+  # Docker and a running sandboxd), and `compose` runs no suites, so this job does: it builds the
+  # sandbox base image, starts sandboxd directly under node (runc, firewall off -- gVisor and the
+  # host iptables are proved on the staging VPS by infra/sandboxd/spike.sh, not on a shared
+  # runner), runs sandboxd's own Docker-backed suite, then the api and gateway `*-real` suites
+  # with DAYTONA_API_URL pointed at it.
+  #
+  # `agent-real` and `context-real` are not run: they need a model key (they print their own
+  # ANTHROPIC-SKIP banner), and CI holds none. The DAYTONA-SKIP check below is what keeps the
+  # suites that do run from skipping silently.
+  sandboxd:
+    name: sandboxd and the real-sandbox suites
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    # The same connection strings and service containers as `quality`, for the same reasons (see
+    # the comments there); the real suites boot the whole app.
+    env:
+      DATABASE_MIGRATION_URL: postgres://forge_migrator:forge_migrator@localhost:5432/forge
+      DATABASE_URL: postgres://forge_app:forge_app@localhost:5432/forge
+      DATABASE_URL_BYPASS_RLS: postgres://forge_bypass:forge_bypass@localhost:5432/forge
+      DEPLOY_ENV: local
+      EXPECT_INTEGRATION: 1
+      OUTBOX_RELAY_TICK_MS: 50
+      REDIS_CACHE_URL: redis://localhost:6380
+      REDIS_QUEUE_URL: redis://localhost:6381
+      REDIS_SESSION_URL: redis://localhost:6379
+      REDIS_STREAM_URL: redis://localhost:6382
+      # A throwaway key for a sandboxd that only lives for this job on loopback.
+      DAYTONA_API_URL: http://127.0.0.1:3986
+      DAYTONA_API_KEY: ci-sandboxd-key
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: forge
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_USER: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d forge"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+          --health-start-period 10s
+
+      redis-session:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis-cache:
+        image: redis:7-alpine
+        ports:
+          - 6380:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis-queue:
+        image: redis:7-alpine
+        ports:
+          - 6381:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      redis-stream:
+        image: redis:7-alpine
+        ports:
+          - 6382:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Bootstrap database roles and extensions
+        run: |
+          docker run --rm --network host \
+            -e PGPASSWORD=postgres \
+            -v "${{ github.workspace }}/infra/postgres:/sql:ro" \
+            postgres:16-alpine \
+            psql -v ON_ERROR_STOP=1 -h localhost -p 5432 -U postgres -d forge -f /sql/init-roles.sql
+
+      - name: Migrate database
+        run: pnpm --filter @repo/db db:migrate
+
+      - name: Build the sandbox base image
+        run: docker build -t forge/sandbox-base:1 infra/sandboxd/images/base
+
+      # Straight under node, as the package's `start` script does: the image is proved by the
+      # `compose` job's build. The listen addresses are loopback because nothing here is a
+      # container; the bridges it creates are the real ones, so preview reaches sandbox IPs.
+      - name: Start sandboxd
+        run: |
+          mkdir -p "${RUNNER_TEMP}/sandboxd"
+          SANDBOXD_API_KEY="${DAYTONA_API_KEY}" \
+          SANDBOXD_DATA_DIR="${RUNNER_TEMP}/sandboxd" \
+          SANDBOXD_FIREWALL=off \
+          SANDBOXD_RUNTIME_PROJECT=runc \
+          SANDBOXD_LISTEN=127.0.0.1:3986 \
+          SANDBOXD_PREVIEW_LISTEN=127.0.0.1:3987 \
+          SANDBOXD_PREVIEW_PUBLIC_URL=http://127.0.0.1:3987 \
+          SANDBOXD_PUBLIC_URL=http://127.0.0.1:3986 \
+          nohup node apps/sandboxd/src/main.ts > "${RUNNER_TEMP}/sandboxd.log" 2>&1 &
+          for _ in $(seq 1 30); do
+            curl -fsS http://127.0.0.1:3986/healthz && exit 0
+            sleep 1
+          done
+          echo "::error::sandboxd did not answer /healthz"
+          cat "${RUNNER_TEMP}/sandboxd.log"
+          exit 1
+
+      - name: sandboxd integration suite
+        run: pnpm --filter @repo/sandboxd test:int
+
+      # `sandbox-real` and the others address one pre-made sandbox by id; Daytona's stack had it
+      # created by hand, so it is created here the same way, through the API.
+      - name: Create the test sandbox
+        run: |
+          id="$(curl -fsS -X POST http://127.0.0.1:3986/sandbox \
+            -H "authorization: Bearer ${DAYTONA_API_KEY}" -H 'content-type: application/json' \
+            -d '{"snapshot":"forge/sandbox-base:1","labels":{"purpose":"ci"},"autoStopInterval":0,"autoArchiveInterval":0}' \
+            | node -pe 'JSON.parse(require("fs").readFileSync(0)).id')"
+          echo "DAYTONA_TEST_SANDBOX_ID=${id}" >> "$GITHUB_ENV"
+          for _ in $(seq 1 60); do
+            state="$(curl -fsS "http://127.0.0.1:3986/sandbox/${id}" -H "authorization: Bearer ${DAYTONA_API_KEY}" \
+              | node -pe 'JSON.parse(require("fs").readFileSync(0)).state')"
+            [ "${state}" = started ] && exit 0
+            sleep 1
+          done
+          echo "::error::sandbox ${id} never reached started (last state: ${state})"
+          exit 1
+
+      # Coverage off: these are three files out of ~390, and the 100% gate on rbac/ and crypto/
+      # is `quality`'s to enforce on the whole suite, not here on a slice.
+      - name: API real-sandbox suites
+        run: |
+          set -o pipefail
+          pnpm --filter @repo/api exec vitest run --allowOnly=false --coverage.enabled=false \
+            sandbox-real sandbox-lifecycle-real checkpoints-real 2>&1 | tee real.log
+
+      - name: Gateway preview-real
+        env:
+          PREVIEW_UPSTREAM_DIAL: http://127.0.0.1:3987
+        run: |
+          set -o pipefail
+          pnpm --filter @repo/gateway exec vitest run --coverage.enabled=false preview-real 2>&1 | tee -a real.log
+
+      - name: Refuse a silently skipped real suite
+        run: |
+          if grep -q 'DAYTONA-SKIP' real.log; then
+            echo "::error::A real-sandbox suite skipped in CI. A skip here means the adapter was never exercised."
+            grep -n 'DAYTONA-SKIP' real.log
+            exit 1
+          fi
+          echo "No real-sandbox suite skipped."
+
+      - name: sandboxd log
+        if: always()
+        run: cat "${RUNNER_TEMP}/sandboxd.log"
