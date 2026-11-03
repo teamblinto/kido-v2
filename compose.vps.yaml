@@ -4,16 +4,16 @@
 #   COMPOSE_FILE=compose.yaml:compose.vps.yaml
 #
 # THIS IS A DEPLOY_ENV=local-GRADE DEPLOYMENT, NOT A HARDENED ONE (see infra/sandboxd/README.md):
-# the app still runs with DEPLOY_ENV=local, OpenBao is the in-memory dev server with a fixed root
-# token, the KEK env master key is the all-zero placeholder, Postgres and Redis use the repository's
-# fixed passwords/no auth (but are no longer published), the gateway uses the plain broker, and
-# there is no object store. What the overlay does fix is exposure: only Caddy (80/443) is
-# published, with TLS, and previews are served through the gateway. A hardened deployment is the
-# Ansible path (infra/ansible).
+# the app still runs with DEPLOY_ENV=local, the KEK is the env provider with a master key held in
+# .env on this host (OpenBao's dev server would lose its keys, and with them every tenant secret,
+# on each restart), Postgres and Redis use the repository's fixed passwords/no auth (but are no
+# longer published), the gateway uses the plain broker, and there is no object store. What the
+# overlay does fix is exposure: only Caddy (80/443) is published, with TLS, and previews are served
+# through the gateway. A hardened deployment is the Ansible path (infra/ansible).
 #
 # Required in .env: APP_HOST, HOOKS_HOST, PREVIEW_DOMAIN, PREVIEW_SIGNING_KEY,
-# PREVIEW_SIGNING_KEY_ID, PREVIEW_PUBLIC_JWKS, AGENT_HOME_CLAUDE_VERSION (how to make them:
-# infra/sandboxd/README.md).
+# PREVIEW_SIGNING_KEY_ID, PREVIEW_PUBLIC_JWKS, AGENT_HOME_CLAUDE_VERSION, KEK_ENV_MASTER_KEY (how
+# to make them: infra/sandboxd/README.md).
 services:
   # Nothing but the edge is reachable from outside: drop every published store port.
   postgres:
@@ -26,8 +26,15 @@ services:
     ports: !reset []
   redis-stream:
     ports: !reset []
+  # Not used here (KEK_PROVIDER=env below): behind a profile nobody enables, so `up` never starts it.
   openbao:
-    ports: !reset []
+    profiles: [unused-on-vps]
+
+  # The agent-home egress proxy lets homes reach exactly this host (plus Anthropic's): the api the
+  # companion calls is AGENT_HOME_SERVER_URL below, https://APP_HOST.
+  sandboxd:
+    environment:
+      SANDBOXD_API_HOST: ${APP_HOST:?set APP_HOST in .env}
 
   caddy:
     healthcheck:
@@ -77,20 +84,38 @@ services:
       DATABASE_MIGRATION_URL: postgres://forge_migrator:forge_migrator@postgres:5432/forge
     restart: 'no'
 
+  # depends_on is replaced, not merged: the base file's list names openbao, which is off here.
   api:
-    depends_on:
+    depends_on: !override
       migrate:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+      redis-session:
+        condition: service_healthy
+      redis-stream:
+        condition: service_healthy
     # AGENT_HOME_CLAUDE_VERSION: an exact Claude Code version, never `stable`: what runs is what
-    # we chose. DAYTONA_*: the preview broker in this process asks sandboxd for each route's
-    # signed upstream, so the api needs sandboxd and its key too (read like the worker reads it).
+    # we chose. AGENT_HOME_SERVER_URL: the api as a home's companion reaches it, through the
+    # egress proxy and Caddy (DEPLOY_ENV=local would default it to host.docker.internal:3000,
+    # which the proxy refuses). DAYTONA_*: the preview broker in this process asks sandboxd for
+    # each route's signed upstream, so the api needs sandboxd and its key too (read like the
+    # worker reads it). KEK_*: the env provider; the key is generated once and must never change
+    # (every tenant data key is wrapped with it).
     environment: &vps-app-env
       AGENT_HOME_CLAUDE_VERSION: ${AGENT_HOME_CLAUDE_VERSION:?pin an exact x.y.z in .env}
+      AGENT_HOME_SERVER_URL: https://${APP_HOST:?}
       APP_URL: https://${APP_HOST:?}
       CORS_ORIGINS: https://${APP_HOST:?}
       DAYTONA_API_KEY_FILE: /run/secrets/sandboxd_api_key
       DAYTONA_API_URL: http://172.30.2.1:3986
       HOOKS_HOST: ${HOOKS_HOST:?}
+      KEK_ENV_MASTER_KEY: ${KEK_ENV_MASTER_KEY:?generate once with openssl rand -base64 32}
+      KEK_PROVIDER: env
       PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:?}
       PREVIEW_SIGNING_KEY: ${PREVIEW_SIGNING_KEY:?}
       PREVIEW_SIGNING_KEY_ID: ${PREVIEW_SIGNING_KEY_ID:?}
@@ -107,9 +132,19 @@ services:
       - sandboxd_api_key
 
   worker:
-    depends_on:
+    depends_on: !override
       migrate:
         condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+      redis-queue:
+        condition: service_healthy
+      redis-session:
+        condition: service_healthy
+      redis-stream:
+        condition: service_healthy
     environment:
       <<: *vps-app-env
 

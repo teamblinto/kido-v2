@@ -133,8 +133,9 @@ services:
     environment:
       <<: *app-env
       RUN_PROFILES: 'agent,events,cron'
-      # The only service that may carry these (013 R10): a model and a sandbox are things a
-      # worker talks to, never the api. Uncomment and fill in to run real agent runs locally.
+      # The only service that may carry a model key (013 R10). The sandboxd URL and key may also
+      # go to the api (R10 as amended by spec 042 design §8: its preview broker mints preview
+      # upstreams), as the VPS overlay does. Uncomment and fill in to run real agent runs locally.
       # ANTHROPIC_API_KEY: ''
       # sandboxd (spec 042) speaks Daytona's protocol, so the adapter just points at it. It is
       # on the host network, listening on the `sbx-ctl` bridge gateway (see the sandboxd
@@ -195,7 +196,9 @@ services:
       timeout: 3s
       retries: 5
       start_period: 15s
-    mem_limit: 256m
+    # 768m: a 64 MiB upload is buffered 2-3x (multipart parse + exec stdin), and an OOM kill here
+    # drops every live preview and HMR socket at once.
+    mem_limit: 768m
     network_mode: host
     read_only: true
     restart: unless-stopped

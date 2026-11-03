@@ -95,13 +95,42 @@
 
     # --- forge-app, twice, by digest ---------------------------------------------------
 
+    - name: Create the sandboxd key directory
+      ansible.builtin.file:
+        path: /etc/sandboxd
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
+
+    - name: Place the sandboxd API key where the api and worker read it as a file
+      # ADR 027: a sandbox key held in the environment is local-only. 0640 with group 3986; the
+      # api and worker containers are given that supplementary gid (`groups` below), nothing
+      # else is. Before the api: it mounts the file.
+      # The same value host-setup.sh generated on the sandbox host.
+      ansible.builtin.copy:
+        content: '{{ vault_sandboxd_api_key }}'
+        dest: /etc/sandboxd/api_key
+        owner: root
+        group: '3986'
+        mode: '0640'
+      no_log: true
+
     - name: Run the API — forge-app as `api`
       community.docker.docker_container:
         name: api
         image: '{{ forge_app_repository }}@{{ forge_app_digest }}'
         restart_policy: unless-stopped
         networks: [{ name: '{{ forge_network }}' }]
-        env: "{{ forge_app_env | combine({'RUN_PROFILES': 'api'}) }}"
+        # The sandboxd URL and key file (spec 013 R10 as amended by spec 042 design.md §8): the
+        # preview route broker mints each preview's upstream from sandboxd. No model key.
+        env: >-
+          {{ forge_app_env
+             | combine(forge_app_sandboxd_env)
+             | combine({'RUN_PROFILES': 'api'}) }}
+        groups: ['3986']
+        volumes:
+          - /etc/sandboxd/api_key:/run/secrets/sandboxd_api_key:ro
         healthcheck:
           test:
             [
@@ -119,30 +148,10 @@
         comparisons:
           '*': strict
 
-    - name: Create the sandboxd key directory
-      ansible.builtin.file:
-        path: /etc/sandboxd
-        state: directory
-        owner: root
-        group: root
-        mode: '0750'
-
-    - name: Place the sandboxd API key where the worker reads it as a file
-      # ADR 027: a sandbox key held in the environment is local-only. 0640 with group 3986; the
-      # worker container is given that supplementary gid (`groups` below), nothing else is.
-      # The same value host-setup.sh generated on the sandbox host.
-      ansible.builtin.copy:
-        content: '{{ vault_sandboxd_api_key }}'
-        dest: /etc/sandboxd/api_key
-        owner: root
-        group: '3986'
-        mode: '0640'
-      no_log: true
-
     - name: Run the workers — forge-app as `agent,events,cron`
       # The same image and the same environment; the profile set is the whole difference. The
-      # worker is the only process that may hold a model or sandbox credential (spec 013 R10),
-      # which is why forge_app_worker_env is merged here and nowhere else.
+      # worker is the only process that may hold a model credential (spec 013 R10), which is why
+      # forge_app_worker_env is merged here and nowhere else.
       community.docker.docker_container:
         name: worker
         image: '{{ forge_app_repository }}@{{ forge_app_digest }}'
@@ -150,6 +159,7 @@
         networks: [{ name: '{{ forge_network }}' }]
         env: >-
           {{ forge_app_env
+             | combine(forge_app_sandboxd_env)
              | combine(forge_app_worker_env)
              | combine({'RUN_PROFILES': 'agent,events,cron'}) }}
         # § 13's hard-kill budget: on SIGTERM the worker stops taking jobs and finishes the

@@ -6,6 +6,15 @@
 # stack can use, so sandboxd runs on the default compose network, publishes its ports on loopback
 # for tests run from the host, skips the firewall (sandboxes are NOT isolated: local dev only) and
 # uses runc, since gVisor is not installed there. The key is a local-only value, not a secret.
+#
+# AGENT HOMES DO NOT WORK IN THIS STACK. A home sits on `sbx-agent`, an internal bridge with
+# inter-container traffic off, whose only way out is sandboxd's egress proxy on the bridge gateway
+# (172.30.0.1). That address lives in Docker Desktop's VM, where sandboxd cannot listen without
+# host networking, and attaching sandboxd to sbx-agent instead does not help: with icc off the
+# bridge drops home -> sandboxd like any other container-to-container packet (checked on Docker
+# Desktop 29.x). SANDBOXD_EGRESS_LISTEN below only gives the proxy something to bind. Use a Linux
+# host (infra/sandboxd/README.md) for agent homes; project sandboxes, the toolbox and the real
+# suites other than preview-real work here.
 services:
   sandboxd:
     environment:
@@ -30,7 +39,7 @@ services:
       - '127.0.0.1:3987:3987'
     secrets: !reset []
   worker:
-    environment:
+    environment: &local-sandboxd
       DAYTONA_API_URL: http://sandboxd:3986
       DAYTONA_API_KEY: ${DAYTONA_API_KEY:-local-sandboxd-dev-key}
       DAYTONA_API_KEY_FILE: !reset null
@@ -38,6 +47,6 @@ services:
     secrets: !reset []
   # The api decides at run-create whether a PLATFORM credential exists (PlatformCredentials), so
   # without the key here every run is refused 422 "model is not in the organisation's catalogue".
+  # The sandboxd URL and key: its preview route broker asks sandboxd for each route's upstream.
   api:
-    environment:
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
+    environment: *local-sandboxd

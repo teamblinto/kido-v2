@@ -933,7 +933,7 @@ jobs:
         run: |
           set -o pipefail
           pnpm --filter @repo/api exec vitest run --allowOnly=false --coverage.enabled=false \
-            sandbox-real sandbox-lifecycle-real checkpoints-real 2>&1 | tee real.log
+            sandbox-real sandbox-lifecycle-real checkpoints-real 2>&1 | tee -a real.log
 
       - name: Gateway preview-real
         env:

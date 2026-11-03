@@ -82,12 +82,15 @@ forge_app_env:
   # against the digest that was asked for (contracts § 4).
   BUILD_DIGEST: '{{ forge_app_digest }}'
 
-# Only the worker may hold these: a model and a sandbox are things a worker talks to, never
-# the api (spec 013 R10). They are merged into the worker's environment in app.yml and
-# nowhere else.
-forge_app_worker_env:
-  ANTHROPIC_API_KEY: '{{ vault_anthropic_api_key }}'
-  # sandboxd (spec 042) speaks Daytona's protocol, so the adapter keeps its names. Plain http: it is
-  # reached over the WireGuard mesh. The key is a file mounted by app.yml, never an env value.
+# sandboxd (spec 042) speaks Daytona's protocol, so the adapter keeps its names. Plain http: it is
+# reached over the WireGuard mesh. The key is a file mounted by app.yml, never an env value. Both
+# the worker and the api get these: spec 013 R10 is amended for spec 042 (design.md §8) so the
+# api's preview route broker can mint each preview's signed upstream from sandboxd.
+forge_app_sandboxd_env:
   DAYTONA_API_URL: 'http://sandboxd-1.{{ forge_internal_domain }}:3986'
   DAYTONA_API_KEY_FILE: /run/secrets/sandboxd_api_key
+
+# Only the worker may hold the model key (spec 013 R10). Merged into the worker's environment in
+# app.yml and nowhere else.
+forge_app_worker_env:
+  ANTHROPIC_API_KEY: '{{ vault_anthropic_api_key }}'
