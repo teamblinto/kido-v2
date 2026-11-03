@@ -146,14 +146,13 @@ services:
     networks: [default, sbx-ctl]
     oom_score_adj: -500
     restart: unless-stopped
-    # With userns-remap on the host, root and `app` here would map to unprivileged host ids that
-    # cannot read the key file; the platform images are ours, so only sandboxes stay remapped.
-    # `group_add` is the host gid host-setup.sh gives the key file (0640 root:3986).
+    # Stays under userns-remap. `app` reads the key through supplementary container gid 3986,
+    # which dockerd maps to host gid <dockremap subgid base>+3986; host-setup.sh chowns the key
+    # file (0640) to exactly that gid.
     group_add: ['3986']
     secrets:
       - sandboxd_api_key
     stop_grace_period: 120s
-    userns_mode: host
 
   # The sandbox control plane that replaces Daytona (spec 042). See infra/sandboxd/README.md.
   #

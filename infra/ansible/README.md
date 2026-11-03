@@ -14,7 +14,7 @@ roughly ten app nodes — and nothing here prepares for a cluster.
 | [`data.yml`](./data.yml)       | `data`    | OpenBao on Raft — **three voters**, the third being the witness — and its snapshot timer                                |
 | [`gateway.yml`](./gateway.yml) | `gateway` | `forge-gateway` and the node exporter, with **no credential of any kind**                                               |
 
-`daytona` and `ops` have inventory groups here and their plays belong to their own features; this
+`sandboxd` (the former `daytona` group; spec 042, plan in [`sandboxd.yml`](./sandboxd.yml)) and `ops` have inventory groups here and their plays belong to their own features; this
 feature's tasks are the three above.
 
 ## Three voters, not two

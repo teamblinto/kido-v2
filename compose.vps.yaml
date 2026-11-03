@@ -1,0 +1,93 @@
+# The single-VPS overlay. Select it in the server's .env (which also stops compose from loading the
+# local-dev compose.override.yaml):
+#
+#   COMPOSE_FILE=compose.yaml:compose.vps.yaml
+#
+# THIS IS A DEPLOY_ENV=local-GRADE DEPLOYMENT, NOT A HARDENED ONE (see infra/sandboxd/README.md):
+# the app still runs with DEPLOY_ENV=local, OpenBao is the in-memory dev server with a fixed root
+# token, the KEK env master key is the all-zero placeholder, Postgres and Redis use the repository's
+# fixed passwords/no auth (but are no longer published), the gateway uses the plain broker, and
+# there is no object store. What the overlay does fix is exposure: only Caddy (80/443) is
+# published, with TLS, and previews are served through the gateway. A hardened deployment is the
+# Ansible path (infra/ansible).
+#
+# Required in .env: APP_HOST, HOOKS_HOST, PREVIEW_DOMAIN, PREVIEW_SIGNING_KEY,
+# PREVIEW_SIGNING_KEY_ID, PREVIEW_PUBLIC_JWKS (how to make them: infra/sandboxd/README.md).
+services:
+  # Nothing but the edge is reachable from outside: drop every published store port.
+  postgres:
+    ports: !reset []
+  redis-session:
+    ports: !reset []
+  redis-cache:
+    ports: !reset []
+  redis-queue:
+    ports: !reset []
+  redis-stream:
+    ports: !reset []
+  openbao:
+    ports: !reset []
+
+  caddy:
+    environment:
+      APP_HOST: ${APP_HOST:?set APP_HOST in .env}
+      HOOKS_HOST: ${HOOKS_HOST:?set HOOKS_HOST in .env}
+      PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:?set PREVIEW_DOMAIN in .env}
+    # Caddy does TLS (Let's Encrypt), so 80 and 443 (and 443/udp for HTTP/3), not 8080.
+    ports: !override
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    volumes:
+      - ./infra/Caddyfile.vps:/etc/caddy/Caddyfile:ro
+      - ./apps/web/dist:/srv:ro
+      - caddy-data:/data
+
+  api: &vps-app
+    environment: &vps-app-env
+      APP_URL: https://${APP_HOST:?}
+      CORS_ORIGINS: https://${APP_HOST:?}
+      HOOKS_HOST: ${HOOKS_HOST:?}
+      PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:?}
+      PREVIEW_SIGNING_KEY: ${PREVIEW_SIGNING_KEY:?}
+      PREVIEW_SIGNING_KEY_ID: ${PREVIEW_SIGNING_KEY_ID:?}
+      # A project sandbox reaches this through the host's public address (Docker DNATs it to the
+      # edge); firewall.sh accepts exactly that path (SBX_HOST_ALLOW_TCP).
+      SANDBOX_CALLBACK_URL: https://${APP_HOST:?}/api/v1/internal/sandbox-callbacks
+    # The gateway shares this container's network namespace, so it reaches the plain broker
+    # (127.0.0.1:3001) and sandboxd's preview listener on sbx-ctl through this container.
+    networks: [default, sbx-ctl]
+
+  worker:
+    environment:
+      <<: *vps-app-env
+
+  # The preview gateway (spec 017): verifies a signed route record and proxies to the sandbox
+  # through sandboxd's preview listener. It holds no database or platform credential. Local-grade
+  # wiring: network_mode service:api puts it where the api's loopback-only plain broker is, so no
+  # mTLS material is needed; the hardened path is infra/ansible/gateway.yml (mTLS broker).
+  gateway:
+    build:
+      context: .
+      dockerfile: apps/gateway/Dockerfile
+    image: forge-gateway
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      BROKER_HOST: 127.0.0.1
+      BROKER_TRANSPORT: plain
+      DEPLOY_ENV: local
+      PORT: 3200
+      PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:?}
+      PREVIEW_PUBLIC_JWKS: ${PREVIEW_PUBLIC_JWKS:?}
+      # The route's upstream host does not resolve from here; dial sandboxd's preview listener on
+      # sbx-ctl and keep the minted Host, exactly as the preview-real suite does.
+      PREVIEW_UPSTREAM_DIAL: http://172.30.2.1:3987
+      PRODUCT_ORIGIN: https://${APP_HOST:?}
+    mem_limit: 256m
+    network_mode: service:api
+    restart: unless-stopped
+
+volumes:
+  caddy-data:

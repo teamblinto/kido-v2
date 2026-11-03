@@ -119,17 +119,24 @@
         comparisons:
           '*': strict
 
+    - name: Create the sandboxd key directory
+      ansible.builtin.file:
+        path: /etc/sandboxd
+        state: directory
+        owner: root
+        group: root
+        mode: '0750'
+
     - name: Place the sandboxd API key where the worker reads it as a file
-      # ADR 027: a sandbox key held in the environment is local-only. The directory is root-only;
-      # the file itself is readable because the worker runs as a non-root user, and only the
-      # worker container has it mounted. The same value host-setup.sh generated on the sandbox host.
+      # ADR 027: a sandbox key held in the environment is local-only. 0640 with group 3986; the
+      # worker container is given that supplementary gid (`groups` below), nothing else is.
+      # The same value host-setup.sh generated on the sandbox host.
       ansible.builtin.copy:
         content: '{{ vault_sandboxd_api_key }}'
         dest: /etc/sandboxd/api_key
         owner: root
-        group: root
-        mode: '0444'
-        directory_mode: '0700'
+        group: '3986'
+        mode: '0640'
       no_log: true
 
     - name: Run the workers — forge-app as `agent,events,cron`
@@ -149,6 +156,7 @@
         # active ones; a run that has not reached a boundary in 120 s is killed and resumed
         # elsewhere under a new lease epoch (spec 008).
         stop_timeout: 120
+        groups: ['3986']
         volumes:
           - /etc/sandboxd/api_key:/run/secrets/sandboxd_api_key:ro
         healthcheck:

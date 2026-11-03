@@ -7,7 +7,8 @@
 #
 # Options
 #   --yes                 required to format/mount anything, write daemon.json or restart docker
-#   --force               replace a /etc/docker/daemon.json whose content differs (backed up first)
+#   --force               replace a differing daemon.json (backed up first); move the data root even if
+#                         the old one holds containers or volumes
 #   --data-disk DEV       format DEV as XFS (pquota) and mount it at the Docker data root
 #   --loop-size SIZE      no data disk: back the data root with a sparse XFS loop file of SIZE
 #                         (default 40G, e.g. 60G); 0 = no quota at all (SANDBOXD_STORAGE_QUOTA=0)
@@ -60,7 +61,7 @@ sandboxd host setup will:
   2. storage: $STORAGE
   3. write $DAEMON from infra/sandboxd/daemon.json$DR_NOTE, back up any existing file, RESTART docker
   4. create a $SWAP_SIZE /swapfile and set vm.swappiness=10
-  5. create /var/lib/sandboxd (0700) and /etc/sandboxd/api_key (0640 root:$SANDBOXD_GID, generated once)
+  5. create /var/lib/sandboxd (0700) and /etc/sandboxd/api_key (0640, group = dockremap subgid base + $SANDBOXD_GID, generated once)
   6. $([[ $BUILD_IMAGE == 1 ]] && echo "docker build forge/sandbox-base:1" || echo "(skip) base image")
 EOF
 if ((!YES)); then
@@ -106,6 +107,7 @@ if ! command -v docker >/dev/null; then
   apt-get update -qq
   apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin >/dev/null
 fi
+docker compose version >/dev/null 2>&1 || die "the docker compose plugin is missing (apt install docker-compose-plugin)"
 if ! command -v runsc >/dev/null; then
   say "installing gVisor"
   curl -fsSL https://gvisor.dev/archive.key | gpg --dearmor --yes -o /usr/share/keyrings/gvisor-archive-keyring.gpg
@@ -118,6 +120,13 @@ fi
 [[ -e /usr/local/bin/runsc ]] || ln -s "$(command -v runsc)" /usr/local/bin/runsc
 
 # ---- 2. XFS data volume ------------------------------------------------------------------------
+# Moving the data root orphans whatever the old one holds: refuse unless the old one is empty.
+if ((USE_DATA_ROOT && !DAEMON_SAME && !FORCE)); then
+  cur="$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)"
+  if [[ -n "$cur" && "$cur" != "$DATA_ROOT" && "$cur" != "$DATA_ROOT"/* ]]     && [[ -n "$(docker ps -aq 2>/dev/null)$(docker volume ls -q 2>/dev/null)" ]]; then
+    die "docker at $cur holds containers or volumes that would be orphaned by moving the data root to $DATA_ROOT; migrate or remove them, or re-run with --force"
+  fi
+fi
 if [[ -n "$DATA_DISK" ]]; then
   [[ -b "$DATA_DISK" ]] || die "$DATA_DISK is not a block device"
   if ! mountpoint -q "$DATA_ROOT"; then
@@ -134,6 +143,9 @@ if [[ -n "$DATA_DISK" ]]; then
 elif [[ "$LOOP_SIZE" != 0 ]]; then
   if ! mountpoint -q "$DATA_ROOT"; then
     if [[ ! -e "$LOOP_IMG" ]]; then
+      have="$(df --output=avail -B1 "$(dirname "$LOOP_IMG")" | tail -1 | tr -d ' ')"
+      need="$(numfmt --from=iec "$LOOP_SIZE")"
+      ((have >= need)) || die "$LOOP_SIZE requested for $LOOP_IMG but only $(numfmt --to=iec "$have") is free; pass a smaller --loop-size"
       say "creating sparse $LOOP_SIZE $LOOP_IMG"
       truncate -s "$LOOP_SIZE" "$LOOP_IMG"
       mkfs.xfs -q "$LOOP_IMG"
@@ -148,6 +160,20 @@ if ((USE_DATA_ROOT)); then
 fi
 
 # ---- 3. daemon.json ----------------------------------------------------------------------------
+# dockerd must never start on an unmounted data root (it would silently fill the root disk).
+if ((USE_DATA_ROOT)); then
+  dropin=/etc/systemd/system/docker.service.d/sandboxd.conf
+  printf '[Unit]
+RequiresMountsFor=%s
+' "$DATA_ROOT" >"$dropin.new"
+  install -d /etc/systemd/system/docker.service.d
+  if ! cmp -s "$dropin.new" "$dropin" 2>/dev/null; then
+    mv -f "$dropin.new" "$dropin"
+    systemctl daemon-reload
+  else
+    rm -f "$dropin.new"
+  fi
+fi
 if ((DAEMON_SAME)); then
   say "$DAEMON already up to date"
 else
@@ -180,14 +206,18 @@ sysctl -q -p /etc/sysctl.d/99-sandboxd.conf
 # ---- 5. sandboxd state and key -----------------------------------------------------------------
 install -d -m 0700 /var/lib/sandboxd
 install -d -m 0755 /etc/sandboxd
-getent group "$SANDBOXD_GID" >/dev/null || groupadd -g "$SANDBOXD_GID" sandboxd-key
+# dockerd's remap: container gid N is host gid <dockremap subgid base> + N (created when dockerd
+# started with userns-remap above).
+sub_base="$(awk -F: '$1 == "dockremap" { print $2; exit }' /etc/subgid)"
+[[ -n "$sub_base" ]] || die "no dockremap entry in /etc/subgid; did docker start with userns-remap?"
+KEY_GID=$((sub_base + SANDBOXD_GID))
 if [[ ! -s /etc/sandboxd/api_key ]]; then
   say "generating /etc/sandboxd/api_key"
   (umask 077 && openssl rand -hex 32 >/etc/sandboxd/api_key)
 fi
-# 0640 rather than 0600: the api/worker containers (non-root, host user namespace) read it through
-# the supplementary gid compose gives them; nothing else is in that group.
-chown root:"$SANDBOXD_GID" /etc/sandboxd/api_key
+# 0640 rather than 0600: the worker container (non-root, remapped) reads it through the
+# supplementary gid 3986 compose gives it, which the host sees as $KEY_GID; sandboxd is real root.
+chown root:"$KEY_GID" /etc/sandboxd/api_key
 chmod 0640 /etc/sandboxd/api_key
 
 # ---- 6. base image -----------------------------------------------------------------------------

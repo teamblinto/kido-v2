@@ -33,15 +33,17 @@
           - forge_sandboxd_image is defined
           - forge_sandboxd_image is match('^.+@sha256:[0-9a-f]{64}$')
           - sandboxd_listen_ip is defined
+          - sandboxd_listen_ip is not match('^(0\.0\.0\.0|127\..*|10\.99\.0\.50)$')
           - sandboxd_api_host is defined
         fail_msg: >-
           forge_sandboxd_image must be repository@sha256:…; sandboxd_listen_ip (this host's
-          WireGuard mesh address, never 0.0.0.0) and sandboxd_api_host (the BAIOS API host agent
-          homes may reach) must be set. SANDBOXD_REAL=1 refuses to boot without the latter.
+          WireGuard mesh address, set per host: never unset, 0.0.0.0, loopback or the old
+          placeholder) and sandboxd_api_host (the BAIOS API host agent homes may reach) must be
+          set. SANDBOXD_REAL=1 refuses to boot without the latter.
 
     - name: Sync infra/sandboxd (host-setup.sh, daemon.json, the base image) to the host
       ansible.builtin.copy:
-        src: sandboxd/
+        src: '{{ playbook_dir }}/../sandboxd/'
         dest: '{{ sandboxd_src }}/'
         mode: preserve
 

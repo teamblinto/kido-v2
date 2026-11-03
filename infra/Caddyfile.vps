@@ -1,0 +1,83 @@
+# The edge for the single-VPS overlay (compose.vps.yaml). The site body is infra/Caddyfile's
+# `:8080` block verbatim in behaviour (stream flush, hooks origin, assets, SPA fallback); what
+# differs is that this one terminates TLS and has a second site for the preview gateway. Keep the
+# two in step when one changes.
+{
+	# Nothing administers this process over HTTP.
+	admin off
+
+	# Preview hostnames are <label>-<port>.<PREVIEW_DOMAIN>: unbounded, and a stock Caddy cannot
+	# do the DNS challenge a wildcard certificate needs, so certificates are issued on demand
+	# per hostname. `ask` is what stops anyone minting certificates for arbitrary names: Caddy
+	# asks this local listener first, and it says yes only for names under PREVIEW_DOMAIN.
+	on_demand_tls {
+		ask http://127.0.0.1:9123/allowed
+	}
+}
+
+http://127.0.0.1:9123 {
+	bind 127.0.0.1
+	@allowed expression {query.domain}.endsWith('.{$PREVIEW_DOMAIN}')
+	respond @allowed 200
+	respond 403
+}
+
+# The app, the API and the hooks origin. Caddy provisions certificates for both names.
+{$APP_HOST}, {$HOOKS_HOST} {
+	encode gzip
+
+	@hooks host {$HOOKS_HOST}
+	handle @hooks {
+		handle /github {
+			rewrite * /api/v1/webhooks/github
+			reverse_proxy api:3000
+		}
+		respond 404
+	}
+
+	@stream path /api/v1/*/stream
+	handle @stream {
+		reverse_proxy api:3000 {
+			flush_interval -1
+		}
+	}
+
+	handle /api/* {
+		reverse_proxy api:3000
+	}
+
+	root * /srv
+
+	handle /assets/* {
+		header {
+			Cache-Control "public, max-age=31536000, immutable"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "SAMEORIGIN"
+		}
+		file_server
+	}
+
+	handle {
+		header {
+			Cache-Control "no-cache"
+			Referrer-Policy "strict-origin-when-cross-origin"
+			X-Content-Type-Options "nosniff"
+			X-Frame-Options "SAMEORIGIN"
+		}
+		try_files {path} {path}/ /index.html
+		file_server
+	}
+}
+
+# Previews: the gateway verifies the route record and proxies to sandboxd's preview listener. It
+# shares the api container's network namespace (see compose.vps.yaml), hence `api:3200`. Streaming
+# and WebSockets (Vite HMR) pass straight through.
+https://*.{$PREVIEW_DOMAIN} {
+	tls {
+		on_demand
+	}
+	reverse_proxy api:3200 {
+		flush_interval -1
+	}
+}

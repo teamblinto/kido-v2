@@ -905,7 +905,9 @@ jobs:
           exit 1
 
       - name: sandboxd integration suite
-        run: pnpm --filter @repo/sandboxd test:int
+        run: |
+          set -o pipefail
+          pnpm --filter @repo/sandboxd test:int 2>&1 | tee -a real.log
 
       # `sandbox-real` and the others address one pre-made sandbox by id; Daytona's stack had it
       # created by hand, so it is created here the same way, through the API.
@@ -942,9 +944,9 @@ jobs:
 
       - name: Refuse a silently skipped real suite
         run: |
-          if grep -q 'DAYTONA-SKIP' real.log; then
+          if grep -qE 'DAYTONA-SKIP|SANDBOXD-DOCKER-SKIP' real.log; then
             echo "::error::A real-sandbox suite skipped in CI. A skip here means the adapter was never exercised."
-            grep -n 'DAYTONA-SKIP' real.log
+            grep -nE 'DAYTONA-SKIP|SANDBOXD-DOCKER-SKIP' real.log
             exit 1
           fi
           echo "No real-sandbox suite skipped."

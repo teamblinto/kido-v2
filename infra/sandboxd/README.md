@@ -9,38 +9,91 @@ Daytona's wire protocol, so the API's adapter just points `DAYTONA_API_URL` at i
 - One container per host, `network_mode: host`, the only holder of `/var/run/docker.sock`. It runs as
   root (socket + iptables) with `userns_mode: host`, `NET_ADMIN`/`NET_RAW`, a read-only root fs.
 - **Control API and preview proxy listen on `sbx-ctl`**, a small internal bridge
-  (`172.30.2.0/24`, gateway `172.30.2.1`, created by compose) that only the worker is attached to:
-  `172.30.2.1:3986` (bearer key) and `172.30.2.1:3987` (signed preview tokens). Not `127.0.0.1`
-  (containers cannot reach the host's loopback) and not `0.0.0.0` (the public interface).
-  Sandboxes are never on `sbx-ctl`, and `firewall.sh` denies them all of `172.16.0.0/12` anyway.
-  Check on the real host that a container on `sbx-ctl` reaches `172.30.2.1` before relying on it.
+  (`172.30.2.0/24`, gateway `172.30.2.1`, bridge name `sbx-ctl0`, created by compose, so the stack
+  must be up before sandboxd can bind; it logs a clear error and retries every 5 s until then) that
+  only the worker (and, in the VPS overlay, the api/gateway) is attached to: `172.30.2.1:3986`
+  (bearer key) and `172.30.2.1:3987` (signed preview tokens). Not `127.0.0.1` (containers cannot
+  reach the host's loopback) and not `0.0.0.0` (the public interface). Sandboxes are never on
+  `sbx-ctl`.
+- That address is a local one, and Linux accepts packets for any local address from any interface,
+  so binding to it is not enough. `firewall.sh` therefore pins INPUT rules (derived from the config
+  by `firewallEnv`): traffic to `172.30.2.1` is accepted from `lo` and from `sbx-ctl0` only, and
+  traffic to the egress proxy address `172.30.0.1` from `lo` and `sbx-agent0` only. They apply only
+  when sandboxd listens on that bridge gateway; on the staging mesh it listens on a WireGuard
+  address and these rules are skipped.
 - Sandboxes live on `sbx-agent` (`172.30.0.0/24`, internal, egress proxy only) and `sbx-proj`
   (`172.30.1.0/24`, filtered); `firewall.sh` owns the iptables chains. Project sandboxes run under
-  gVisor (`runsc`), agent homes under hardened runc. Docker uses `userns-remap`.
+  gVisor (`runsc`), agent homes under hardened runc. Docker uses `userns-remap`. Sandbox containers
+  get `OomScoreAdj: 500`, so memory pressure kills a sandbox before the platform.
+- Single host: a project sandbox calls the BAIOS API on the host's public address, which Docker
+  DNATs to the edge container on a `10.x` network; `firewall.sh` accepts that DNAT'd path for the
+  allowed ports (443) before its private-range denies.
 - Secrets: the API key is the file `/etc/sandboxd/api_key` (`SANDBOXD_API_KEY_FILE`; the worker reads
   the same file as `DAYTONA_API_KEY_FILE`). The preview secret is generated into `/var/lib/sandboxd`.
-- Because of userns-remap, `api`/`worker` also use `userns_mode: host` and the supplementary gid 3986
-  so a non-root container can read the key (file is `0640 root:3986`, not `0600`). Only sandboxes
-  stay remapped.
+- The worker stays under userns-remap: it is non-root and reads the key through supplementary gid
+  3986, which dockerd maps to host gid (dockremap subgid base + 3986); `host-setup.sh` chowns the key
+  file (`0640`, not `0600`) to that gid. The api does not read the key. Only sandboxd runs in the
+  host user namespace.
 
 ## Deploy (single 8 GB VPS, Ubuntu 24.04)
 
 1. `sudo bash infra/sandboxd/host-setup.sh` prints the plan and changes nothing. Review it, then
    re-run with `--yes`. It installs Docker CE and gVisor from their apt repositories, writes
    [`daemon.json`](./daemon.json) (runsc with `--overlay2=none`, `userns-remap`, `local` log driver,
-   `live-restore`, address pools away from `172.30.0.0/23`), adds a 4 GiB swapfile with
-   `vm.swappiness=10`, creates `/var/lib/sandboxd` (0700) and `/etc/sandboxd/api_key`, and builds
-   `forge/sandbox-base:1`. It refuses to replace a different `/etc/docker/daemon.json` unless
-   `--force` (the old one is backed up first).
+   `live-restore`, address pools away from `172.30.0.0/23`), a systemd drop-in so dockerd never
+   starts before the data volume is mounted, a 4 GiB swapfile with `vm.swappiness=10`,
+   `/var/lib/sandboxd` (0700) and `/etc/sandboxd/api_key`, and builds `forge/sandbox-base:1`. It
+   refuses to replace a different `/etc/docker/daemon.json`, or to move the data root while Docker
+   holds containers or volumes, unless `--force` (the old daemon.json is backed up first).
 2. Disk quotas need XFS with `pquota`. Either pass a real data disk (`--data-disk /dev/sdb`: formatted
    and mounted at `/var/lib/docker-sbx`), or let it create a sparse loop file
-   (`--loop-size 40G` is the default: `/var/lib/sbx-xfs.img`, `loop,pquota,nofail` in fstab).
-   `--loop-size 0` skips XFS, and then you must set `SANDBOXD_STORAGE_QUOTA=0` (quotas off; weaker).
-   Do this on a fresh host: images already under `/var/lib/docker` are not migrated.
-3. Set `SANDBOXD_API_HOST` (the BAIOS API hostname agent homes may reach; sandboxd refuses to boot
-   without it) and, if you used another data root, `SANDBOXD_DOCKER_ROOT`. Remove `compose.override.yaml`
-   on the server, then `docker compose up -d --build`.
-4. `bash infra/sandboxd/spike.sh` (below) as a final check; `curl` `/healthz` on `172.30.2.1:3986`.
+   (`--loop-size 40G` is the default: `/var/lib/sbx-xfs.img`, `loop,pquota,nofail` in fstab; it checks
+   the free space first). `--loop-size 0` skips XFS, and then you must set
+   `SANDBOXD_STORAGE_QUOTA=0` (quotas off; weaker). Do this on a fresh host.
+3. Build the web app Caddy serves: `pnpm --filter @repo/web... build` (writes `apps/web/dist`).
+4. Create `.env` next to `compose.yaml` (below), then `docker compose up -d --build`.
+5. `bash infra/sandboxd/spike.sh` as a final check; `curl` `/healthz` on `172.30.2.1:3986`.
+
+### The single-VPS overlay (`compose.vps.yaml`) and what it is not
+
+On the server, put `COMPOSE_FILE=compose.yaml:compose.vps.yaml` in `.env`. That also stops compose
+loading the local-dev `compose.override.yaml`. The overlay unpublishes Postgres, the four Redis
+instances and OpenBao (the base file publishes them for local development), publishes only Caddy on
+80/443 with TLS from Let's Encrypt, and adds the preview gateway (`apps/gateway/Dockerfile`).
+
+**This is a single-host, `DEPLOY_ENV=local`-grade deployment, not a hardened production one.** These
+are not production-hardened, and the real deployment path is `infra/ansible`:
+
+- the app runs with `DEPLOY_ENV=local`, which relaxes checks that real deployments enforce;
+- OpenBao is the in-memory dev server with a fixed, published root token, and it loses its keys on
+  restart; `KEK_ENV_MASTER_KEY` is the all-zero placeholder, so tenant data keys are not protected;
+- Postgres and Redis keep the repository's fixed passwords or none (reachable only inside the
+  compose network);
+- the gateway uses the plain broker over a shared network namespace, not mTLS;
+- no object store is configured unless you add `OBJECT_STORE_*`, so features that need one
+  (repository mirrors, deployed sites, some checkpoint artifacts) are unavailable;
+- there are no backups and no replication.
+
+`.env` needs:
+
+- `APP_HOST` (apex, e.g. `app.example.com`), `HOOKS_HOST` (e.g. `hooks.example.com`),
+  `PREVIEW_DOMAIN` (e.g. `preview.example.com`). DNS: `A` records for `APP_HOST` and `HOOKS_HOST`
+  and a wildcard `A` record for `*.PREVIEW_DOMAIN`, all pointing at the VPS. Ports 80 and 443 must
+  be open. Preview certificates are issued on demand per hostname (Caddy asks a local endpoint that
+  allows only names under `PREVIEW_DOMAIN`), so the first load of a new preview is slow.
+- `SANDBOXD_API_HOST=<APP_HOST>`: the host agent homes may reach through the egress proxy. The
+  callback URL the api hands to sandboxes (`SANDBOX_CALLBACK_URL`) is set by the overlay to
+  `https://<APP_HOST>/api/v1/internal/sandbox-callbacks`; project sandboxes reach it on the host's
+  public address.
+- `PREVIEW_SIGNING_KEY`, `PREVIEW_SIGNING_KEY_ID`, `PREVIEW_PUBLIC_JWKS`, generated once:
+
+      node -e "const c=require('crypto');const k=c.generateKeyPairSync('ed25519');const kid='vps-1';console.log('PREVIEW_SIGNING_KEY='+k.privateKey.export({type:'pkcs8',format:'der'}).toString('base64'));console.log('PREVIEW_SIGNING_KEY_ID='+kid);const j=k.publicKey.export({format:'jwk'});console.log('PREVIEW_PUBLIC_JWKS='+JSON.stringify({keys:[{kty:'OKP',crv:'Ed25519',x:j.x,kid}]}))"
+
+  Quote the JWKS line in `.env` with single quotes.
+
+- `ANTHROPIC_API_KEY` only if you use the platform-key path (a platform credential in the model
+  catalogue): add it to the `api` and `worker` environment in a third compose file listed in
+  `COMPOSE_FILE`. Subscription (BYOS) linking needs none.
 
 Staging mesh: [`infra/ansible/sandboxd.yml`](../ansible/sandboxd.yml) replaces the old `daytona`
 host. It runs host-setup.sh and the container with `SANDBOXD_LISTEN` set to the host's WireGuard
@@ -54,7 +107,13 @@ image yet; `forge_sandboxd_image` must be one built from `apps/sandboxd/Dockerfi
   Beyond that move to 16 GB or a second sandbox host. `SANDBOXD_MAX_RUNNING` and
   `SANDBOXD_MIN_MEM_AVAILABLE_MB` queue new sandboxes (they report `starting`) rather than refuse them.
 - `GET /capacity` (bearer key) returns `running, queued, maxRunning, memAvailableBytes,
-diskFreeBytes, diskUsedPct`. **Alert at `diskUsedPct` 70.** `/healthz` is unauthenticated.
+diskFreeBytes, diskUsedPct` (df's definition, of `SANDBOXD_DOCKER_ROOT`). **Alert at 70.** A cron
+  line that alerts past the threshold:
+
+      */10 * * * * curl -fsS -H "authorization: Bearer $(cat /etc/sandboxd/api_key)" http://172.30.2.1:3986/capacity | jq -e '.diskUsedPct < 70' >/dev/null || echo 'sandboxd disk >= 70%' | mail -s sandboxd root
+
+  `/healthz` is unauthenticated.
+
 - **Never run `docker system prune`** (or `docker image prune -a`, `docker volume prune`) on this
   host: it deletes template and checkpoint images (`forge-snap/*`) that stopped sandboxes depend on.
 - Local development: `compose.override.yaml` runs sandboxd on the default network with
