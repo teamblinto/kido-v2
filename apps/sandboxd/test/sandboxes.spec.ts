@@ -99,10 +99,13 @@ describe('sandbox control plane', () => {
     const post = (snapshot: string) => call('POST', '/sandbox', { snapshot, labels: {} });
     expect((await post('forge/sandbox-base:1')).status).toBe(200);
     expect((await post('forge/other/img')).status).toBe(200);
+    expect((await post('forge-snap/foo:latest')).status).toBe(200);
     for (const bad of [
       'docker.io/library/alpine',
       'forge/../x',
       'forge/a/../x',
+      'forge/a//b',
+      'forge/a/-x',
       'forge/Upper',
       'forge/has space',
       'alpine',

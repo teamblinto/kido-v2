@@ -9,8 +9,9 @@ import { HttpError, type router, sendJson } from './http.ts';
 import type { SandboxRow, Store } from './store.ts';
 
 const SNAP_NAME = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
-// forge/ images by prefix; anything else must be listed in SANDBOXD_IMAGE_ALLOW.
-const FORGE_IMAGE = /^forge\/[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?$/;
+// forge/ and forge-snap/ images by prefix; anything else must be listed in SANDBOXD_IMAGE_ALLOW.
+const SEG = '[a-z0-9]+(?:[._-][a-z0-9]+)*'; // a valid docker repo path component
+const FORGE_IMAGE = new RegExp(`^forge(?:-snap)?/${SEG}(?:/${SEG})*(?::[A-Za-z0-9._-]+)?$`);
 const snapRef = (name: string) => `forge-snap/${name}:latest`;
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -93,7 +94,10 @@ export function registerSandboxRoutes(
     let image: string;
     if (SNAP_NAME.test(snapshot) && (await docker.imageExists(snapRef(snapshot)))) {
       image = snapRef(snapshot);
-    } else if ((FORGE_IMAGE.test(snapshot) && !snapshot.includes('..')) || cfg.imageAllow.includes(snapshot)) {
+    } else if (
+      (FORGE_IMAGE.test(snapshot) && !snapshot.includes('..')) ||
+      cfg.imageAllow.includes(snapshot)
+    ) {
       image = snapshot;
     } else {
       throw new HttpError(400, `Snapshot ${snapshot} not found`);
@@ -104,16 +108,16 @@ export function registerSandboxRoutes(
     const now = new Date().toISOString();
     try {
       store.insert({
-      id,
-      containerId,
-      image,
-      class: cls,
-      labels,
-      desired: 'queued',
-      networkAllow: null,
-      networkBlockAll: false,
-      createdAt: now,
-      queuedAt: now,
+        id,
+        containerId,
+        image,
+        class: cls,
+        labels,
+        desired: 'queued',
+        networkAllow: null,
+        networkBlockAll: false,
+        createdAt: now,
+        queuedAt: now,
       });
     } catch (err) {
       await docker.remove(containerId); // no orphan container for a row that never landed
