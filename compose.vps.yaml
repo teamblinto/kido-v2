@@ -14,6 +14,11 @@
 # Required in .env: APP_HOST, HOOKS_HOST, PREVIEW_DOMAIN, PREVIEW_SIGNING_KEY,
 # PREVIEW_SIGNING_KEY_ID, PREVIEW_PUBLIC_JWKS, AGENT_HOME_CLAUDE_VERSION, KEK_ENV_MASTER_KEY (how
 # to make them: infra/sandboxd/README.md).
+#
+# Images: FORGE_APP_IMAGE, FORGE_GATEWAY_IMAGE and FORGE_SANDBOXD_IMAGE name what runs. Unset, they
+# are the local names the base file's `build:` produces (`docker compose build`, a first bring-up
+# with no registry); a CD deploy pins them to release.yml's GHCR digests in a release.env
+# (infra/sandboxd/deploy-vps.sh).
 services:
   # Nothing but the edge is reachable from outside: drop every published store port.
   postgres:
@@ -33,6 +38,7 @@ services:
   # The agent-home egress proxy lets homes reach exactly this host (plus Anthropic's): the api the
   # companion calls is AGENT_HOME_SERVER_URL below, https://APP_HOST.
   sandboxd:
+    image: ${FORGE_SANDBOXD_IMAGE:-forge-sandboxd}
     environment:
       SANDBOXD_API_HOST: ${APP_HOST:?set APP_HOST in .env}
 
@@ -61,8 +67,8 @@ services:
   # reach it. It is the image's own drizzle-orm migrator over the image's own migrations (the same
   # program as infra/deploy.sh step 3, minus the advisory lock: one host, one migrate container).
   migrate:
-    image: forge-app
-    # Built by the api service's `build:`; never pulled.
+    image: ${FORGE_APP_IMAGE:-forge-app}
+    # The api service's image (built by its `build:` or pulled for it); never pulled on its own.
     pull_policy: never
     command:
       - node
@@ -86,6 +92,7 @@ services:
 
   # depends_on is replaced, not merged: the base file's list names openbao, which is off here.
   api:
+    image: ${FORGE_APP_IMAGE:-forge-app}
     depends_on: !override
       migrate:
         condition: service_completed_successfully
@@ -132,6 +139,7 @@ services:
       - sandboxd_api_key
 
   worker:
+    image: ${FORGE_APP_IMAGE:-forge-app}
     depends_on: !override
       migrate:
         condition: service_completed_successfully
@@ -163,7 +171,7 @@ services:
     build:
       context: .
       dockerfile: apps/gateway/Dockerfile
-    image: forge-gateway
+    image: ${FORGE_GATEWAY_IMAGE:-forge-gateway}
     depends_on:
       api:
         condition: service_healthy

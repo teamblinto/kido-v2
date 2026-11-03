@@ -87,8 +87,8 @@ jobs:
         id: commit
         run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
 
-  # One job per image, so each image is built exactly once per commit (FR-003) and the two do not
-  # serialise behind each other. Nothing downstream ever rebuilds: what this job pushes is what is
+  # One job per image, so each image is built exactly once per commit (FR-003) and the images do
+  # not serialise behind each other. Nothing downstream ever rebuilds: what this job pushes is what is
   # deployed, promoted unchanged from here to every environment.
   publish:
     name: Publish ${{ matrix.image }}
@@ -106,6 +106,9 @@ jobs:
             dockerfile: apps/api/Dockerfile
           - image: forge-gateway
             dockerfile: apps/gateway/Dockerfile
+          # spec 042: the sandbox control plane the single-VPS deploy runs (compose.vps.yaml).
+          - image: forge-sandboxd
+            dockerfile: apps/sandboxd/Dockerfile
 
     steps:
       - name: Check out repository
@@ -221,4 +224,141 @@ jobs:
             echo '```sh'
             echo "infra/deploy.sh staging ${DIGEST}"
             echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The deploy job below pins each image by this digest; a matrix leg cannot hand its own
+      # output to a later job by name, so each leg leaves a one-line artifact.
+      - name: Record the digest for the deploy job
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          IMAGE: ${{ matrix.image }}
+        run: mkdir -p digests && printf '%s' "${DIGEST}" > "digests/${IMAGE}"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.image }}
+          path: digests/${{ matrix.image }}
+          retention-days: 7
+
+  # Continuous deployment of `main` to the single VPS (compose.vps.yaml, infra/sandboxd/README.md
+  # "Automatic deploys"). Only for the `workflow_run` path, never a tag, and only when the owner has
+  # set the three secrets; without them the job passes with a notice and touches nothing. What
+  # crosses to the server is the commit's compose files, infra/, the built web app and a
+  # release.env of digests; the app's secrets live only on the server. The GHCR pull token is this
+  # job's own GITHUB_TOKEN (packages: read), sent on stdin, and logged out after the pull.
+  deploy:
+    name: Deploy to the VPS
+    needs: [gate, publish]
+    if: github.event_name == 'workflow_run'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: read
+    # Deploys never overlap; a newer one waits for the running one rather than cancelling it.
+    concurrency:
+      group: deploy-vps
+      cancel-in-progress: false
+    env:
+      VPS_HOST: ${{ secrets.VPS_HOST }}
+
+    steps:
+      - name: Skip unless the deploy secrets are set
+        id: enabled
+        env:
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+        run: |
+          if [ -n "${VPS_SSH_KEY}" ] && [ -n "${VPS_KNOWN_HOSTS}" ] && [ -n "${VPS_HOST}" ]; then
+            echo "on=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice title=Deploy skipped::VPS_SSH_KEY, VPS_KNOWN_HOSTS and VPS_HOST are not all set, so nothing was deployed. See infra/sandboxd/README.md, 'Automatic deploys'."
+          fi
+
+      - name: Check out repository
+        if: steps.enabled.outputs.on == 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+
+      - name: Install pnpm
+        if: steps.enabled.outputs.on == 'true'
+        uses: pnpm/action-setup@v4
+        with:
+          run_install: false
+
+      - name: Set up Node.js
+        if: steps.enabled.outputs.on == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+
+      # The single-page app has no build-time configuration, so this build is the same for every
+      # host; Caddy serves it from the release directory.
+      - name: Build the web app
+        if: steps.enabled.outputs.on == 'true'
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm --filter "@repo/web..." build
+
+      - name: Download the digests
+        if: steps.enabled.outputs.on == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      - name: Assemble the release
+        if: steps.enabled.outputs.on == 'true'
+        id: bundle
+        env:
+          OWNER: ${{ github.repository_owner }}
+          SHA: ${{ needs.gate.outputs.sha }}
+        run: |
+          set -euo pipefail
+          repo="ghcr.io/$(echo "${OWNER}" | tr '[:upper:]' '[:lower:]')"
+          mkdir -p bundle/apps/web
+          git archive HEAD compose.yaml compose.vps.yaml infra | tar -x -C bundle
+          cp -r apps/web/dist bundle/apps/web/dist
+          {
+            for image in forge-app forge-gateway forge-sandboxd; do
+              digest="$(cat "digests/${image}")"
+              case "${digest}" in sha256:*) ;; *) echo "::error::no digest for ${image}"; exit 1 ;; esac
+              key="$(echo "${image#forge-}" | tr '[:lower:]' '[:upper:]')"
+              echo "FORGE_${key}_IMAGE=${repo}/${image}@${digest}"
+            done
+            echo "KIDO_COMMIT=${SHA}"
+          } > bundle/release.env
+          cat bundle/release.env
+          echo "id=${SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+
+      - name: Ship and deploy
+        if: steps.enabled.outputs.on == 'true'
+        env:
+          ACTOR: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ID: ${{ steps.bundle.outputs.id }}
+          VPS_KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "${VPS_SSH_KEY}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "${VPS_KNOWN_HOSTS}" > ~/.ssh/known_hosts
+          dest="${VPS_HOST}"
+          case "${dest}" in *@*) ;; *) dest="root@${dest}" ;; esac
+          remote() {
+            ssh -i ~/.ssh/deploy_key -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes \
+              -o ServerAliveInterval=30 "${dest}" "$@"
+          }
+          tar -C bundle -czf - . | remote kido-deploy receive "${ID}"
+          printf '%s' "${GHCR_TOKEN}" | remote kido-deploy deploy "${ID}" --registry-user "${ACTOR}"
+          {
+            echo "### Deployed"
+            echo
+            echo "Release \`${ID}\` is live on ${VPS_HOST#*@}."
           } >> "$GITHUB_STEP_SUMMARY"
