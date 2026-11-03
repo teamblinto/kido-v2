@@ -43,6 +43,8 @@ describe('firewallEnv', () => {
     expect(firewallEnv({ egressListen: { host: '172.30.0.9', port: 4000 } })).toMatchObject({
       SBX_EGRESS_PORT: '4000',
       SBX_AGENT_GW: '172.30.0.9',
+      SBX_SNAPSHOT: '/tmp/sbx-firewall.snapshot',
+      SBX_ALL: '172.30.0.0/23',
       SBX_AGENT_NET: '172.30.0.0/24',
       SBX_PROJ_NET: '172.30.1.0/24',
       SBX_AGENT_IF: 'sbx-agent0',

@@ -49,6 +49,9 @@ export function firewallEnv(cfg: Pick<Config, 'egressListen'>): Record<string, s
   return {
     SBX_EGRESS_PORT: String(cfg.egressListen.port),
     SBX_AGENT_GW: cfg.egressListen.host,
+    // /tmp: the compose service has a read-only root filesystem with only /tmp writable.
+    SBX_SNAPSHOT: '/tmp/sbx-firewall.snapshot',
+    SBX_ALL: '172.30.0.0/23',
     SBX_AGENT_NET: agent.subnet!,
     SBX_PROJ_NET: proj.subnet!,
     SBX_AGENT_IF: agent.bridgeName!,

@@ -16,7 +16,7 @@ SBX_PROJ_IF=${SBX_PROJ_IF:-sbx-proj0}
 SBX_AGENT_GW=${SBX_AGENT_GW:-172.30.0.1}
 SBX_EGRESS_PORT=${SBX_EGRESS_PORT:-3988}
 SBX_HOST_ALLOW_TCP=${SBX_HOST_ALLOW_TCP:-443} # sbx-proj -> host (Caddy: callback/API), comma list
-SNAP=${SBX_SNAPSHOT:-/run/sbx-firewall.snapshot}
+SNAP=${SBX_SNAPSHOT:-/tmp/sbx-firewall.snapshot}
 
 DENY="0.0.0.0/8 240.0.0.0/4 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 169.254.0.0/16 127.0.0.0/8 224.0.0.0/4 $SBX_AGENT_NET $SBX_PROJ_NET"
 
@@ -107,7 +107,8 @@ apply() {
     ipt6 -A SBX-FWD6 -j DROP
   fi
   pins pin
-  snapshot >"$SNAP"
+  snapshot >"$SNAP.tmp"
+  mv -f "$SNAP.tmp" "$SNAP"
 }
 
 # Exact comparison with what apply left: a flushed or edited chain, or a foreign rule above one of
@@ -120,7 +121,7 @@ remove() {
   pins unpin
   for c in SBX-FWD SBX-IN; do { ipt4 -F "$c" && ipt4 -X "$c"; } 2>/dev/null || true; done
   if have6; then { ipt6 -F SBX-FWD6 && ipt6 -X SBX-FWD6; } 2>/dev/null || true; fi
-  rm -f "$SNAP"
+  rm -f "$SNAP" "$SNAP.tmp"
 }
 
 case "${1:-}" in
