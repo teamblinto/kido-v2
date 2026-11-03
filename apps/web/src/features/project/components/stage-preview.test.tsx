@@ -145,6 +145,39 @@ describe('StagePreview', () => {
     expect(screen.queryByLabelText('Preview visibility')).not.toBeInTheDocument();
   });
 
+  it('never claims there is no preview while a reload waits for its fresh grant (spec 043)', async () => {
+    let release: () => void = () => undefined;
+    server.use(
+      http.get(PREVIEW, () =>
+        HttpResponse.json({
+          port: 3000,
+          stage: 'ready',
+          url: 'https://a.preview.test',
+          visibility: 'private',
+        }),
+      ),
+    );
+    renderScreen(stage());
+    await waitFor(() => expect(frame()).toHaveAttribute('src', 'https://a.preview.test/?code=1'));
+
+    server.use(
+      http.post(`${API}/preview/authorize`, async () => {
+        await new Promise<void>((resolve) => {
+          release = resolve;
+        });
+
+        return HttpResponse.json({ url: 'https://a.preview.test/?code=2' });
+      }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Reload the preview' }));
+
+    expect(await screen.findByLabelText('Loading the preview')).toBeInTheDocument();
+    expect(screen.queryByText('No preview yet')).not.toBeInTheDocument();
+
+    release();
+    await waitFor(() => expect(frame()).toHaveAttribute('src', 'https://a.preview.test/?code=2'));
+  });
+
   it('FR-016: a preview.ready event reloads the frame', async () => {
     server.use(
       http.get(PREVIEW, () =>

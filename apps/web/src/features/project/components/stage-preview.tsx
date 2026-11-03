@@ -231,13 +231,19 @@ export function StagePreview({
               viewport === 'mobile' && 'border-line-subtle max-w-[420px] border-x',
             )}
           >
-            <PreviewFrame
-              onLoad={() => {
-                setFrameLoaded(true);
-              }}
-              reloadKey={reloadKey}
-              url={frameSrc}
-            />
+            {/* A reload asks for a fresh single-use grant first; until it is back the pane stays
+                quiet rather than claiming there is no preview (spec 043). */}
+            {frameSrc === undefined ? (
+              <div aria-busy="true" aria-label="Loading the preview" className="size-full" />
+            ) : (
+              <PreviewFrame
+                onLoad={() => {
+                  setFrameLoaded(true);
+                }}
+                reloadKey={reloadKey}
+                url={frameSrc}
+              />
+            )}
           </div>
         ) : stage === undefined || stage === 'no-sandbox' ? (
           <EmptyPane
