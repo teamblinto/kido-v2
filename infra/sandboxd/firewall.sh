@@ -14,8 +14,8 @@ SBX_ALL=${SBX_ALL:-172.30.0.0/23}
 SBX_AGENT_IF=${SBX_AGENT_IF:-sbx-agent0}
 SBX_PROJ_IF=${SBX_PROJ_IF:-sbx-proj0}
 SBX_AGENT_GW=${SBX_AGENT_GW:-172.30.0.1}
-# Control/preview listen IP and the bridge that owns it; empty IP = no INPUT pin (staging mesh:
-# sandboxd listens on a WireGuard address and its callers are remote).
+# Control/preview listen IP and the interface that owns it (sbx-ctl0 on a single host, the
+# WireGuard interface on the staging mesh; network.ts firewallEnv derives both); empty IP = no pin.
 SBX_CTL_IP=${SBX_CTL_IP:-}
 SBX_CTL_IF=${SBX_CTL_IF:-sbx-ctl0}
 SBX_CTL_PORTS=${SBX_CTL_PORTS:-3986,3987} # control + preview listener ports on $SBX_CTL_IP

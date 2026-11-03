@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
+import type { NetworkInterfaceInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -62,14 +63,29 @@ describe('firewallEnv', () => {
     });
   });
 
-  it('pins nothing for the control listener when it is not the local bridge gateway', () => {
-    const env = firewallEnv({
-      egressListen: { host: '172.30.0.1', port: 3988 },
-      listen: { host: '10.99.0.5', port: 3986 },
-      previewListen: { host: '10.99.0.5', port: 3987 },
-      dns: ['1.1.1.1'],
+  const mesh = {
+    egressListen: { host: '172.30.0.1', port: 3988 },
+    listen: { host: '10.99.0.5', port: 3986 },
+    previewListen: { host: '10.99.0.5', port: 3987 },
+    dns: ['1.1.1.1'],
+  };
+  const addr = (address: string) => ({ address }) as NetworkInterfaceInfo;
+
+  it('pins the control listener to the interface that owns its address (staging mesh)', () => {
+    const env = firewallEnv(mesh, { eth0: [addr('203.0.113.7')], wg0: [addr('10.99.0.5')] });
+    expect(env).toMatchObject({
+      SBX_CTL_IP: '10.99.0.5',
+      SBX_CTL_IF: 'wg0',
+      SBX_CTL_PORTS: '3986,3987',
     });
-    expect(env.SBX_CTL_IP).toBe('');
+  });
+
+  it('pins nothing when no interface owns the listen address (wildcard, not up yet)', () => {
+    expect(firewallEnv(mesh, { eth0: [addr('203.0.113.7')] }).SBX_CTL_IP).toBe('');
+    expect(
+      firewallEnv({ ...mesh, listen: { host: '0.0.0.0', port: 3986 } }, { lo: [addr('0.0.0.0')] })
+        .SBX_CTL_IP,
+    ).toBe('');
   });
 });
 

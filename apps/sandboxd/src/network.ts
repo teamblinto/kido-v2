@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { networkInterfaces, type NetworkInterfaceInfo } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -50,8 +51,16 @@ export function firewallMode(
 /** Single source of truth for firewall.sh: the same constants the networks are created from. */
 export function firewallEnv(
   cfg: Pick<Config, 'egressListen' | 'listen' | 'previewListen' | 'dns'>,
+  ifaces: NodeJS.Dict<NetworkInterfaceInfo[]> = networkInterfaces(),
 ): Record<string, string> {
   const [agent, proj] = [NETWORKS[0]![1], NETWORKS[1]![1]];
+  const host = cfg.listen.host;
+  const ctlIf =
+    host === CTL_GATEWAY
+      ? CTL_BRIDGE
+      : (Object.entries(ifaces).find(
+          ([, a]) => host !== '0.0.0.0' && a?.some((x) => x.address === host),
+        )?.[0] ?? '');
   return {
     SBX_EGRESS_PORT: String(cfg.egressListen.port),
     SBX_AGENT_GW: cfg.egressListen.host,
@@ -62,10 +71,11 @@ export function firewallEnv(
     SBX_PROJ_NET: proj.subnet!,
     SBX_AGENT_IF: agent.bridgeName!,
     SBX_PROJ_IF: proj.bridgeName!,
-    SBX_CTL_IF: CTL_BRIDGE,
-    // Only when the control/preview listeners sit on the local sbx-ctl bridge gateway. On the
-    // staging mesh they listen on a WireGuard address and callers are remote: no INPUT pin.
-    SBX_CTL_IP: cfg.listen.host === CTL_GATEWAY ? CTL_GATEWAY : '',
+    // The listeners' address is pinned to the interface that owns it: the sbx-ctl bridge on a
+    // single host (it may not exist yet at boot, so by name), the WireGuard interface on the
+    // staging mesh. No owner (wildcard, interface not up): no pin.
+    SBX_CTL_IF: ctlIf,
+    SBX_CTL_IP: ctlIf ? cfg.listen.host : '',
     SBX_CTL_PORTS: `${cfg.listen.port},${cfg.previewListen.port}`,
     SBX_DNS: cfg.dns.join(','),
   };
