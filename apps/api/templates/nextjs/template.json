@@ -1,8 +1,8 @@
 {
   "name": "Next.js",
   "description": "A Next.js app-router site with TypeScript and React 19.",
-  "base": "daytonaio/sandbox:0.5.0-slim",
-  "install": "sudo apt-get update -qq && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends git && npm ci",
+  "base": "forge/sandbox-base:1",
+  "install": "npm ci",
   "devCommand": "npm run dev",
   "devPort": "3000"
 }
