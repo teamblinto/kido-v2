@@ -5,6 +5,8 @@ import {
   type CompanionRunEventBatch,
   type CompanionStatusReport,
   localAgentDeviceTokenSchema,
+  type SubscriptionModel,
+  subscriptionModelSchema,
 } from '@repo/contracts';
 import type { LocalAgentDeviceRow } from '@repo/db';
 
@@ -22,6 +24,24 @@ export function revoked(): DomainError {
     'local-agent-revoked',
     'This runner’s token is not recognised, or was revoked.',
   );
+}
+
+/**
+ * The reported models the person may pick: each one's id goes back down as a run's `--model`, so
+ * only those the run contract takes (an older runner sent no description: null).
+ */
+export function subscriptionModels(
+  reported: CompanionStatusReport['providers'][number]['models'],
+): SubscriptionModel[] {
+  return reported.flatMap((model) => {
+    const parsed = subscriptionModelSchema.safeParse({
+      description: model.description ?? null,
+      id: model.id,
+      label: model.label,
+    });
+
+    return parsed.success ? [parsed.data] : [];
+  });
 }
 
 /**
@@ -79,11 +99,21 @@ export class DeviceService {
     const claude = report.providers.find((each) => each.provider === 'claude');
 
     if (claude !== undefined) {
+      const signedIn = claude.auth.status === 'authenticated';
+      // A report whose runner could not ask the CLI keeps the last models and limits it gave; a
+      // signed-out one keeps none (the next sign-in may be another plan).
+      const kept = signedIn ? await this.store.homeAuth(device.id) : undefined;
+      const models = subscriptionModels(claude.models);
+
       await this.store.saveHomeAuth(device.id, {
         // When this server heard it, not the runner's clock: compared with the home's own times.
         checkedAt: this.clock.now().toISOString(),
         plan: claude.auth.plan,
         status: claude.auth.status,
+        ...(signedIn && {
+          models: models.length > 0 ? models : kept?.models,
+          usage: claude.usage ?? kept?.usage,
+        }),
       });
       if (claude.auth.status === 'authenticated') await this.store.clearSignIn(device.id);
     }

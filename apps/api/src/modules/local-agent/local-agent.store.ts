@@ -4,6 +4,8 @@ import type {
   CompanionCommand,
   CompanionRunEvent,
   CompanionStatusReport,
+  SubscriptionModel,
+  SubscriptionUsage,
 } from '@repo/contracts';
 import type { Redis } from 'ioredis';
 import { randomUUID } from 'node:crypto';
@@ -80,11 +82,17 @@ export interface SignIn {
   readonly message?: string | null;
 }
 
-/** A home's last `claude auth status` verdict: no account identifiers, only the plan's name. */
+/**
+ * A home's last `claude auth status` verdict: no account identifiers, only the plan's name. With
+ * it, the last models and limits the signed-in CLI reported: kept here (not only in the status
+ * report, which expires a day after the home sleeps) so the person still sees them.
+ */
 export interface HomeAuth {
   readonly status: 'authenticated' | 'unauthenticated' | 'unknown';
   readonly plan: string | null;
   readonly checkedAt: string;
+  readonly models?: readonly SubscriptionModel[];
+  readonly usage?: SubscriptionUsage;
 }
 
 const START: RunCursor = Object.freeze({ control: '0-0', events: '0-0' });

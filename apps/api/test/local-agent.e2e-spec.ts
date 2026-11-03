@@ -405,7 +405,7 @@ describe('Runner bridge (e2e)', () => {
         expect(await stream.xlen(`local-agent:run:${run.id}:events:1`)).toBe(2);
 
         await post(runner.token, run.id, [
-          { data: { inputTokens: 3, outputTokens: 2 }, seq: 3, type: 'usage' },
+          { data: { costMicros: 41_250, inputTokens: 3, outputTokens: 2 }, seq: 3, type: 'usage' },
           { data: { status: 'completed' }, seq: 4, type: 'terminal' },
         ]).expect(204);
         await reaches(run.id, 'awaiting_input');
@@ -432,6 +432,16 @@ describe('Runner bridge (e2e)', () => {
           tool_mode: 'sandbox',
           workspace_id: null,
         });
+        // The CLI's own estimate of the turn is the run's cost.
+        const [cost] = await app
+          .get(TenantTransactionRunner)
+          .runInTenantTransaction(world.alpha.orgId, (tx) =>
+            tx
+              .select({ costMicros: schema.agentRuns.costMicros })
+              .from(schema.agentRuns)
+              .where(eq(schema.agentRuns.id, run.id)),
+          );
+        expect(cost).toEqual({ costMicros: 41_250 });
       });
 
       it('refuses another person’s runner posting for a run it does not own', async () => {

@@ -886,10 +886,12 @@ export class AgentHomeService {
     const now = this.clock.now();
     const base = {
       message: null,
+      models: null,
       plan: null,
       provider: PROVIDER,
       signIn: null,
       updatedAt: (home?.updatedAt ?? now).toISOString(),
+      usage: null,
     } as const;
 
     if (!this.enabled) {
@@ -933,7 +935,10 @@ export function composeStatus(input: {
 }): SubscriptionStatus {
   const { auth, base, home, now, signIn } = input;
   const connected = auth?.status === 'authenticated';
-  const plan = connected ? auth.plan : null;
+  // The CLI's own list and limits, as last reported, only while that sign-in stands.
+  const signedIn = connected
+    ? { models: auth.models ? [...auth.models] : null, plan: auth.plan, usage: auth.usage ?? null }
+    : {};
 
   if (home.state === 'error') {
     return { ...base, message: home.lastError ?? UNREACHABLE, state: 'error' };
@@ -953,14 +958,17 @@ export function composeStatus(input: {
   }
 
   if (signIn?.phase === 'verifying') {
-    return connected ? { ...base, plan, state: 'connected' } : { ...base, state: 'verifying' };
+    return connected
+      ? { ...base, ...signedIn, state: 'connected' }
+      : { ...base, state: 'verifying' };
   }
 
+  if (signIn?.phase === 'requested') return { ...base, state: 'starting' };
+  // Before the home's lifecycle: a signed-in home that is asleep or waking still takes runs
+  // (`admissible` admits them and the run wakes it), so the person sees it connected at once.
+  if (connected) return { ...base, ...signedIn, state: 'connected' };
   if (home.state === 'provisioning') return { ...base, state: 'provisioning' };
-  if (home.state === 'starting' || signIn?.phase === 'requested') {
-    return { ...base, state: 'starting' };
-  }
-  if (connected) return { ...base, plan, state: 'connected' };
+  if (home.state === 'starting') return { ...base, state: 'starting' };
   if (signIn?.phase === 'failed') {
     return { ...base, message: signIn.message ?? SIGNED_OUT, state: 'signed-out' };
   }

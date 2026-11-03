@@ -29,10 +29,12 @@ const TIMINGS: AgentHomeTimings = {
 
 const base = {
   message: null,
+  models: null,
   plan: null,
   provider: 'claude',
   signIn: null,
   updatedAt: NOW.toISOString(),
+  usage: null,
 } as const;
 
 function home(overrides: Partial<AgentHomeRow> = {}): AgentHomeRow {
@@ -258,6 +260,34 @@ describe('composeStatus', () => {
 
   it('is connected, with the plan, on an authenticated verdict', () => {
     expect(compose({ auth: authenticated })).toEqual({ ...base, plan: 'Max', state: 'connected' });
+  });
+
+  it('carries the models and limits the signed-in CLI last reported, and none once signed out', () => {
+    const models = [{ description: null, id: 'opus', label: 'Opus 5.5' }];
+    const usage = {
+      checkedAt: NOW.toISOString(),
+      windows: [{ kind: 'weekly' as const, resetsAt: null, utilization: 31 }],
+    };
+    expect(compose({ auth: { ...authenticated, models, usage } })).toEqual({
+      ...base,
+      models,
+      plan: 'Max',
+      state: 'connected',
+      usage,
+    });
+    expect(
+      compose({ auth: { ...authenticated, models, status: 'unauthenticated', usage } }),
+    ).toMatchObject({ models: null, state: 'signed-out', usage: null });
+  });
+
+  it('is connected at once while a signed-in home sleeps or wakes, as a run would be admitted', () => {
+    for (const state of ['stopped', 'starting', 'stopping'] as const) {
+      expect(compose({ auth: authenticated, home: { lastError: null, state } }).state).toBe(
+        'connected',
+      );
+    }
+    // A sign-in the runner was asked for is under way whatever an older verdict said.
+    expect(compose({ auth: authenticated, signIn: { phase: 'requested' } }).state).toBe('starting');
   });
 
   it('offers a live sign-in URL, and drops an expired one', () => {

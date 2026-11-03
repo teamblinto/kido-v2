@@ -193,7 +193,18 @@ describe('Cloud subscription agent (e2e)', () => {
         return { next, seen };
       }
 
-      function report(token: string, auth: 'authenticated' | 'unauthenticated') {
+      /** What the signed-in CLI's own `initialize` and `get_usage` said, as the runner reports it. */
+      const MODELS = [{ description: 'For complex work', id: 'opus', label: 'Opus 5.5' }];
+      const USAGE = {
+        checkedAt: '2026-11-03T12:00:00.000Z',
+        windows: [{ kind: 'session', resetsAt: '2026-11-03T17:50:00.000Z', utilization: 59 }],
+      };
+
+      function report(
+        token: string,
+        auth: 'authenticated' | 'unauthenticated',
+        details: { models: unknown[]; usage?: unknown } = { models: [] },
+      ) {
         return http(app)
           .post(`${COMPANION}/status`)
           .set(bearer(token))
@@ -213,9 +224,10 @@ describe('Cloud subscription agent (e2e)', () => {
                   auth === 'authenticated'
                     ? null
                     : 'Claude Code is not signed in. Sign in again from BAIOS.',
-                models: [],
+                models: details.models,
                 policy: { allowed: true, reason: null },
                 provider: 'claude',
+                ...(details.usage === undefined ? {} : { usage: details.usage }),
                 version: '2.1.0',
               },
             ],
@@ -409,8 +421,17 @@ describe('Cloud subscription agent (e2e)', () => {
             .send({ message: null, ok: true, provider: 'claude', type: 'auth.login.result' })
             .expect(204);
           expect((await status()).state).toBe('verifying');
+          await report(token, 'authenticated', { models: MODELS, usage: USAGE });
+          expect(await status()).toMatchObject({
+            models: [{ description: 'For complex work', id: 'opus', label: 'Opus 5.5' }],
+            plan: 'Max',
+            signIn: null,
+            state: 'connected',
+            usage: USAGE,
+          });
+          // A report whose runner could not ask the CLI keeps the last models and limits.
           await report(token, 'authenticated');
-          expect(await status()).toMatchObject({ plan: 'Max', signIn: null, state: 'connected' });
+          expect(await status()).toMatchObject({ models: MODELS, usage: USAGE });
 
           // A start that gave up too soon marked the home error; its runner's next report heals it.
           await app

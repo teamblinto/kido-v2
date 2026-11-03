@@ -60,7 +60,8 @@ export function mapCompanionEvent(
     case 'usage':
       return {
         data: {
-          costMicros: 0,
+          // The CLI's own estimate of the turn (an older runner states none: 0).
+          costMicros: event.data.costMicros ?? 0,
           inputTokens: event.data.inputTokens,
           outputTokens: event.data.outputTokens,
         },
