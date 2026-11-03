@@ -1,4 +1,9 @@
-import type { PreviewResponse, PreviewVisibility, RotatePreviewResponse } from '@repo/contracts';
+import type {
+  PreviewResponse,
+  PreviewStage,
+  PreviewVisibility,
+  RotatePreviewResponse,
+} from '@repo/contracts';
 import {
   type UseMutationResult,
   type UseQueryResult,
@@ -22,7 +27,16 @@ function previewKey({ orgId, projectId }: ProjectRef): readonly unknown[] {
   return ['preview', orgId, projectId];
 }
 
-/** Where this project's preview is served and who may reach it. */
+/** The stages a preview settles in; every other one is on its way somewhere. */
+const SETTLED: ReadonlySet<PreviewStage> = new Set(['ready', 'asleep', 'failed']);
+
+export const PREVIEW_POLL_MS = 1_500;
+
+/**
+ * Where this project's preview is served, who may reach it, and how far its start-up has got.
+ * Asked again every 1.5 s until the stage settles, so the stage pane can walk its steps. React
+ * Query pauses the interval in a hidden tab.
+ */
 export function usePreview(project: ProjectRef): UseQueryResult<PreviewResponse, Error> {
   const { orgId, projectId } = project;
 
@@ -30,6 +44,11 @@ export function usePreview(project: ProjectRef): UseQueryResult<PreviewResponse,
     enabled: ready(project),
     queryFn: ({ signal }) => getPreview(orgId ?? '', projectId ?? '', signal),
     queryKey: previewKey(project),
+    refetchInterval: (query) => {
+      const stage = query.state.data?.stage;
+
+      return stage === undefined || SETTLED.has(stage) ? false : PREVIEW_POLL_MS;
+    },
   });
 }
 

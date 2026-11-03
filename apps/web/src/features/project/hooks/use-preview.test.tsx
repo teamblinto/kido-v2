@@ -28,7 +28,12 @@ describe('usePreview', () => {
   it('reads the preview once the project is known', async () => {
     server.use(
       http.get(PREVIEW, () =>
-        HttpResponse.json({ port: 3000, url: 'https://a.preview.test', visibility: 'private' }),
+        HttpResponse.json({
+          port: 3000,
+          stage: 'ready',
+          url: 'https://a.preview.test',
+          visibility: 'private',
+        }),
       ),
     );
 
@@ -53,14 +58,24 @@ describe('useSetVisibility', () => {
 
     server.use(
       http.get(PREVIEW, () =>
-        HttpResponse.json({ port: 3000, url: 'https://a.preview.test', visibility }),
+        HttpResponse.json({
+          port: 3000,
+          stage: 'ready',
+          url: 'https://a.preview.test',
+          visibility,
+        }),
       ),
       http.put(`${PREVIEW}/visibility`, async ({ request }) => {
         const body = (await request.json()) as { visibility: string };
 
         visibility = body.visibility;
 
-        return HttpResponse.json({ port: 3000, url: 'https://a.preview.test', visibility });
+        return HttpResponse.json({
+          port: 3000,
+          stage: 'ready',
+          url: 'https://a.preview.test',
+          visibility,
+        });
       }),
     );
 
@@ -85,7 +100,9 @@ describe('useRotate', () => {
     let url = 'https://a.preview.test';
 
     server.use(
-      http.get(PREVIEW, () => HttpResponse.json({ port: 3000, url, visibility: 'private' })),
+      http.get(PREVIEW, () =>
+        HttpResponse.json({ port: 3000, stage: 'ready', url, visibility: 'private' }),
+      ),
       http.post(`${PREVIEW}/rotate`, () => {
         url = 'https://b.preview.test';
 

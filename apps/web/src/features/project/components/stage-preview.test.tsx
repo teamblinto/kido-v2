@@ -1,9 +1,11 @@
-import { problemTypeUri } from '@repo/contracts';
-import { screen, waitFor } from '@testing-library/react';
+import { type PreviewStage, problemTypeUri } from '@repo/contracts';
+import { act, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { useState } from 'react';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { PREVIEW_POLL_MS } from '../hooks/use-preview';
 
 import { API, server } from '@/test/server';
 import { renderScreen } from '@/test/render';
@@ -72,7 +74,12 @@ describe('StagePreview', () => {
   it('SC-004: loads the label host with no run in progress and shows address and visibility', async () => {
     server.use(
       http.get(PREVIEW, () =>
-        HttpResponse.json({ port: 3000, url: 'https://a.preview.test', visibility: 'org' }),
+        HttpResponse.json({
+          port: 3000,
+          stage: 'ready',
+          url: 'https://a.preview.test',
+          visibility: 'org',
+        }),
       ),
     );
 
@@ -87,7 +94,9 @@ describe('StagePreview', () => {
     let url = 'https://a.preview.test';
 
     server.use(
-      http.get(PREVIEW, () => HttpResponse.json({ port: 3000, url, visibility: 'private' })),
+      http.get(PREVIEW, () =>
+        HttpResponse.json({ port: 3000, stage: 'ready', url, visibility: 'private' }),
+      ),
       http.post(`${PREVIEW}/rotate`, () => {
         url = 'https://b.preview.test';
 
@@ -121,7 +130,12 @@ describe('StagePreview', () => {
   it('FR-016: a preview.ready event reloads the frame', async () => {
     server.use(
       http.get(PREVIEW, () =>
-        HttpResponse.json({ port: 3000, url: 'https://a.preview.test', visibility: 'private' }),
+        HttpResponse.json({
+          port: 3000,
+          stage: 'ready',
+          url: 'https://a.preview.test',
+          visibility: 'private',
+        }),
       ),
     );
 
@@ -170,7 +184,12 @@ describe('StagePreview', () => {
     server.use(
       http.get(PREVIEW, () =>
         woken
-          ? HttpResponse.json({ port: 3000, url: 'https://a.preview.test', visibility: 'private' })
+          ? HttpResponse.json({
+              port: 3000,
+              stage: 'ready',
+              url: 'https://a.preview.test',
+              visibility: 'private',
+            })
           : asleep(),
       ),
       http.post(WAKE, () => {
@@ -199,7 +218,12 @@ describe('StagePreview', () => {
   it('FR-017: the frame’s sandbox attribute is unchanged', async () => {
     server.use(
       http.get(PREVIEW, () =>
-        HttpResponse.json({ port: 3000, url: 'https://a.preview.test', visibility: 'private' }),
+        HttpResponse.json({
+          port: 3000,
+          stage: 'ready',
+          url: 'https://a.preview.test',
+          visibility: 'private',
+        }),
       ),
     );
 
@@ -215,7 +239,12 @@ describe('StagePreview', () => {
   it('never frames a preview url on this application’s own origin', async () => {
     server.use(
       http.get(PREVIEW, () =>
-        HttpResponse.json({ port: 3000, url: window.location.origin, visibility: 'public' }),
+        HttpResponse.json({
+          port: 3000,
+          stage: 'ready',
+          url: window.location.origin,
+          visibility: 'public',
+        }),
       ),
     );
 
@@ -228,7 +257,12 @@ describe('StagePreview', () => {
   it('frames a public preview at its plain address, minting no code', async () => {
     server.use(
       http.get(PREVIEW, () =>
-        HttpResponse.json({ port: 3000, url: 'https://a.preview.test', visibility: 'public' }),
+        HttpResponse.json({
+          port: 3000,
+          stage: 'ready',
+          url: 'https://a.preview.test',
+          visibility: 'public',
+        }),
       ),
     );
 
@@ -241,7 +275,12 @@ describe('StagePreview', () => {
   it('never frames a minted address on another host', async () => {
     server.use(
       http.get(PREVIEW, () =>
-        HttpResponse.json({ port: 3000, url: 'https://a.preview.test', visibility: 'private' }),
+        HttpResponse.json({
+          port: 3000,
+          stage: 'ready',
+          url: 'https://a.preview.test',
+          visibility: 'private',
+        }),
       ),
       http.post(`${API}/preview/authorize`, () =>
         HttpResponse.json({ url: 'https://evil.test/?code=1' }),
@@ -252,5 +291,160 @@ describe('StagePreview', () => {
 
     expect(await screen.findByText('https://a.preview.test')).toBeInTheDocument();
     await waitFor(() => expect(frame()).toHaveAttribute('src', 'https://a.preview.test'));
+  });
+});
+
+/** The preview at a stage, on a private label host. */
+function at(stage: PreviewStage) {
+  return HttpResponse.json({
+    port: stage === 'ready' ? 3000 : null,
+    stage,
+    url: 'https://a.preview.test',
+    visibility: 'private',
+  });
+}
+
+/** Serves each stage in turn, then keeps serving the last, counting the asks. */
+function stages(...sequence: PreviewStage[]) {
+  const served = { count: 0 };
+
+  server.use(
+    http.get(PREVIEW, () => {
+      const next = sequence[Math.min(served.count, sequence.length - 1)] ?? 'ready';
+
+      served.count += 1;
+
+      return at(next);
+    }),
+  );
+
+  return served;
+}
+
+/** A start-up step's row, by its label. */
+function step(label: string): HTMLElement {
+  // `li span`: the run status chip in the toolbar says "Ready" too.
+  const row = screen.getByText(label, { selector: 'li span' }).closest('li');
+
+  if (row === null) throw new Error(`no step "${label}"`);
+
+  return row;
+}
+
+const STEP_LABELS = [
+  'Creating your sandbox',
+  'Installing dependencies',
+  'Starting the dev server',
+  'Ready',
+];
+
+describe('StagePreview start-up', () => {
+  beforeEach(() => {
+    minted = 0;
+    server.use(authorizing());
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it.each([
+    ['creating', ['active', 'pending', 'pending', 'pending']],
+    ['installing', ['done', 'active', 'pending', 'pending']],
+    ['starting', ['done', 'done', 'active', 'pending']],
+  ] as const)('walks the steps at %s, with no frame yet', async (current, expected) => {
+    stages(current);
+    renderScreen(stage());
+
+    expect(await screen.findByText('Starting your preview')).toBeInTheDocument();
+    expect(STEP_LABELS.map((label) => step(label).dataset.state)).toEqual(expected);
+    expect(step(STEP_LABELS[expected.indexOf('active')]!)).toHaveAttribute('aria-current', 'step');
+    expect(screen.getByRole('progressbar', { name: 'Preview start-up' })).toBeInTheDocument();
+    // An elapsed clock while it works.
+    expect(screen.getByText(/^\d+ s$/u)).toBeInTheDocument();
+    // No frame, and no grant code spent, before the gateway has a route.
+    expect(document.querySelector('iframe')).toBeNull();
+    expect(minted).toBe(0);
+  });
+
+  it('polls until ready, then mounts the frame and stops asking', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const served = stages('creating', 'installing', 'ready');
+
+    renderScreen(stage());
+
+    expect(await screen.findByText('Starting your preview')).toBeInTheDocument();
+    expect(step('Creating your sandbox').dataset.state).toBe('active');
+
+    await act(() => vi.advanceTimersByTimeAsync(PREVIEW_POLL_MS));
+    await waitFor(() => expect(step('Installing dependencies').dataset.state).toBe('active'));
+    expect(document.querySelector('iframe')).toBeNull();
+
+    await act(() => vi.advanceTimersByTimeAsync(PREVIEW_POLL_MS));
+    await waitFor(() => expect(frame()).toHaveAttribute('src', 'https://a.preview.test/?code=1'));
+    // The steps lie over the frame, all done, until it has loaded and they fade away.
+    expect(step('Ready').dataset.state).toBe('done');
+
+    const asked = served.count;
+
+    await act(() => vi.advanceTimersByTimeAsync(PREVIEW_POLL_MS * 4));
+    expect(served.count).toBe(asked);
+  });
+
+  it('names the step a failure stopped on and retries with a wake', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let woken = false;
+    let polled = 0;
+
+    server.use(
+      http.get(PREVIEW, () => {
+        polled += 1;
+        if (woken) return at('ready');
+        return at(polled === 1 ? 'installing' : 'failed');
+      }),
+      http.post(WAKE, () => {
+        woken = true;
+
+        return HttpResponse.json({ because: 'resuming', ready: false });
+      }),
+    );
+    const user = userEvent.setup({
+      advanceTimers: (ms) => {
+        vi.advanceTimersByTime(ms);
+      },
+    });
+
+    renderScreen(stage());
+
+    expect(await screen.findByText('Starting your preview')).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(PREVIEW_POLL_MS));
+
+    expect(
+      await screen.findByRole('group', { name: 'Your preview could not start' }),
+    ).toBeInTheDocument();
+    expect(step('Creating your sandbox').dataset.state).toBe('done');
+    expect(step('Installing dependencies').dataset.state).toBe('failed');
+    expect(document.querySelector('iframe')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(frame()).toHaveAttribute('src', 'https://a.preview.test/?code=1'));
+    expect(woken).toBe(true);
+  });
+
+  it('a preview already ready is framed straight away, with no steps', async () => {
+    stages('ready');
+    renderScreen(stage());
+
+    await waitFor(() => expect(frame()).toHaveAttribute('src', 'https://a.preview.test/?code=1'));
+    expect(screen.queryByText('Starting your preview')).not.toBeInTheDocument();
+  });
+
+  it('a project with no sandbox yet says so and frames nothing', async () => {
+    stages('no-sandbox');
+    renderScreen(stage());
+
+    expect(await screen.findByText('No preview yet')).toBeInTheDocument();
+    expect(document.querySelector('iframe')).toBeNull();
   });
 });
