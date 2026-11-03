@@ -881,6 +881,12 @@ jobs:
       - name: Migrate database
         run: pnpm --filter @repo/db db:migrate
 
+      # The suites below run vitest directly, not through turbo's `test` (which depends on
+      # `^build`), so the workspace packages they import (@repo/contracts, @repo/db, ...) have no
+      # dist/ unless they are built here.
+      - name: Build the packages the api and gateway suites import
+        run: pnpm --filter "@repo/api^..." --filter "@repo/gateway^..." build
+
       - name: Build the sandbox base image
         run: docker build -t forge/sandbox-base:1 infra/sandboxd/images/base
 
