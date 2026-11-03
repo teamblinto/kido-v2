@@ -81,7 +81,6 @@ const row = (o: Partial<SandboxRow> = {}): SandboxRow => ({
   networkAllow: null,
   networkBlockAll: false,
   createdAt: 'x',
-  queuedAt: null,
   ...o,
 });
 const cfg = {

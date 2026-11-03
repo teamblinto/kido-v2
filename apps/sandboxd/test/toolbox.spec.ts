@@ -39,7 +39,6 @@ beforeEach(async () => {
     networkAllow: null,
     networkBlockAll: false,
     createdAt: 'x',
-    queuedAt: null,
   } as const;
   store.insert({ ...row, id: 's1', containerId: 'c1', desired: 'started' });
   store.insert({ ...row, id: 's2', containerId: 'c2', desired: 'stopped' });
@@ -144,6 +143,33 @@ describe('toolbox', () => {
     expect(await (await call('GET', 'files/search?path=/a&pattern=*.ts')).json()).toEqual({
       files: ['/a/x.ts', '/a/y.ts'],
     });
+  });
+
+  it('search prunes excluded dirs and keeps results when find exits 1 (unreadable subdir)', async () => {
+    docker.execHandler = () => out('/a/x.ts\0', 1);
+    const res = await call('GET', 'files/search?path=/a&pattern=*.ts');
+    expect(await res.json()).toEqual({ files: ['/a/x.ts'] });
+    const argv = execs().at(-1)!.argv;
+    expect(argv.slice(argv.indexOf('find'))).toEqual([
+      'find',
+      '/a',
+      '(',
+      '-name',
+      'node_modules',
+      '-o',
+      '-name',
+      '.git',
+      ')',
+      '-prune',
+      '-o',
+      '-type',
+      'f',
+      '-name',
+      '*.ts',
+      '-print0',
+    ]);
+    docker.execHandler = () => out('', 1);
+    expect((await call('GET', 'files/search?path=/a&pattern=*.ts')).status).toBe(500);
   });
 
   it('execute: result, timeout 408, output cap, validation', async () => {

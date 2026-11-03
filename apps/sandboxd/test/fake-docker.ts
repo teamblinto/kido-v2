@@ -63,9 +63,7 @@ export class FakeDocker implements DockerPort {
   inspect(cid: string) {
     this.rec('inspect', cid);
     const c = this.containers.get(cid);
-    return Promise.resolve(
-      c ? { status: c.status, ip: '172.31.0.2', startedAt: new Date(0).toISOString() } : null,
-    );
+    return Promise.resolve(c ? { status: c.status, ip: '172.31.0.2' } : null);
   }
   commit(cid: string, repoTag: string) {
     this.rec('commit', cid, repoTag);

@@ -111,6 +111,8 @@ async function resolve(
   seen.port = t.port;
   const row = d.store.get(t.sandboxId);
   if (!row) throw new HttpError(404, 'sandbox not found');
+  // An agent home serves nothing to preview, and its companion must not be reachable from outside.
+  if (row.class === 'agent') throw new HttpError(403, 'agent homes have no preview');
   const c = row.containerId ? await d.docker.inspect(row.containerId) : null;
   if (c?.status !== 'running' || !c.ip) throw new HttpError(503, 'sandbox not running');
   return { ...t, ip: c.ip };

@@ -1,6 +1,7 @@
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 
 import { Store, type SandboxRow } from '../src/store.ts';
 
@@ -14,7 +15,6 @@ const row = (id: string, labels: Record<string, string> = {}): SandboxRow => ({
   networkAllow: null,
   networkBlockAll: false,
   createdAt: '2026-01-01T00:00:00.000Z',
-  queuedAt: null,
 });
 
 describe('Store', () => {
@@ -41,6 +41,20 @@ describe('Store', () => {
     s2.remove('a');
     expect(s2.all().map((r) => r.id)).toEqual(['b']);
     s2.close();
+  });
+
+  it('keeps working on a database created with the old queued_at column', () => {
+    const d = mkdtempSync(join(tmpdir(), 'sbxd-'));
+    const old = new DatabaseSync(join(d, 'sandboxd.db'));
+    old.exec(`CREATE TABLE sandbox (
+        id TEXT PRIMARY KEY, container_id TEXT, image TEXT NOT NULL, class TEXT NOT NULL,
+        labels TEXT NOT NULL, desired TEXT NOT NULL, network_allow TEXT,
+        network_block_all INTEGER NOT NULL, created_at TEXT NOT NULL, queued_at TEXT)`);
+    old.close();
+    const s = new Store(d);
+    s.insert(row('a'));
+    expect(s.get('a')).toEqual(row('a'));
+    s.close();
   });
 });
 

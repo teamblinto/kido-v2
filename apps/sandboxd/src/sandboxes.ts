@@ -1,11 +1,12 @@
 import { randomUUID } from 'node:crypto';
 import { statfs } from 'node:fs/promises';
-import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { ServerResponse } from 'node:http';
 
 import { type Admission, procMemAvailable } from './admission.ts';
 import { classOf, containerSpec } from './classes.ts';
 import type { Config } from './config.ts';
-import type { DockerPort } from './docker.ts';
+import type { ContainerStatus, DockerPort } from './docker.ts';
+import { readJson } from './exec.ts';
 import { HttpError, type router, sendJson } from './http.ts';
 import type { SandboxRow, Store } from './store.ts';
 
@@ -14,26 +15,6 @@ const SNAP_NAME = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
 const SEG = '[a-z0-9]+(?:[._-][a-z0-9]+)*'; // a valid docker repo path component
 const FORGE_IMAGE = new RegExp(`^forge(?:-snap)?/${SEG}(?:/${SEG})*(?::[A-Za-z0-9._-]+)?$`);
 const snapRef = (name: string) => `forge-snap/${name}:latest`;
-
-async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
-  const chunks: Buffer[] = [];
-  let n = 0;
-  for await (const c of req as AsyncIterable<Buffer>) {
-    n += c.length;
-    if (n > 1 << 20) throw new HttpError(413, 'body too large');
-    chunks.push(c);
-  }
-  if (n === 0) return {};
-  try {
-    const v: unknown = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-    if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
-      return v as Record<string, unknown>;
-    }
-  } catch {
-    // fall through
-  }
-  throw new HttpError(400, 'invalid JSON body');
-}
 
 function toLabels(v: unknown): Record<string, string> {
   if (v === undefined || v === null) return {};
@@ -75,20 +56,30 @@ export function registerSandboxRoutes(
     return r;
   };
 
-  async function dto(r: SandboxRow) {
-    const c = r.containerId ? await docker.inspect(r.containerId) : null;
-    let state = 'starting';
-    if (r.desired === 'queued' && admission.hasFailed(r.id)) {
-      state = 'error';
-    } else if (c && r.desired !== 'queued') {
-      const s = c.status;
-      if (s === 'running') state = 'started';
-      else if (s === 'removing') state = 'destroying';
-      else if (s === 'dead') state = 'error';
-      else if (s === 'exited' || s === 'created') {
-        state = r.desired === 'stopped' ? 'stopped' : 'starting';
-      }
+  /**
+   * Daytona's state. A container gone from Docker is `error`; one that exited on its own while
+   * wanted running is `stopped`, so the API's start/reconcile path brings it back.
+   */
+  function stateOf(r: SandboxRow, c: { status: ContainerStatus } | null): string {
+    if (!c) return 'error';
+    if (r.desired === 'queued') return admission.hasFailed(r.id) ? 'error' : 'starting';
+    switch (c.status) {
+      case 'running':
+        return 'started';
+      case 'removing':
+        return 'destroying';
+      case 'dead':
+        return 'error';
+      case 'exited':
+      case 'created':
+        return 'stopped';
+      default:
+        return 'starting';
     }
+  }
+
+  async function dto(r: SandboxRow) {
+    const state = stateOf(r, r.containerId ? await docker.inspect(r.containerId) : null);
     return {
       id: r.id,
       state,
@@ -118,10 +109,13 @@ export function registerSandboxRoutes(
     } else {
       throw new HttpError(400, `Snapshot ${snapshot} not found`);
     }
+    // Allowed by name but not on this host: a caller error, not a 500 from docker create.
+    if (image === snapshot && !(await docker.imageExists(image))) {
+      throw new HttpError(400, `Snapshot ${snapshot} not found`);
+    }
     const id = `${cfg.nodeId}-${randomUUID()}`;
     const cls = classOf(labels);
-    const containerId = await docker.create(containerSpec(cfg, id, image, cls, labels, []));
-    const now = new Date().toISOString();
+    const containerId = await docker.create(containerSpec(cfg, id, image, cls, labels));
     try {
       store.insert({
         id,
@@ -132,15 +126,16 @@ export function registerSandboxRoutes(
         desired: 'queued',
         networkAllow: null,
         networkBlockAll: false,
-        createdAt: now,
-        queuedAt: now,
+        createdAt: new Date().toISOString(),
       });
     } catch (err) {
       await docker.remove(containerId); // no orphan container for a row that never landed
       throw err;
     }
     await admission.request(id);
-    await admission.tick();
+    // Never awaited here or below: one drain can take seconds per queued runsc start (minutes
+    // after a reboot), and the adapter polls describe anyway. tick() logs its own failures.
+    void admission.tick();
     sendJson(res, 200, await dto(row(id)));
   });
 
@@ -151,7 +146,7 @@ export function registerSandboxRoutes(
   api.route('POST', '/sandbox/:id/start', async (_req, res, p) => {
     row(p.id!);
     await admission.request(p.id!);
-    await admission.tick();
+    void admission.tick();
     empty(res);
   });
 
@@ -161,7 +156,7 @@ export function registerSandboxRoutes(
     store.setState(r.id, 'stopped');
     store.removeSessionsFor(r.id);
     if (r.containerId) await docker.stop(r.containerId, 10);
-    await admission.tick();
+    void admission.tick();
     empty(res);
   });
 
@@ -171,7 +166,7 @@ export function registerSandboxRoutes(
     admission.cancel(r.id);
     if (r.containerId) await docker.remove(r.containerId);
     store.remove(r.id);
-    await admission.tick();
+    void admission.tick();
     empty(res);
   });
 
@@ -184,14 +179,9 @@ export function registerSandboxRoutes(
   });
 
   api.route('GET', '/capacity', async (_req, res) => {
-    let running = 0;
-    for (const r of store.all()) {
-      const c = r.containerId ? await docker.inspect(r.containerId) : null;
-      if (c?.status === 'running' || c?.status === 'restarting') running++;
-    }
     const fs = await sys.statfs();
     sendJson(res, 200, {
-      running,
+      running: await admission.runningCount(),
       queued: admission.size(),
       maxRunning: cfg.maxRunning,
       memAvailableBytes: sys.memAvailable(),
@@ -223,6 +213,8 @@ export function registerSandboxRoutes(
       throw new HttpError(400, 'invalid snapshot name');
     }
     if (!r.containerId) throw new HttpError(409, 'sandbox has no container');
+    // An agent home's disk holds a person's Claude sign-in: never bake it into an image.
+    if (r.class === 'agent') throw new HttpError(409, 'agent homes cannot be snapshotted');
     await docker.commit(r.containerId, snapRef(name));
     empty(res);
   });

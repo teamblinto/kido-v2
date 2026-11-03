@@ -42,7 +42,6 @@ export function containerSpec(
   image: string,
   cls: SandboxClass,
   labels: Record<string, string>,
-  proxyEnv: string[],
 ): ContainerSpec {
   const limits = {
     project: { memory: 1.5 * GiB, swap: 2 * GiB, pids: 512, cpus: 1e9, disk: '5G' },
@@ -51,10 +50,10 @@ export function containerSpec(
   }[cls];
   const proxy = `http://${cfg.egressListen.host}:${cfg.egressListen.port}`;
   const runtime = cls === 'agent' ? 'runc' : cfg.runtimeProject;
-  const env = [...proxyEnv];
-  if (cls === 'agent') {
-    env.push(`HTTP_PROXY=${proxy}`, `HTTPS_PROXY=${proxy}`, 'NO_PROXY=', 'NODE_USE_ENV_PROXY=1');
-  }
+  const env =
+    cls === 'agent'
+      ? [`HTTP_PROXY=${proxy}`, `HTTPS_PROXY=${proxy}`, 'NO_PROXY=', 'NODE_USE_ENV_PROXY=1']
+      : [];
   return {
     name: `sbx-${id}`,
     image,

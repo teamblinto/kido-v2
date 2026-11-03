@@ -47,7 +47,6 @@ async function add(desired: SandboxRow['desired'] = 'queued'): Promise<string> {
     networkAllow: null,
     networkBlockAll: false,
     createdAt: new Date(1000 + n).toISOString(),
-    queuedAt: null,
   });
   return id;
 }
@@ -152,6 +151,53 @@ describe('admission', () => {
     adm.cancel(id);
     await adm.tick();
     expect(status(id)).toBe('created');
+  });
+
+  it('recover turns a queued row whose container already runs into started (crash after start)', async () => {
+    const id = await add('queued');
+    docker.containers.get(store.get(id)!.containerId!)!.status = 'running';
+    await adm.recover();
+    expect(store.get(id)!.desired).toBe('started');
+    expect(adm.size()).toBe(0);
+  });
+
+  it('request does not overwrite a /stop that lands during its inspect', async () => {
+    const id = await add('stopped');
+    const realInspect = docker.inspect.bind(docker);
+    docker.inspect = async (cid: string) => {
+      const r = await realInspect(cid);
+      store.setState(id, 'stopped'); // what POST /stop does
+      adm.cancel(id);
+      return r;
+    };
+    await adm.request(id);
+    docker.inspect = realInspect;
+    expect(store.get(id)!.desired).toBe('stopped');
+    await adm.tick();
+    expect(status(id)).toBe('created');
+  });
+
+  it('request does not mark started over a /stop when the container runs', async () => {
+    const id = await add('stopped');
+    docker.containers.get(store.get(id)!.containerId!)!.status = 'running';
+    const realInspect = docker.inspect.bind(docker);
+    docker.inspect = async (cid: string) => {
+      const r = await realInspect(cid);
+      store.setState(id, 'stopped');
+      adm.cancel(id);
+      return r;
+    };
+    await adm.request(id);
+    expect(store.get(id)!.desired).toBe('stopped');
+  });
+
+  it('a hung docker start times out, counts as a failed attempt and frees the drain', async () => {
+    const a2 = new Admission({ cfg, store, docker, memAvailable: () => mem, controlTimeoutMs: 20 });
+    const id = await add();
+    docker.start = () => new Promise<void>(() => undefined);
+    await a2.request(id);
+    await a2.tick();
+    expect(a2.hasFailed(id)).toBe(true);
   });
 
   it('recover enqueues unstarted queued/started rows in createdAt order', async () => {

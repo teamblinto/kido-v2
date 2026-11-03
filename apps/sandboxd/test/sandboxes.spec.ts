@@ -27,17 +27,26 @@ let store: Store;
 let docker: FakeDocker;
 let server: Server;
 let base: string;
+let adm: Admission;
 
 beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'sbxd-'));
   store = new Store(dir);
   docker = new FakeDocker();
+  docker.images.add('forge/sandbox-base:1');
+  adm = new Admission({
+    cfg,
+    store,
+    docker,
+    memAvailable: () => Infinity,
+    controlTimeoutMs: 100,
+  });
   const api = router('key');
   registerSandboxRoutes(api, {
     cfg,
     store,
     docker,
-    admission: new Admission({ cfg, store, docker, memAvailable: () => Infinity }),
+    admission: adm,
     sys: {
       memAvailable: () => 123,
       statfs: () => Promise.resolve({ bsize: 10, blocks: 100, bfree: 40, bavail: 30 }),
@@ -60,6 +69,7 @@ const call = (method: string, path: string, body?: unknown) =>
     body: body === undefined ? undefined : JSON.stringify(body),
   });
 
+/** Create, then wait for the admission drain the handler only kicked off. */
 const create = async (labels: Record<string, string> = {}) => {
   const res = await call('POST', '/sandbox', {
     snapshot: 'forge/sandbox-base:1',
@@ -67,8 +77,13 @@ const create = async (labels: Record<string, string> = {}) => {
     autoArchiveInterval: 0,
     autoStopInterval: 0,
   });
-  return { res, dto: (await res.json()) as Record<string, unknown> };
+  const dto = (await res.json()) as Record<string, unknown>;
+  await adm.tick();
+  return { res, dto };
 };
+const stateOf = async (id: string) =>
+  ((await (await call('GET', `/sandbox/${id}`)).json()) as { state: string }).state;
+const cidOf = (id: string) => store.get(id)!.containerId!;
 
 describe('sandbox control plane', () => {
   it('create answers the dto the API parses, then the sandbox starts', async () => {
@@ -100,6 +115,8 @@ describe('sandbox control plane', () => {
   });
 
   it('image allow-list: forge/ prefix and exact entries only', async () => {
+    docker.images.add('forge/other/img');
+    docker.images.add('forge-snap/foo:latest');
     const post = (snapshot: string) => call('POST', '/sandbox', { snapshot, labels: {} });
     expect((await post('forge/sandbox-base:1')).status).toBe(200);
     expect((await post('forge/other/img')).status).toBe(200);
@@ -143,7 +160,49 @@ describe('sandbox control plane', () => {
   it('reports error once start has failed for good', async () => {
     docker.start = () => Promise.reject(new Error('boom'));
     const { dto } = await create();
-    expect(dto.state).toBe('error');
+    expect(await stateOf(dto.id as string)).toBe('error');
+  });
+
+  it('a container that exited on its own reports stopped, and start brings it back', async () => {
+    const id = (await create()).dto.id as string;
+    docker.containers.get(cidOf(id))!.status = 'exited';
+    expect(await stateOf(id)).toBe('stopped');
+    await call('POST', `/sandbox/${id}/start`);
+    await adm.tick();
+    expect(await stateOf(id)).toBe('started');
+  });
+
+  it('a row whose container is gone reports error', async () => {
+    const id = (await create()).dto.id as string;
+    docker.containers.delete(cidOf(id));
+    expect(await stateOf(id)).toBe('error');
+  });
+
+  it('create, start, stop and delete return while a docker start hangs', async () => {
+    docker.start = () => new Promise<void>(() => undefined);
+    const t0 = Date.now();
+    const res = await call('POST', '/sandbox', { snapshot: 'forge/sandbox-base:1', labels: {} });
+    const { id, state } = (await res.json()) as { id: string; state: string };
+    expect(state).toBe('starting');
+    expect((await call('POST', `/sandbox/${id}/start`)).status).toBe(200);
+    expect((await call('POST', `/sandbox/${id}/stop`)).status).toBe(200);
+    expect((await call('DELETE', `/sandbox/${id}`)).status).toBe(200);
+    expect(Date.now() - t0).toBeLessThan(1000);
+  });
+
+  it('refuses to snapshot an agent home (409): it would bake credentials into an image', async () => {
+    const { dto } = await create({ baios: 'agent-home' });
+    const res = await call('POST', `/sandbox/${dto.id as string}/snapshot`, { name: 'x' });
+    expect(res.status).toBe(409);
+    expect(docker.calls.some((c) => c.method === 'commit')).toBe(false);
+  });
+
+  it('an allow-listed image that is not on the host is 400 Snapshot not found', async () => {
+    docker.images.delete('forge/sandbox-base:1');
+    const res = await call('POST', '/sandbox', { snapshot: 'forge/sandbox-base:1', labels: {} });
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { message: string }).message).toMatch(/not found/);
+    expect(docker.containers.size).toBe(0);
   });
 
   it('401 without bearer', async () => {
@@ -173,6 +232,7 @@ describe('sandbox control plane', () => {
       ((await (await call('GET', `/sandbox/${id}`)).json()) as { state: string }).state;
     expect(await state()).toBe('stopped');
     expect((await call('POST', `/sandbox/${id}/start`)).status).toBe(200);
+    await adm.tick();
     expect(await state()).toBe('started');
     const put = await call('PUT', `/sandbox/${id}/labels`, { labels: { z: '1' } });
     expect(((await put.json()) as { labels: unknown }).labels).toEqual({ z: '1' });

@@ -256,23 +256,27 @@ export function registerToolboxRoutes(api: ReturnType<typeof router>, d: Deps): 
     tool(async (_q, res, { cid, url }) => {
       const p = queryPath(url);
       const pattern = url.searchParams.get('pattern') ?? '*';
-      const out = ok(
-        await run(
-          cid,
-          guarded('-e', p, [
-            'find',
-            p,
-            '-type',
-            'f',
-            ...EXCLUDES.flatMap((e) => ['-not', '-path', `*/${e}/*`]),
-            '-name',
-            pattern,
-            '-print0',
-          ]),
-          { max: 4 << 20 },
-        ),
-        'search',
+      const r = await run(
+        cid,
+        guarded('-e', p, [
+          'find',
+          p,
+          '(',
+          ...EXCLUDES.flatMap((e, i) => [...(i ? ['-o'] : []), '-name', e]),
+          ')',
+          '-prune', // never descends into them (-not -path still walked every node_modules file)
+          '-o',
+          '-type',
+          'f',
+          '-name',
+          pattern,
+          '-print0',
+        ]),
+        { max: 4 << 20 },
       );
+      // find exits 1 when some entry was unreadable; like rg's 2 above, the matches still count.
+      const partial = !r.timedOut && r.exitCode === 1 && r.output.length > 0 && !r.truncated;
+      const out = partial ? r.output : ok(r, 'search');
       sendJson(res, 200, { files: out.toString('utf8').split('\0').filter(Boolean) });
     }),
   );

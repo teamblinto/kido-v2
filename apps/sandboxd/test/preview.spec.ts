@@ -83,7 +83,6 @@ beforeEach(async () => {
     networkAllow: null,
     networkBlockAll: false,
     createdAt: 'x',
-    queuedAt: null,
   } as const;
   store.insert({ ...row, id: 'sA', containerId: 'cA', desired: 'started' });
   store.insert({ ...row, id: 'sB', containerId: 'cB', desired: 'stopped' });
@@ -191,6 +190,22 @@ describe('preview proxy', () => {
     const r = await get('/', tok('sA', p));
     expect(r.status).toBe(502);
     expect(r.headers.get('x-sandboxd-upstream')).toBe('refused');
+  });
+  it('never previews an agent home, even with a valid token', async () => {
+    // Same running, loopback-reachable container as sA, but agent class.
+    store.insert({
+      id: 'sH',
+      containerId: 'cA',
+      image: 'i',
+      class: 'agent',
+      labels: {},
+      desired: 'started',
+      networkAllow: null,
+      networkBlockAll: false,
+      createdAt: 'x',
+    });
+    expect((await get('/', tok('sH'))).status).toBe(403);
+    expect(upSeen).toHaveLength(0);
   });
   it('routes by token sandbox: B token never reaches A', async () => {
     await get('/', tok('sB'));

@@ -14,7 +14,6 @@ export interface SandboxRow {
   networkAllow: string[] | null;
   networkBlockAll: boolean;
   createdAt: string;
-  queuedAt: string | null;
 }
 
 type Raw = Record<string, string | number | null>;
@@ -30,7 +29,6 @@ const toRow = (r: Raw): SandboxRow => ({
     r.network_allow === null ? null : (JSON.parse(r.network_allow as string) as string[]),
   networkBlockAll: r.network_block_all === 1,
   createdAt: r.created_at as string,
-  queuedAt: r.queued_at as string | null,
 });
 
 export class Store {
@@ -43,7 +41,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS sandbox (
         id TEXT PRIMARY KEY, container_id TEXT, image TEXT NOT NULL, class TEXT NOT NULL,
         labels TEXT NOT NULL, desired TEXT NOT NULL, network_allow TEXT,
-        network_block_all INTEGER NOT NULL, created_at TEXT NOT NULL, queued_at TEXT);
+        network_block_all INTEGER NOT NULL, created_at TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS sessions (
         sandbox_id TEXT NOT NULL, session_id TEXT NOT NULL, created_at TEXT NOT NULL,
         PRIMARY KEY (sandbox_id, session_id))`);
@@ -51,7 +49,11 @@ export class Store {
 
   insert(r: SandboxRow): void {
     this.db
-      .prepare('INSERT INTO sandbox VALUES (?,?,?,?,?,?,?,?,?,?)')
+      // Named columns: databases created before queued_at was dropped still have it (nullable).
+      .prepare(
+        'INSERT INTO sandbox (id, container_id, image, class, labels, desired, network_allow, ' +
+          'network_block_all, created_at) VALUES (?,?,?,?,?,?,?,?,?)',
+      )
       .run(
         r.id,
         r.containerId,
@@ -62,7 +64,6 @@ export class Store {
         r.networkAllow === null ? null : JSON.stringify(r.networkAllow),
         r.networkBlockAll ? 1 : 0,
         r.createdAt,
-        r.queuedAt,
       );
   }
 

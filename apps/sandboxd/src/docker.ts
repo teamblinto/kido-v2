@@ -53,9 +53,7 @@ export interface DockerPort {
   start(cid: string): Promise<void>;
   stop(cid: string, timeoutS: number): Promise<void>;
   remove(cid: string): Promise<void>;
-  inspect(
-    cid: string,
-  ): Promise<{ status: ContainerStatus; ip: string | null; startedAt: string } | null>;
+  inspect(cid: string): Promise<{ status: ContainerStatus; ip: string | null } | null>;
   commit(cid: string, repoTag: string): Promise<void>;
   imageExists(ref: string): Promise<boolean>;
   removeImage(ref: string): Promise<'removed' | 'missing' | 'in-use'>;
@@ -128,7 +126,6 @@ export class DockerodePort implements DockerPort {
     return {
       status: i.State.Status as ContainerStatus,
       ip: nets.find((n) => n.IPAddress)?.IPAddress ?? null,
-      startedAt: i.State.StartedAt,
     };
   }
 

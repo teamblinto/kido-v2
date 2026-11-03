@@ -52,12 +52,8 @@ describe.skipIf(!up)('toolbox on real docker', () => {
     dir = mkdtempSync(join(tmpdir(), 'sbxd-int-'));
     store = new Store(dir);
     const r = router('key');
-    registerSandboxRoutes(r, {
-      cfg,
-      store,
-      docker,
-      admission: new Admission({ cfg, store, docker }),
-    });
+    const admission = new Admission({ cfg, store, docker });
+    registerSandboxRoutes(r, { cfg, store, docker, admission });
     registerToolboxRoutes(r, { cfg, store, docker });
     server = createServer(r.handle);
     await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
@@ -66,7 +62,9 @@ describe.skipIf(!up)('toolbox on real docker', () => {
       await api('POST', '/sandbox', { snapshot: 'forge/sandbox-base:1', labels: {} })
     ).json()) as { id: string; state: string };
     id = created.id;
-    expect(created.state).toBe('started');
+    expect(created.state).toBe('starting'); // the handler only kicks the drain off
+    await admission.tick();
+    expect(store.get(id)?.desired).toBe('started');
     const seed = await sh(
       'mkdir -p /home/daytona/t/sub /home/daytona/t/node_modules/m && ' +
         'printf "hello needle\\nsecond\\n" > /home/daytona/t/a.txt && ' +

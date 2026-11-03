@@ -30,7 +30,7 @@ describe('containerSpec', () => {
   const hc = (s: ReturnType<typeof containerSpec>) => s.hostConfig as Record<string, unknown>;
 
   it('agent', () => {
-    const s = containerSpec(cfg(false), 'a1', 'img', 'agent', { baios: 'agent-home' }, ['X=1']);
+    const s = containerSpec(cfg(false), 'a1', 'img', 'agent', { baios: 'agent-home' });
     expect(hc(s)).toMatchObject({
       Runtime: 'runc',
       Memory: 805306368,
@@ -42,7 +42,6 @@ describe('containerSpec', () => {
     expect(s.network).toBe('sbx-agent');
     expect(s.env).toEqual(
       expect.arrayContaining([
-        'X=1',
         'HTTP_PROXY=http://172.30.0.1:3988',
         'HTTPS_PROXY=http://172.30.0.1:3988',
         'NO_PROXY=',
@@ -57,7 +56,7 @@ describe('containerSpec', () => {
   });
 
   it('project', () => {
-    const s = containerSpec(cfg(true), 'p1', 'img', 'project', {}, []);
+    const s = containerSpec(cfg(true), 'p1', 'img', 'project', {});
     expect(hc(s)).toMatchObject({
       Runtime: 'runsc',
       Memory: 1610612736,
@@ -70,7 +69,7 @@ describe('containerSpec', () => {
   });
 
   it('build', () => {
-    const s = containerSpec(cfg(true), 'b1', 'img', 'build', {}, []);
+    const s = containerSpec(cfg(true), 'b1', 'img', 'build', {});
     expect(hc(s)).toMatchObject({
       Memory: 2147483648,
       MemorySwap: 2147483648,
@@ -82,8 +81,8 @@ describe('containerSpec', () => {
   });
 
   it.each(['project', 'agent', 'build'] as const)('%s hardening, StorageOpt gated', (cls) => {
-    const on = hc(containerSpec(cfg(true), 'x', 'img', cls, {}, []));
-    const off = hc(containerSpec(cfg(false), 'x', 'img', cls, {}, []));
+    const on = hc(containerSpec(cfg(true), 'x', 'img', cls, {}));
+    const off = hc(containerSpec(cfg(false), 'x', 'img', cls, {}));
     for (const h of [on, off]) {
       expect(h).toMatchObject({
         CapDrop: ['ALL'],
@@ -96,16 +95,14 @@ describe('containerSpec', () => {
       if (cls === 'agent') expect(h).not.toHaveProperty('Binds');
       else expect(h.Binds).toEqual(['/var/lib/sandboxd/resolv.sandbox.conf:/etc/resolv.conf:ro']);
     }
-    expect(containerSpec(cfg(true), 'x', 'img', cls, {}, []).user).toBe('1000:1000');
+    expect(containerSpec(cfg(true), 'x', 'img', cls, {}).user).toBe('1000:1000');
     expect(on).toHaveProperty('StorageOpt');
     expect(off).not.toHaveProperty('StorageOpt');
   });
 
   it('runc project sandboxes keep Docker DNS: no host mount at all', () => {
     for (const cls of ['project', 'build'] as const)
-      expect(hc(containerSpec(cfg(true, 'runc'), 'x', 'img', cls, {}, []))).not.toHaveProperty(
-        'Binds',
-      );
+      expect(hc(containerSpec(cfg(true, 'runc'), 'x', 'img', cls, {}))).not.toHaveProperty('Binds');
   });
 });
 

@@ -22,7 +22,7 @@ describe.skipIf(!up)('DockerodePort', () => {
   beforeAll(async () => {
     await docker.ensureNetwork('sbx-proj', { internal: false });
     const id = `int-${randomBytes(4).toString('hex')}`;
-    cid = await docker.create(containerSpec(cfg, id, 'forge/sandbox-base:1', 'project', {}, []));
+    cid = await docker.create(containerSpec(cfg, id, 'forge/sandbox-base:1', 'project', {}));
     await docker.start(cid);
   }, 60_000);
 

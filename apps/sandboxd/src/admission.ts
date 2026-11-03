@@ -23,6 +23,15 @@ export function procMemAvailable(): number {
   return Number.MAX_SAFE_INTEGER;
 }
 
+/** `p`, or a rejection after `ms`, so a hung Docker call cannot freeze the drain. */
+function within<T>(p: Promise<T>, ms: number, what: string): Promise<T> {
+  let t: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, no) => {
+    t = setTimeout(() => no(new Error(`${what} timed out after ${String(ms)} ms`)), ms);
+  });
+  return Promise.race([p, timeout]).finally(() => clearTimeout(t));
+}
+
 export class Admission {
   private queue: string[] = [];
   private chain: Promise<void> = Promise.resolve();
@@ -35,25 +44,37 @@ export class Admission {
     store: Store;
     docker: DockerPort;
     memAvailable?: () => number;
+    /** Cap on each Docker call the drain makes; default 60 s. */
+    controlTimeoutMs?: number;
   };
 
   constructor(deps: Admission['deps']) {
     this.deps = deps;
   }
 
+  private call<T>(p: Promise<T>, what: string): Promise<T> {
+    return within(p, this.deps.controlTimeoutMs ?? 60_000, what);
+  }
+
   /** Queue the sandbox for the next `tick`; one already running just becomes `started`. */
   async request(id: string): Promise<void> {
     const { store, docker } = this.deps;
+    const cid = store.get(id)?.containerId;
+    if (cid === undefined) return;
     this.failed.delete(id);
     this.attempts.delete(id);
-    const cid = store.get(id)?.containerId;
-    const c = cid ? await docker.inspect(cid) : null;
-    if (c?.status === 'running' || c?.status === 'restarting') {
-      store.setState(id, 'started');
-      return;
-    }
+    // Written before the inspect: a /stop or delete landing meanwhile overwrites it, and below
+    // nothing is written unless the row is still the `queued` this call put there.
     store.setState(id, 'queued');
     if (!this.queue.includes(id)) this.queue.push(id);
+    const c = cid ? await docker.inspect(cid) : null;
+    if (
+      (c?.status === 'running' || c?.status === 'restarting') &&
+      store.get(id)?.desired === 'queued'
+    ) {
+      this.cancel(id);
+      store.setState(id, 'started');
+    }
   }
 
   /** True once starting it failed MAX_START_ATTEMPTS times; cleared by the next `request`. */
@@ -69,13 +90,16 @@ export class Admission {
     return this.queue.length;
   }
 
-  /** On boot: re-queue wanted-running sandboxes whose container is not running, oldest first. */
+  /**
+   * On boot: re-queue wanted-running sandboxes whose container is not running, oldest first, and
+   * settle `queued` rows whose container already runs (a crash between docker start and the write).
+   */
   async recover(): Promise<void> {
     const { store, docker } = this.deps;
     for (const r of store.all()) {
       if (r.desired === 'stopped' || r.containerId === null) continue;
       const c = await docker.inspect(r.containerId);
-      if (c && c.status !== 'running') await this.request(r.id);
+      if (c && (c.status !== 'running' || r.desired === 'queued')) await this.request(r.id);
     }
   }
 
@@ -91,12 +115,13 @@ export class Admission {
     return this.chain;
   }
 
-  private async runningCount(): Promise<number> {
+  /** Containers Docker reports running (or restarting), whatever their row wants. */
+  async runningCount(): Promise<number> {
     const { store, docker } = this.deps;
     let n = 0;
     for (const r of store.all()) {
       if (r.containerId === null) continue;
-      const c = await docker.inspect(r.containerId);
+      const c = await this.call(docker.inspect(r.containerId), 'docker inspect');
       if (c && (c.status === 'running' || c.status === 'restarting')) n++;
     }
     return n;
@@ -112,7 +137,7 @@ export class Admission {
       const row = store.get(id);
       if (row?.containerId == null || row.desired !== 'queued') continue;
       try {
-        await docker.start(row.containerId);
+        await this.call(docker.start(row.containerId), 'docker start');
       } catch (err) {
         const n = (this.attempts.get(id) ?? 0) + 1;
         this.attempts.set(id, n);
@@ -131,9 +156,9 @@ export class Admission {
         store.setState(id, 'started');
         running++;
       } else if (now) {
-        await docker.stop(row.containerId, 10);
+        await this.call(docker.stop(row.containerId, 10), 'docker stop');
       } else {
-        await docker.remove(row.containerId);
+        await this.call(docker.remove(row.containerId), 'docker remove');
       }
     }
   }
