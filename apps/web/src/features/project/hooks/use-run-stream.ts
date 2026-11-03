@@ -221,6 +221,7 @@ export function useRunStream({ onEvent, orgId, projectId, runId }: UseRunStreamO
 
   const status = transcript.run?.status;
   const isFinished = status !== undefined && isTerminal(status);
+  const isKnown = status !== undefined;
 
   // A finished run is read from the store, in pages, and gets no connection (FR-014, R6).
   const historyQuery = useQuery({
@@ -243,11 +244,11 @@ export function useRunStream({ onEvent, orgId, projectId, runId }: UseRunStreamO
     }
 
     // Nothing to open yet (the run has not been read) or nothing to open at all (it has ended).
-    if (status === undefined) {
+    if (!isKnown) {
       return;
     }
 
-    if (isTerminal(status)) {
+    if (isFinished) {
       dispatch({ kind: 'connection', connection: 'closed' });
 
       return;
@@ -329,7 +330,10 @@ export function useRunStream({ onEvent, orgId, projectId, runId }: UseRunStreamO
     return () => {
       source.close();
     };
-  }, [orgId, projectId, runId, status, attempt]);
+    // Keyed on known/finished, never on `status` itself: a fresh connection replays the run from
+    // seq 1, its `state` events walk `status` through queued → … → awaiting_input, and reopening on
+    // each step replays again — a reconnect storm that also remounted the preview every replay.
+  }, [orgId, projectId, runId, isKnown, isFinished, attempt]);
 
   const rendered = useMemo(() => renderItems(transcript), [transcript]);
 

@@ -207,10 +207,22 @@ describe('StagePreview', () => {
 
     await waitFor(() => expect(frame()).toHaveAttribute('src', 'https://a.preview.test/?code=1'));
 
-    // Exactly this, not a superset: `allow-same-origin` beside `allow-scripts` would give the
-    // agent's own output same-origin access to this application.
-    expect(frame().getAttribute('sandbox')).toBe('allow-scripts allow-forms');
-    expect(frame().getAttribute('sandbox')?.split(' ')).not.toContain('allow-same-origin');
+    // Exactly this, not a superset. `allow-same-origin` keeps the preview's own origin (without
+    // it the frame is opaque and its module scripts fail CORS); no top navigation, no popups.
+    expect(frame().getAttribute('sandbox')).toBe('allow-scripts allow-forms allow-same-origin');
+  });
+
+  it('never frames a preview url on this application’s own origin', async () => {
+    server.use(
+      http.get(PREVIEW, () =>
+        HttpResponse.json({ port: 3000, url: window.location.origin, visibility: 'public' }),
+      ),
+    );
+
+    renderScreen(stage([]));
+
+    expect(await screen.findByText('No preview yet')).toBeInTheDocument();
+    expect(screen.queryByTitle('Project preview')).not.toBeInTheDocument();
   });
 
   it('frames a public preview at its plain address, minting no code', async () => {

@@ -74,6 +74,13 @@ describe('page templates', () => {
     expect(WAKING_PAGE.headers).toEqual({ 'Retry-After': '2' });
   });
 
+  it('only WAKING_PAGE reloads itself; the terminal and refusal pages do not', () => {
+    expect(WAKING_PAGE.body).toContain('<meta http-equiv="refresh" content="2">');
+    for (const page of [REFUSED_PAGE, NOT_SERVING_PAGE, COULD_NOT_WAKE_PAGE]) {
+      expect(page.body).not.toContain('http-equiv="refresh"');
+    }
+  });
+
   it('COULD_NOT_WAKE_PAGE is a distinct body from WAKING_PAGE and NOT_SERVING_PAGE', () => {
     expect(COULD_NOT_WAKE_PAGE.body).not.toBe(WAKING_PAGE.body);
     expect(COULD_NOT_WAKE_PAGE.body).not.toBe(NOT_SERVING_PAGE.body);

@@ -163,6 +163,56 @@ describe('useRunStream', () => {
     unmount();
   });
 
+  it('keeps one connection while a replay walks the status through non-terminal states', async () => {
+    // Production: a run waiting for input, opened fresh, replays its `state` events from seq 1.
+    // Each step changed `status`; reopening on it replayed again — hundreds of streams a minute.
+    const step = (seq: number, from: string | null, to: string): RunEvent =>
+      ({ at: aRun.createdAt, data: { from, to }, run: RUN, seq, type: 'state' }) as RunEvent;
+    let opened = 0;
+
+    server.use(
+      ...handlers(
+        () => {
+          opened += 1;
+          const frames = [
+            frame(step(1, null, 'queued')),
+            frame(step(2, 'queued', 'starting')),
+            frame(step(3, 'starting', 'running')),
+            frame(step(4, 'running', 'awaiting_input')),
+          ];
+          const encoder = new TextEncoder();
+
+          // One frame per task, as the network delivers them: batched into one chunk, React
+          // would fold the walk into a single render and hide the bug.
+          return new Response(
+            new ReadableStream<Uint8Array>({
+              async start(controller) {
+                controller.enqueue(encoder.encode('retry: 10\n\n'));
+                for (const written of frames) {
+                  await new Promise((resolve) => setTimeout(resolve, 5));
+                  controller.enqueue(encoder.encode(written));
+                }
+              },
+            }),
+            { headers: { 'content-type': 'text/event-stream' } },
+          );
+        },
+        { lastSeq: 4, status: 'awaiting_input' },
+      ),
+    );
+
+    const { result, unmount } = renderStream();
+
+    await waitFor(() => {
+      expect(result.current.items).toHaveLength(4);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    expect(opened).toBe(1);
+    expect(result.current.connection).toBe('open');
+    unmount();
+  });
+
   it('closes the connection when a state event reports a terminal status', async () => {
     let opened = 0;
 

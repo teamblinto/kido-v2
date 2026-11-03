@@ -97,6 +97,10 @@ activate() {
   dc "$d" run --rm -T migrate </dev/null || return 1
   say "starting ($(basename "$d"))"
   dc "$d" up -d --no-build --remove-orphans </dev/null || return 1
+  # The gateway lives in api's network namespace (network_mode: service:api). An `up` that only
+  # restarts api (e.g. postgres recreated for the new release path) leaves the unchanged gateway in
+  # the dead namespace, unhealthy forever; recreating it (stateless) always joins the live one.
+  dc "$d" up -d --no-build --no-deps --force-recreate gateway </dev/null || return 1
   wait_healthy && smoke
 }
 

@@ -24,7 +24,9 @@ interface PreviewFrameProps {
  * the event's own url instead would show whatever the sandbox last claimed (FR-016).
  */
 export function PreviewFrame({ className, reloadKey, url }: PreviewFrameProps): React.JSX.Element {
-  if (url === undefined || url.length === 0) {
+  // `allow-same-origin` below is safe only because the preview is served from its own origin; a
+  // url on this app's origin would hand the agent's output this app, so it is never framed.
+  if (url === undefined || url.length === 0 || new URL(url).origin === window.location.origin) {
     return (
       <EmptyPane
         className={className}
@@ -39,10 +41,12 @@ export function PreviewFrame({ className, reloadKey, url }: PreviewFrameProps): 
       key={reloadKey}
       src={url}
       title="Project preview"
-      // FR-017. The preview is the agent's own output: same-origin access to this app is not
-      // something it should have, and `allow-same-origin` beside `allow-scripts` would hand it
-      // exactly that. This attribute does not widen for convenience.
-      sandbox="allow-scripts allow-forms"
+      // FR-017. The preview is the agent's own output and must never reach this app. It is served
+      // from its own `<label>-<port>.<preview domain>` origin (guarded above), so
+      // `allow-same-origin` keeps *that* origin — what it has opened in a tab — rather than this
+      // app's. Without it the document is opaque (`Origin: null`): its module scripts fail CORS
+      // and carry no grant cookie, so no Vite/Next app can run in the frame. Nothing else widens.
+      sandbox="allow-scripts allow-forms allow-same-origin"
       className={cn('size-full border-0', className)}
     />
   );

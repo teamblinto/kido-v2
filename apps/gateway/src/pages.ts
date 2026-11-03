@@ -18,10 +18,11 @@ function htmlPage(
   title: string,
   message: string,
   headers?: Record<string, string>,
+  head = '',
 ): Page {
   return {
     status,
-    body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${title}</title></head><body><h1>${title}</h1><p>${message}</p></body></html>`,
+    body: `<!doctype html><html lang="en"><head><meta charset="utf-8">${head}<title>${title}</title></head><body><h1>${title}</h1><p>${message}</p></body></html>`,
     headers,
   };
 }
@@ -32,7 +33,11 @@ export const REFUSED_PAGE: Page = htmlPage(404, 'Not found', 'Nothing is here.')
 /** Route valid, sandbox ready, but the upstream refused the connection (research R12). */
 export const NOT_SERVING_PAGE: Page = htmlPage(503, 'Not serving', 'Nothing is serving yet.');
 
-/** `because: 'resuming'` (T041/T042): rendered immediately, before any retry. */
+/**
+ * `because: 'resuming'` (T041/T042): rendered immediately, before any retry. A browser ignores
+ * `Retry-After` on a document, so the meta refresh is what makes "will retry" true — in the
+ * project's frame too; the waking budget ends it with COULD_NOT_WAKE_PAGE, which has none.
+ */
 export const WAKING_PAGE: Page = htmlPage(
   202,
   'Waking up',
@@ -40,6 +45,7 @@ export const WAKING_PAGE: Page = htmlPage(
   {
     'Retry-After': '2',
   },
+  '<meta http-equiv="refresh" content="2">',
 );
 
 /** T042: the resume failed, or the sandbox never became routable within the stated budget. */
