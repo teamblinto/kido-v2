@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
+import { statfs } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import type { Admission } from './admission.ts';
+import { type Admission, procMemAvailable } from './admission.ts';
 import { classOf, containerSpec } from './classes.ts';
 import type { Config } from './config.ts';
 import type { DockerPort } from './docker.ts';
@@ -47,11 +48,22 @@ function toLabels(v: unknown): Record<string, string> {
   return out;
 }
 
+/** Host readers behind GET /capacity, injectable so the numbers can be asserted. */
+export interface SysReaders {
+  memAvailable: () => number;
+  statfs: () => Promise<{ bsize: number; blocks: number; bavail: number }>;
+}
+
+const defaultSys: SysReaders = {
+  memAvailable: procMemAvailable,
+  statfs: () => statfs(process.env.SANDBOXD_DOCKER_ROOT ?? '/var/lib/docker'),
+};
+
 export function registerSandboxRoutes(
   api: ReturnType<typeof router>,
-  d: { cfg: Config; store: Store; docker: DockerPort; admission: Admission },
+  d: { cfg: Config; store: Store; docker: DockerPort; admission: Admission; sys?: SysReaders },
 ): void {
-  const { cfg, store, docker, admission } = d;
+  const { cfg, store, docker, admission, sys = defaultSys } = d;
 
   const row = (id: string): SandboxRow => {
     const r = store.get(id);
@@ -165,6 +177,23 @@ export function registerSandboxRoutes(
     if (body.labels === undefined) throw new HttpError(400, 'labels is required');
     store.setLabels(p.id!, toLabels(body.labels));
     sendJson(res, 200, await dto(row(p.id!)));
+  });
+
+  api.route('GET', '/capacity', async (_req, res) => {
+    let running = 0;
+    for (const r of store.all()) {
+      const c = r.containerId ? await docker.inspect(r.containerId) : null;
+      if (c?.status === 'running' || c?.status === 'restarting') running++;
+    }
+    const fs = await sys.statfs();
+    sendJson(res, 200, {
+      running,
+      queued: admission.size(),
+      maxRunning: cfg.maxRunning,
+      memAvailableBytes: sys.memAvailable(),
+      diskFreeBytes: fs.bavail * fs.bsize,
+      diskUsedPct: Math.round((1 - fs.bavail / fs.blocks) * 100),
+    });
   });
 
   api.route('GET', '/sandbox', async (_req, res, _p, url) => {

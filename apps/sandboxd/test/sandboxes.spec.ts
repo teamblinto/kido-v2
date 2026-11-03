@@ -38,6 +38,10 @@ beforeEach(async () => {
     store,
     docker,
     admission: new Admission({ cfg, store, docker, memAvailable: () => Infinity }),
+    sys: {
+      memAvailable: () => 123,
+      statfs: () => Promise.resolve({ bsize: 10, blocks: 100, bavail: 30 }),
+    },
   });
   server = createServer(api.handle);
   await new Promise<void>((ok) => server.listen(0, '127.0.0.1', ok));
@@ -210,5 +214,19 @@ describe('sandbox control plane', () => {
     });
     const bad = await call('POST', `/sandbox/${id}/network-settings`, { networkBlockAll: 1 });
     expect(bad.status).toBe(400);
+  });
+
+  it('capacity reports running, queued and host headroom', async () => {
+    await create();
+    await create();
+    const res = await call('GET', '/capacity');
+    expect(await res.json()).toEqual({
+      running: 2,
+      queued: 0,
+      maxRunning: 22,
+      memAvailableBytes: 123,
+      diskFreeBytes: 300,
+      diskUsedPct: 70,
+    });
   });
 });
