@@ -1,6 +1,7 @@
-import type { CatalogueModel, CatalogueTemplate, ProjectTemplate } from '@repo/contracts';
+import type { CatalogueTemplate, ProjectTemplate } from '@repo/contracts';
 
 import { cn } from '@/lib/utils';
+import type { ModelChoiceState } from '../hooks/use-model-choice';
 import { PromptComposer } from './prompt-composer';
 
 interface WorkspaceHeroProps {
@@ -9,10 +10,11 @@ interface WorkspaceHeroProps {
   /** A workspace with no projects yet gets the first-run greeting, and the
    * hero stretches to fill the page rather than sitting above a full shelf. */
   isFirstRun: boolean;
-  modelId: string | undefined;
-  models: readonly CatalogueModel[];
+  /** The model picker's state; its choice is who pays for the first run (spec 043). */
+  modelState: ModelChoiceState;
   name: string;
-  onSelectModel: (modelId: string) => void;
+  /** Nothing can pay for a run: the composer offers to connect instead of sending. */
+  needsConnection?: boolean;
   onSelectTemplate: (template: ProjectTemplate) => void;
   onSubmitPrompt: (prompt: string, options?: { credential?: 'organisation' }) => void;
   /** Spec 032 US7: see `PromptComposer`'s prop of the same name. */
@@ -26,10 +28,9 @@ interface WorkspaceHeroProps {
 export function WorkspaceHero({
   error,
   isFirstRun,
-  modelId,
-  models,
+  modelState,
   name,
-  onSelectModel,
+  needsConnection,
   onSelectTemplate,
   onSubmitPrompt,
   personalAccountsOff,
@@ -54,13 +55,12 @@ export function WorkspaceHero({
       <div className="mt-[26px] w-full max-w-[680px] text-left">
         <PromptComposer
           error={error}
-          modelId={modelId}
-          models={models}
+          modelState={modelState}
+          needsConnection={needsConnection}
           personalAccountsOff={personalAccountsOff}
           suggestions={suggestions}
           templateId={templateId}
           templates={templates}
-          onSelectModel={onSelectModel}
           onSelectTemplate={onSelectTemplate}
           onSubmit={onSubmitPrompt}
         />

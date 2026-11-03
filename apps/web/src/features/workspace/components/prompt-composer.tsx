@@ -7,11 +7,9 @@ import {
   MessageSquareIcon,
   MicIcon,
   PaperclipIcon,
-  SparklesIcon,
 } from 'lucide-react';
 import { useId, useRef, useState } from 'react';
 
-import { Badge } from '@/components/ui/badge';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,15 +24,18 @@ import {
   RUN_ON_ORGANISATION,
 } from '@/features/settings/subscription-limit';
 import { cn } from '@/lib/utils';
+import type { ModelChoiceState } from '../hooks/use-model-choice';
+import { type ModelChoice, catalogueEntry } from '../lib/model-choice';
+import { CONNECT_TO_SEND, ComposerPrimaryAction, ConnectToPay } from './composer-parts';
+import { ModelPicker } from './model-picker';
 
 interface PromptComposerProps {
   /** Why the last submission was refused, shown under the input until the next one. */
   error?: string;
-  /** The model on the chip. An id `models` does not list — or none yet — reads as the first. */
-  modelId: string | undefined;
-  /** What the API reports a run may use (spec 011 US6). Empty until it has answered. */
-  models: readonly CatalogueModel[];
-  onSelectModel: (modelId: string) => void;
+  /** The model picker's sources and choice (spec 043): the payment choice for the first run. */
+  modelState: ModelChoiceState;
+  /** Nothing can pay for a run: the connect path shows instead of sending. */
+  needsConnection?: boolean;
   onSelectTemplate: (template: ProjectTemplate) => void;
   /** `credential: 'organisation'` only from the limit's own button (spec 032 A3). */
   onSubmit: (prompt: string, options?: { credential?: 'organisation' }) => void;
@@ -51,15 +52,14 @@ interface PromptComposerProps {
 }
 
 /**
- * The "describe your tool" input that anchors the workspace home screen. It
- * expands once engaged: the model picker and the starter prompts only appear
- * when the composer is actually in use, keeping the resting state calm.
+ * The "describe your tool" input that anchors the workspace home screen. The starter prompts only
+ * appear once it is engaged, keeping the resting state calm; the model picker is always there,
+ * because it is also who pays.
  */
 export function PromptComposer({
   error,
-  modelId,
-  models,
-  onSelectModel,
+  modelState,
+  needsConnection = false,
   onSelectTemplate,
   onSubmit,
   personalAccountsOff = false,
@@ -74,16 +74,22 @@ export function PromptComposer({
   const [isModelMenuOpen, setIsModelMenuOpen] = useState(false);
   const [isTemplateMenuOpen, setIsTemplateMenuOpen] = useState(false);
 
-  // The model menu takes focus out of the textarea, so it has to count as
-  // engagement in its own right or the row it lives in would unmount under it.
+  // A menu takes focus out of the textarea, so it has to count as engagement in its own right or
+  // the starter prompts would unmount under it.
   const isEngaged = isFocused || isModelMenuOpen || isTemplateMenuOpen || prompt.length > 0;
   // Spec 032 T048: a limited subscription never runs elsewhere without the person's say-so.
-  const limit = limitOfModel(findModel(models, modelId));
+  const limit = limitOfModel(catalogueEntry(modelState.choice, modelState.catalogue.data));
   const hasPrompt = prompt.trim().length > 0;
-  const canSubmit = hasPrompt && limit === undefined;
+  const disabledReason = needsConnection
+    ? CONNECT_TO_SEND
+    : !hasPrompt
+      ? 'Describe what to build first'
+      : limit === undefined
+        ? undefined
+        : limitSentence(limit);
 
   function submit(options?: { credential: 'organisation' }): void {
-    if (!hasPrompt || (limit !== undefined && options === undefined)) {
+    if (!hasPrompt || needsConnection || (limit !== undefined && options === undefined)) {
       return;
     }
 
@@ -151,15 +157,7 @@ export function PromptComposer({
             event.preventDefault();
           }}
         >
-          {isEngaged ? (
-            <ModelPicker
-              modelId={modelId}
-              models={models}
-              isMenuOpen={isModelMenuOpen}
-              onMenuOpenChange={setIsModelMenuOpen}
-              onSelectModel={onSelectModel}
-            />
-          ) : null}
+          <ModelPicker state={modelState} onOpenChange={setIsModelMenuOpen} />
           <ComposerChip icon={PaperclipIcon} label="Attach" />
           <TemplatePicker
             isMenuOpen={isTemplateMenuOpen}
@@ -177,21 +175,17 @@ export function PromptComposer({
           >
             <MicIcon className="size-[17px]" aria-hidden="true" />
           </button>
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            className={cn(
-              'bg-primary text-primary-foreground hover:bg-primary/90 flex size-8 shrink-0',
-              'items-center justify-center rounded-full transition-opacity disabled:opacity-35',
-            )}
-          >
-            <ArrowUpIcon className="size-[15px]" aria-hidden="true" />
-            <span className="sr-only">Send prompt</span>
-          </button>
+          <ComposerPrimaryAction disabledReason={disabledReason} label="Send prompt" />
         </div>
       </form>
 
-      <PreflightLine model={findModel(models, modelId)} personalAccountsOff={personalAccountsOff} />
+      {needsConnection ? <ConnectToPay className="w-full" /> : null}
+
+      <PreflightLine
+        choice={modelState.choice}
+        entry={catalogueEntry(modelState.choice, modelState.catalogue.data)}
+        personalAccountsOff={personalAccountsOff}
+      />
 
       {limit === undefined ? null : (
         <div role="status" className="text-body-sm text-subdued flex flex-col items-center gap-1.5">
@@ -247,133 +241,30 @@ export function PromptComposer({
   );
 }
 
-function findModel(
-  models: readonly CatalogueModel[],
-  modelId: string | undefined,
-): CatalogueModel | undefined {
-  return models.find((model) => model.id === modelId) ?? models[0];
-}
-
-/** How each provider reads on the chip and as a heading in the menu. */
-const PROVIDER_LABEL: Record<CatalogueModel['provider'], string> = {
-  anthropic: 'Claude',
-  openai: 'OpenAI',
-};
-
-/** Whose credential a run would use, by `credentialMode` (spec 032 FR-014's disclosure). */
-function preflightSentence(model: CatalogueModel): string {
-  switch (model.credentialMode) {
-    case 'BYOS':
-      return `Runs on your ${PROVIDER_LABEL[model.provider]} subscription`;
-    case 'BYOK':
-      return "Runs on the organisation's key";
-    case 'PLATFORM':
-      return 'Runs on platform credits';
-  }
-}
-
-/** Why a model cannot be picked: whose credential needs attention (spec 032). */
-function unavailableSentence(model: CatalogueModel): string {
-  return model.unavailableReason === 'subscription-needs-reauth'
-    ? 'reconnect your account'
-    : 'needs a new key';
-}
-
+/** Whose credential a run would use (spec 032 FR-014's disclosure). */
 function PreflightLine({
-  model,
+  choice,
+  entry,
   personalAccountsOff,
 }: {
-  model: CatalogueModel | undefined;
+  choice: ModelChoice | undefined;
+  /** The catalogue entry a catalogue choice names; a BYOS one is the caller's linked account. */
+  entry: CatalogueModel | undefined;
   personalAccountsOff: boolean;
 }): React.JSX.Element | null {
-  if (model === undefined) return null;
+  if (choice === undefined) return null;
+  const personal = choice.source === 'subscription' || entry?.credentialMode === 'BYOS';
+  const provider = entry?.provider === 'openai' ? 'OpenAI' : 'Claude';
 
   return (
     <div className="text-caption text-subdued flex flex-col items-center gap-0.5">
-      <p data-testid="credential-preflight">{preflightSentence(model)}</p>
-      {personalAccountsOff && model.credentialMode !== 'BYOS' ? (
+      <p data-testid="credential-preflight">
+        {personal ? `Runs on your ${provider} subscription` : "Runs on the organisation's key"}
+      </p>
+      {personalAccountsOff && !personal ? (
         <p>Personal subscriptions are turned off in this organisation.</p>
       ) : null}
     </div>
-  );
-}
-
-/** "Claude · Sonnet 5" — the chip label; a neutral "Model" until the catalogue has arrived. */
-function describeModel(models: readonly CatalogueModel[], modelId: string | undefined): string {
-  const model = findModel(models, modelId);
-
-  return model === undefined ? 'Model' : `${PROVIDER_LABEL[model.provider]} · ${model.shortName}`;
-}
-
-/** The catalogue's providers in the order it lists them, each with its own models. */
-function groupByProvider(
-  models: readonly CatalogueModel[],
-): [CatalogueModel['provider'], CatalogueModel[]][] {
-  const groups = new Map<CatalogueModel['provider'], CatalogueModel[]>();
-
-  for (const model of models) {
-    groups.set(model.provider, [...(groups.get(model.provider) ?? []), model]);
-  }
-
-  return [...groups];
-}
-
-function ModelPicker({
-  isMenuOpen,
-  modelId,
-  models,
-  onMenuOpenChange,
-  onSelectModel,
-}: Pick<PromptComposerProps, 'modelId' | 'models' | 'onSelectModel'> & {
-  isMenuOpen: boolean;
-  onMenuOpenChange: (open: boolean) => void;
-}): React.JSX.Element {
-  const selected = findModel(models, modelId);
-
-  return (
-    <DropdownMenu open={isMenuOpen} onOpenChange={onMenuOpenChange}>
-      <DropdownMenuTrigger
-        className={cn(
-          'bg-brand-soft border-brand-border text-label-xs text-brand-text hover:bg-brand-soft/70',
-          'flex items-center gap-1.5 rounded-lg border py-1.5 pr-2.5 pl-[9px] font-medium transition-colors',
-        )}
-      >
-        <SparklesIcon className="size-[13px]" aria-hidden="true" />
-        {describeModel(models, modelId)}
-        <ChevronDownIcon className="size-3" aria-hidden="true" />
-        <span className="sr-only">Change model</span>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[280px]">
-        {groupByProvider(models).map(([provider, group]) => (
-          <DropdownMenuSection key={provider} aria-label={PROVIDER_LABEL[provider]}>
-            <DropdownMenuLabel>{PROVIDER_LABEL[provider]}</DropdownMenuLabel>
-            {group.map((model) => (
-              <DropdownMenuItem
-                key={model.id}
-                // 020 US2: a `needs_reauth` key keeps the entry listed so the person sees why it
-                // is not pickable, rather than wondering where the model went.
-                disabled={!model.available}
-                className={cn('py-2.5', model.id === selected?.id && 'bg-brand-soft')}
-                onSelect={() => {
-                  onSelectModel(model.id);
-                }}
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block">{model.name}</span>
-                  <span className="text-caption text-faint block font-normal">
-                    {model.available ? model.description : unavailableSentence(model)}
-                  </span>
-                </span>
-                {model.credentialMode === 'BYOK' ? <Badge variant="outline">your key</Badge> : null}
-                {model.credentialMode === 'BYOS' ? (
-                  <Badge variant="outline">your subscription</Badge>
-                ) : null}
-              </DropdownMenuItem>
-            ))}
-          </DropdownMenuSection>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 

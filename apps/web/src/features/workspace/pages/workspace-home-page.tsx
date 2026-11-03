@@ -11,13 +11,7 @@ import { useSession } from '@/features/auth/session/session-context';
 import { useNow } from '@/hooks/use-now';
 import { ApiProblem, messageFor } from '@/lib/api/problem';
 import { projectPath } from '@/lib/routes';
-import {
-  createProject,
-  fetchModelCatalogue,
-  listMembers,
-  listProjects,
-  listWorkspaces,
-} from '../api';
+import { createProject, listMembers, listProjects, listWorkspaces } from '../api';
 import { CommandPalette } from '../components/command-palette';
 import { CreateOrgScreen } from '../components/create-org-screen';
 import { ProjectCard } from '../components/project-card';
@@ -25,10 +19,12 @@ import { ProjectShelf } from '../components/project-shelf';
 import { WorkspaceHero } from '../components/workspace-hero';
 import { WorkspaceShell } from '../components/workspace-shell';
 import { useCommandShortcut } from '../hooks/use-command-shortcut';
+import { useModelChoice } from '../hooks/use-model-choice';
 import { useOrgs } from '../hooks/use-orgs';
 import type { Project as ProjectCardModel } from '../types';
 import { useTemplates } from '../hooks/use-templates';
 import { promptSuggestions } from '../lib/mock-data';
+import { catalogueEntry } from '../lib/model-choice';
 import { toProjectCard, toWorkspaceSummary } from '../lib/view-models';
 
 /** Workspace home: the greeting, the composer, and everything already built. */
@@ -65,16 +61,10 @@ export function WorkspaceHomePage(): React.JSX.Element {
   });
   const workspaceId = workspaceList.data?.workspaces[0]?.id;
 
-  // The models a run may use, as the API reports them for this organisation (spec 011 US6,
-  // 020 § 2). The chip's choice starts as the catalogue's default once that is known, and as
-  // nothing — a neutral chip — until then.
-  const catalogue = useQuery({
-    enabled: isMemberOrg,
-    queryFn: ({ signal }) => fetchModelCatalogue(orgId ?? '', signal),
-    queryKey: ['models', orgId],
-  });
-  const [pickedModelId, setModelId] = useState<string | undefined>(undefined);
-  const modelId = pickedModelId ?? catalogue.data?.default;
+  // What the first run runs on, and so who pays (spec 043): the person's Claude subscription or a
+  // catalogue entry. Held in memory here; the project remembers it once it exists.
+  const modelState = useModelChoice({ enabled: isMemberOrg, orgId });
+  const modelEntry = catalogueEntry(modelState.choice, modelState.catalogue.data);
 
   // Spec 032 US7: when the organisation forbids personal subscriptions, a member who has linked
   // one for the selected model's provider is told why the run will not use it.
@@ -88,9 +78,7 @@ export function WorkspaceHomePage(): React.JSX.Element {
     queryFn: ({ signal }) => listLinkedAccounts(signal),
     queryKey: ['linked-accounts'],
   });
-  const selectedProvider = (
-    catalogue.data?.models.find((model) => model.id === modelId) ?? catalogue.data?.models[0]
-  )?.provider;
+  const selectedProvider = modelEntry?.provider;
   const personalAccountsOff =
     policy.data?.allowed === false &&
     (linkedAccounts.data?.accounts ?? []).some((account) => account.provider === selectedProvider);
@@ -111,11 +99,19 @@ export function WorkspaceHomePage(): React.JSX.Element {
       // The prompt and the model ride along in navigation state: the project page is what acts on
       // them, and a reload of that page starting from nothing is the right outcome for a one-shot
       // input.
+      const { choice } = modelState;
       void navigate(projectPath(project.id), {
-        state: { model: modelId, prompt, ...(credential === undefined ? {} : { credential }) },
+        state: {
+          prompt,
+          ...(choice === undefined ? {} : { choice }),
+          ...(credential === undefined ? {} : { credential }),
+        },
       });
     },
   });
+
+  // The API's own word that nothing can pay: the connect path, not an error.
+  const refusedForPayment = ApiProblem.is(creation.error, 'subscription-not-connected');
 
   const [isPaletteOpen, setIsPaletteOpen] = useState(false);
   const [isSessionsOpen, setIsSessionsOpen] = useState(false);
@@ -129,7 +125,9 @@ export function WorkspaceHomePage(): React.JSX.Element {
   // there is, and they can rename it later. Whitespace-only is not a project.
   const startProject = useCallback(
     (prompt: string, options?: { credential?: 'organisation' }): void => {
-      if (prompt.trim().length === 0) {
+      // Nothing can pay for the run the project would start with: the composer is showing the
+      // connect path, and a project created now would only open on a refusal.
+      if (prompt.trim().length === 0 || modelState.needsConnection) {
         return;
       }
 
@@ -141,7 +139,7 @@ export function WorkspaceHomePage(): React.JSX.Element {
         ...(options?.credential === undefined ? {} : { credential: options.credential }),
       });
     },
-    [creation],
+    [creation, modelState.needsConnection],
   );
 
   const createFromPrompt = useCallback(() => {
@@ -200,16 +198,17 @@ export function WorkspaceHomePage(): React.JSX.Element {
         onSelectWorkspace={selectOrg}
       >
         <WorkspaceHero
-          error={creation.error === null ? undefined : messageFor(creation.error)}
+          error={
+            creation.error === null || refusedForPayment ? undefined : messageFor(creation.error)
+          }
           isFirstRun={!projects.isLoading && cards.length === 0}
-          modelId={modelId}
-          models={catalogue.data?.models ?? []}
+          modelState={modelState}
           name={displayName(user?.email)}
+          needsConnection={modelState.needsConnection || refusedForPayment}
           personalAccountsOff={personalAccountsOff}
           suggestions={promptSuggestions}
           templateId={templateId}
           templates={templates.data?.templates ?? []}
-          onSelectModel={setModelId}
           onSelectTemplate={setTemplateId}
           onSubmitPrompt={startProject}
         />

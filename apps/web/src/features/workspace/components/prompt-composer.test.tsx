@@ -1,34 +1,58 @@
 import type { CatalogueModel } from '@repo/contracts';
 import { screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
+import { HttpResponse, http } from 'msw';
 import { describe, expect, it, vi } from 'vitest';
 
 import { renderScreen } from '@/test/render';
-import { modelCatalogue, templateCatalogue } from '@/test/server';
+import { API, modelCatalogue, server, templateCatalogue } from '@/test/server';
+import { useModelChoice } from '../hooks/use-model-choice';
 import { PromptComposer } from './prompt-composer';
 
-function renderComposer(
-  onSelectTemplate = vi.fn(),
-  options: {
-    models?: readonly CatalogueModel[];
-    modelId?: string;
-    personalAccountsOff?: boolean;
-    onSubmit?: (prompt: string, options?: { credential?: 'organisation' }) => void;
-  } = {},
-) {
-  renderScreen(
+const ORG = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
+
+interface Options {
+  models?: readonly CatalogueModel[];
+  personalAccountsOff?: boolean;
+  onSubmit?: (prompt: string, options?: { credential?: 'organisation' }) => void;
+}
+
+/** The composer over the real picker state, fed by the MSW catalogue and subscription reads. */
+function Harness({
+  onSelectTemplate,
+  options,
+}: {
+  onSelectTemplate: () => void;
+  options: Options;
+}): React.JSX.Element {
+  const modelState = useModelChoice({ orgId: ORG });
+
+  return (
     <PromptComposer
-      modelId={options.modelId ?? modelCatalogue.default}
-      models={options.models ?? modelCatalogue.models}
+      modelState={modelState}
+      needsConnection={modelState.needsConnection}
       personalAccountsOff={options.personalAccountsOff}
       suggestions={[]}
       templateId={templateCatalogue.default}
       templates={templateCatalogue.templates}
-      onSelectModel={vi.fn()}
       onSelectTemplate={onSelectTemplate}
       onSubmit={options.onSubmit ?? vi.fn()}
-    />,
+    />
   );
+}
+
+function renderComposer(onSelectTemplate = vi.fn(), options: Options = {}) {
+  const { models } = options;
+
+  if (models !== undefined) {
+    server.use(
+      http.get(`${API}/orgs/:orgId/models`, () =>
+        HttpResponse.json({ default: models[0]?.id ?? null, models }),
+      ),
+    );
+  }
+
+  renderScreen(<Harness onSelectTemplate={onSelectTemplate} options={options} />);
 
   return onSelectTemplate;
 }
@@ -92,31 +116,26 @@ describe('PromptComposer', () => {
       shortName: 'GPT-5 mini',
     };
 
-    it('names the subscription, the organisation key or platform credits under the composer', () => {
-      renderComposer(vi.fn(), { modelId: gpt.id, models: [sonnet, gpt] });
-      expect(screen.getByTestId('credential-preflight')).toHaveTextContent(
+    it('names a linked subscription or the organisation key under the composer', async () => {
+      renderComposer(vi.fn(), { models: [gpt, sonnet] });
+      expect(await screen.findByTestId('credential-preflight')).toHaveTextContent(
         'Runs on your OpenAI subscription',
       );
     });
 
-    it.each([
-      ['BYOK', "Runs on the organisation's key"],
-      ['PLATFORM', 'Runs on platform credits'],
-    ] as const)('%s reads "%s"', (credentialMode, sentence) => {
-      renderComposer(vi.fn(), { models: [{ ...sonnet, credentialMode }] });
-      expect(screen.getByTestId('credential-preflight')).toHaveTextContent(sentence);
+    it('reads "Runs on the organisation\'s key" for a key', async () => {
+      renderComposer(vi.fn(), { models: [sonnet] });
+      expect(await screen.findByTestId('credential-preflight')).toHaveTextContent(
+        "Runs on the organisation's key",
+      );
     });
 
-    it('badges a subscription entry "your subscription" and explains a disabled one', async () => {
+    it('badges a linked account and explains an entry that cannot be picked', async () => {
       const user = userEvent.setup();
       renderComposer(vi.fn(), {
         models: [
           { ...sonnet, credentialMode: 'BYOS' },
-          {
-            ...gpt,
-            available: false,
-            unavailableReason: 'subscription-needs-reauth',
-          },
+          { ...gpt, available: false, unavailableReason: 'subscription-needs-reauth' },
           {
             ...gpt,
             available: false,
@@ -128,28 +147,26 @@ describe('PromptComposer', () => {
         ],
       });
 
-      await user.click(screen.getByLabelText(/describe the internal tool/i));
-      await user.click(await screen.findByRole('button', { name: /Claude · Sonnet 5/ }));
-      const menu = await screen.findByRole('menu');
+      await user.click(await screen.findByRole('button', { name: /Sonnet 5.*change model/ }));
+      const keys = within(await screen.findByRole('listbox')).getByRole('group', {
+        name: 'API keys',
+      });
 
-      expect(within(menu).getByRole('menuitem', { name: /Sonnet 5/ })).toHaveTextContent(
-        'your subscription',
+      expect(within(keys).getByRole('option', { name: 'Claude Sonnet 5' })).toHaveTextContent(
+        'linked account',
       );
-      expect(within(menu).getByRole('menuitem', { name: /GPT-5 mini/ })).toHaveTextContent(
-        'reconnect your account',
-      );
-      expect(within(menu).getByRole('menuitem', { name: /GPT-5\.2/ })).toHaveTextContent(
-        'needs a new key',
+      const mini = within(keys).getByRole('option', { name: 'GPT-5 mini' });
+      expect(mini).toHaveAttribute('aria-disabled', 'true');
+      expect(mini).toHaveAccessibleDescription('Reconnect your account in Settings');
+      expect(within(keys).getByRole('option', { name: 'GPT-5.2' })).toHaveAccessibleDescription(
+        "The organisation's key needs replacing in Settings",
       );
     });
 
-    it('says personal subscriptions are off when the organisation forbids them', () => {
-      renderComposer(vi.fn(), {
-        models: [{ ...sonnet, credentialMode: 'BYOK' }],
-        personalAccountsOff: true,
-      });
+    it('says personal subscriptions are off when the organisation forbids them', async () => {
+      renderComposer(vi.fn(), { models: [sonnet], personalAccountsOff: true });
 
-      expect(screen.getByTestId('credential-preflight')).toHaveTextContent(
+      expect(await screen.findByTestId('credential-preflight')).toHaveTextContent(
         "Runs on the organisation's key",
       );
       expect(
@@ -170,7 +187,7 @@ describe('PromptComposer', () => {
         onSubmit,
       });
 
-      expect(screen.getByRole('status')).toHaveTextContent(
+      expect(await screen.findByRole('status')).toHaveTextContent(
         /Your Claude subscription is limited until/,
       );
       await user.type(screen.getByLabelText(/describe the internal tool/i), 'A tracker');
@@ -191,11 +208,28 @@ describe('PromptComposer', () => {
       });
 
       await user.type(screen.getByLabelText(/describe the internal tool/i), 'A tracker');
-      expect(screen.getByRole('status')).toHaveTextContent(/limited until/);
+      expect(await screen.findByRole('status')).toHaveTextContent(/limited until/);
       expect(screen.getByRole('button', { name: 'Send prompt' })).toBeDisabled();
       expect(
         screen.queryByRole('button', { name: "Run on the organisation's credential this time" }),
       ).toBeNull();
+    });
+  });
+
+  describe('nothing can pay (spec 043)', () => {
+    it('offers to connect a subscription instead of sending', async () => {
+      const user = userEvent.setup();
+      const onSubmit = vi.fn();
+      renderComposer(vi.fn(), { models: [], onSubmit });
+
+      const connect = await screen.findByRole('link', { name: 'Connect your Claude subscription' });
+      expect(connect).toHaveAttribute('href', '/settings/account#claude-subscription');
+
+      await user.type(screen.getByLabelText(/describe the internal tool/i), 'A tracker{Enter}');
+
+      expect(screen.getByRole('button', { name: 'Send prompt' })).toBeDisabled();
+      expect(onSubmit).not.toHaveBeenCalled();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     });
   });
 });

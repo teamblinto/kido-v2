@@ -5,7 +5,7 @@ import { useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import { problemResponse, renderScreen } from '@/test/render';
-import { API, modelCatalogue, server } from '@/test/server';
+import { API, modelCatalogue, server, subscriptionHandler } from '@/test/server';
 import { WorkspaceHomePage } from './workspace-home-page';
 
 const ORG_ID = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
@@ -196,16 +196,17 @@ describe('WorkspaceHomePage', () => {
     expect(within(alert).getByRole('button', { name: 'Try again' })).toBeVisible();
   });
 
-  it('reveals the model picker and starter prompts once the composer is engaged', async () => {
+  it('shows the model picker at rest and the starter prompts once the composer is engaged', async () => {
     const user = userEvent.setup();
 
     renderPage();
 
+    // The picker is who pays, so it is always there; the starter prompts wait to be wanted.
+    expect(await screen.findByRole('button', { name: /Sonnet 5.*change model/ })).toBeVisible();
     expect(screen.queryByRole('list', { name: 'Starter prompts' })).not.toBeInTheDocument();
 
     await user.click(await screen.findByLabelText(/describe the internal tool/i));
 
-    expect(screen.getByRole('button', { name: /Claude · Sonnet 5/ })).toBeVisible();
     expect(screen.getByRole('list', { name: 'Starter prompts' })).toBeVisible();
   });
 
@@ -320,20 +321,21 @@ describe('WorkspaceHomePage', () => {
     );
     renderPage();
 
-    await user.click(await screen.findByLabelText(/describe the internal tool/i));
-    await user.click(await screen.findByRole('button', { name: /Claude · Haiku 4\.5/ }));
+    await user.click(await screen.findByRole('button', { name: /Haiku 4\.5.*change model/ }));
 
-    const menu = await screen.findByRole('menu');
+    const list = await screen.findByRole('listbox', { name: 'Models' });
 
-    expect(within(menu).getByRole('menuitem', { name: /Claude Sonnet 5/ })).toBeVisible();
-    expect(within(menu).getByRole('menuitem', { name: /Claude Haiku 4\.5/ })).toBeVisible();
-    expect(within(menu).queryByRole('menuitem', { name: /Opus/ })).not.toBeInTheDocument();
+    expect(within(list).getByRole('option', { name: 'Claude Sonnet 5' })).toBeVisible();
+    expect(within(list).getByRole('option', { name: 'Claude Haiku 4.5' })).toHaveAttribute(
+      'aria-selected',
+      'true',
+    );
+    expect(within(list).queryByRole('option', { name: /Opus/ })).not.toBeInTheDocument();
   });
 
-  it('groups the catalogue by provider, marks the org-keyed ones, and disables a stale key', async () => {
-    // 020 US2: an OpenAI key makes that provider's models appear under their own heading; a run on
-    // them would be recorded BYOK, which the entry says with a badge; a `needs_reauth` key leaves
-    // the entry listed but not pickable, with the reason in place of the description.
+  it('lists every key under API keys and keeps a stale key listed but not pickable', async () => {
+    // 020 US2: an OpenAI key makes that provider's models appear; a `needs_reauth` key leaves the
+    // entry listed but not pickable, with the reason in place of the description.
     const user = userEvent.setup();
 
     server.use(
@@ -366,30 +368,25 @@ describe('WorkspaceHomePage', () => {
     );
     renderPage();
 
-    // Typed rather than clicked: a prompt keeps the composer — and its chip — engaged after the
-    // menu closes on the pick below.
-    await user.type(await screen.findByLabelText(/describe the internal tool/i), 'A rota board');
-    await user.click(await screen.findByRole('button', { name: /Claude · Sonnet 5/ }));
+    await user.click(await screen.findByRole('button', { name: /Sonnet 5.*change model/ }));
 
-    const menu = await screen.findByRole('menu');
+    const keys = within(await screen.findByRole('listbox', { name: 'Models' })).getByRole('group', {
+      name: 'API keys',
+    });
 
-    expect(within(menu).getByRole('group', { name: 'Claude' })).toBeVisible();
-    expect(within(menu).getByRole('group', { name: 'OpenAI' })).toBeVisible();
-    expect(within(menu).getByRole('menuitem', { name: /GPT-5 mini/ })).toHaveTextContent(
-      'your key',
-    );
-    expect(within(menu).getByRole('menuitem', { name: /Sonnet 5/ })).not.toHaveTextContent(
-      'your key',
-    );
+    expect(within(keys).getByRole('option', { name: 'GPT-5 mini' })).toBeVisible();
 
-    const stale = within(menu).getByRole('menuitem', { name: /GPT-5\.2/ });
+    const stale = within(keys).getByRole('option', { name: 'GPT-5.2' });
 
     expect(stale).toHaveAttribute('aria-disabled', 'true');
-    expect(stale).toHaveTextContent('needs a new key');
+    expect(stale).toHaveAccessibleDescription("The organisation's key needs replacing in Settings");
 
-    await user.click(within(menu).getByRole('menuitem', { name: /GPT-5 mini/ }));
+    await user.click(stale);
+    expect(within(keys).getByRole('option', { name: 'GPT-5.2' })).toBeVisible();
 
-    expect(screen.getByRole('button', { name: /OpenAI · GPT-5 mini/ })).toBeVisible();
+    await user.click(within(keys).getByRole('option', { name: 'GPT-5 mini' }));
+
+    expect(screen.getByRole('button', { name: /GPT-5 mini.*change model/ })).toBeVisible();
   });
 
   it("FR-014: names the organisation's credential, and why, when personal subscriptions are off", async () => {
@@ -431,39 +428,83 @@ describe('WorkspaceHomePage', () => {
     );
   });
 
-  it("FR-014: names platform credits when the caller's provider is withdrawn", async () => {
-    // A withdrawn provider drops the caller's subscription from the catalogue: PLATFORM again.
-    renderPage();
-
-    expect(await screen.findByTestId('credential-preflight')).toHaveTextContent(
-      'Runs on platform credits',
-    );
-    expect(
-      screen.queryByText('Personal subscriptions are turned off in this organisation.'),
-    ).not.toBeInTheDocument();
-  });
-
   it('navigates with the chosen model and the prompt', async () => {
     const user = userEvent.setup();
 
     server.use(projectCreated());
     renderPage();
 
-    // Typed first: the picker is part of the engaged composer, and a prompt keeps it engaged.
     const composer = await screen.findByLabelText(/describe the internal tool/i);
     await user.type(composer, 'A rota board');
-    await user.click(await screen.findByRole('button', { name: /Claude · Sonnet 5/ }));
-    await user.click(await screen.findByRole('menuitem', { name: /Claude Opus 5/ }));
+    await user.click(await screen.findByRole('button', { name: /Sonnet 5.*change model/ }));
+    await user.click(await screen.findByRole('option', { name: 'Claude Opus 5' }));
 
-    expect(screen.getByRole('button', { name: /Claude · Opus 5/ })).toBeVisible();
+    expect(screen.getByRole('button', { name: /Opus 5.*change model/ })).toBeVisible();
 
     await user.type(composer, '{Enter}');
 
     expect(await screen.findByText(`Project page for ${NEW_PROJECT_ID}`)).toBeVisible();
     expect(JSON.parse(screen.getByTestId('handoff').textContent ?? '')).toEqual({
-      model: 'claude-opus-5',
+      choice: { model: 'claude-opus-5', source: 'catalogue' },
       prompt: 'A rota board',
     });
+  });
+
+  it("hands over the person's own Claude subscription when it is connected", async () => {
+    const user = userEvent.setup();
+
+    server.use(
+      projectCreated(),
+      subscriptionHandler({
+        models: [{ description: null, id: 'opus', label: 'Opus' }],
+        plan: 'Max',
+        state: 'connected',
+      }),
+    );
+    renderPage();
+
+    expect(await screen.findByTestId('credential-preflight')).toHaveTextContent(
+      'Runs on your Claude subscription',
+    );
+    await user.type(
+      await screen.findByLabelText(/describe the internal tool/i),
+      'A rota board{Enter}',
+    );
+
+    expect(await screen.findByText(`Project page for ${NEW_PROJECT_ID}`)).toBeVisible();
+    expect(JSON.parse(screen.getByTestId('handoff').textContent ?? '')).toEqual({
+      choice: { model: 'opus', source: 'subscription' },
+      prompt: 'A rota board',
+    });
+  });
+
+  it('offers to connect, and creates nothing, when nothing can pay for a run', async () => {
+    // Spec 043: no connected subscription and an empty catalogue. A project created now would
+    // only open on a refusal, so the composer says how to fix it instead — and is not an error.
+    const user = userEvent.setup();
+    let created = 0;
+
+    server.use(
+      http.get(`${API}/orgs/:orgId/models`, () => HttpResponse.json({ default: null, models: [] })),
+      http.post(`${API}/orgs/:orgId/workspaces/:workspaceId/projects`, () => {
+        created += 1;
+
+        return problemResponse('internal', 500);
+      }),
+    );
+    renderPage();
+
+    expect(
+      await screen.findByRole('link', { name: 'Connect your Claude subscription' }),
+    ).toBeVisible();
+    await user.type(
+      await screen.findByLabelText(/describe the internal tool/i),
+      'A rota board{Enter}',
+    );
+
+    expect(screen.getByRole('button', { name: 'Send prompt' })).toBeDisabled();
+    expect(created).toBe(0);
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('opens the command palette from the keyboard and filters as you type', async () => {

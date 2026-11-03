@@ -1,4 +1,9 @@
-import type { ModelCatalogueResponse, TemplateCatalogueResponse } from '@repo/contracts';
+import {
+  type ModelCatalogueResponse,
+  type SubscriptionStatus,
+  type TemplateCatalogueResponse,
+  subscriptionListSchema,
+} from '@repo/contracts';
 import { HttpResponse, http } from 'msw';
 import { setupServer } from 'msw/node';
 
@@ -7,15 +12,16 @@ export const API = '/api/v1';
 
 /**
  * `GET /api/v1/orgs/:orgId/models` as 020's contracts/byok.md § 2 writes it: the list, each entry
- * stamped with the credential a run would use, and which is default. No key stored, so all platform.
+ * stamped with the credential a run would use, and which is default. The organisation holds a key, so
+ * every entry runs on it (no key and no linked subscription is an empty list with no default).
  */
 export const modelCatalogue: ModelCatalogueResponse = {
   default: 'claude-sonnet-5',
   models: [
     {
       available: true,
-      credentialMode: 'PLATFORM',
-      description: 'Most capable · uses credits faster',
+      credentialMode: 'BYOK',
+      description: 'Most capable · for complex work',
       id: 'claude-opus-5',
       name: 'Claude Opus 5',
       provider: 'anthropic',
@@ -23,7 +29,7 @@ export const modelCatalogue: ModelCatalogueResponse = {
     },
     {
       available: true,
-      credentialMode: 'PLATFORM',
+      credentialMode: 'BYOK',
       description: 'Balanced — best default for building',
       id: 'claude-sonnet-5',
       name: 'Claude Sonnet 5',
@@ -32,7 +38,7 @@ export const modelCatalogue: ModelCatalogueResponse = {
     },
     {
       available: true,
-      credentialMode: 'PLATFORM',
+      credentialMode: 'BYOK',
       description: 'Fastest · good for small edits',
       id: 'claude-haiku-4-5',
       name: 'Claude Haiku 4.5',
@@ -78,6 +84,31 @@ export const templateCatalogue: TemplateCatalogueResponse = {
 };
 
 /**
+ * `GET /api/v1/me/subscriptions` (spec 041): disconnected, unless a test names what differs — a
+ * connected plan with the models its CLI reported, say. Parsed, so a test cannot answer with a
+ * shape the contract refuses.
+ */
+export function subscriptionHandler(claude: Partial<SubscriptionStatus> = {}) {
+  return http.get(`${API}/me/subscriptions`, () =>
+    HttpResponse.json(
+      subscriptionListSchema.parse({
+        claude: {
+          message: null,
+          models: null,
+          plan: null,
+          provider: 'claude',
+          signIn: null,
+          state: 'disconnected',
+          updatedAt: '2026-11-03T10:00:00.000Z',
+          usage: null,
+          ...claude,
+        },
+      }),
+    ),
+  );
+}
+
+/**
  * The request-layer interceptor every test shares.
  *
  * Interception rather than a mocked module, deliberately. A stubbed `apiRequest` proves the
@@ -95,18 +126,5 @@ export const server = setupServer(
   ),
   // Spec 041: the composer asks whether the person's Claude plan is connected; not unless a test
   // says otherwise.
-  http.get(`${API}/me/subscriptions`, () =>
-    HttpResponse.json({
-      claude: {
-        message: null,
-        models: null,
-        plan: null,
-        provider: 'claude',
-        signIn: null,
-        state: 'disconnected',
-        updatedAt: '2026-11-03T10:00:00.000Z',
-        usage: null,
-      },
-    }),
-  ),
+  subscriptionHandler(),
 );
