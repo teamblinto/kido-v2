@@ -277,9 +277,9 @@ export function registerToolboxRoutes(api: ReturnType<typeof router>, d: Deps): 
         typeof timeout !== 'number' ||
         !Number.isInteger(timeout) ||
         timeout < 1 ||
-        timeout > 600
+        timeout > 3600
       ) {
-        throw new HttpError(400, 'timeout must be 1-600 seconds');
+        throw new HttpError(400, 'timeout must be 1-3600 seconds (template builds ask for 900)');
       }
       const cwd = b.cwd === undefined || b.cwd === '' ? WORK_DIR : absPath(b.cwd as string);
       const env: Record<string, string> = {};

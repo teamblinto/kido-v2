@@ -169,7 +169,7 @@ describe('toolbox', () => {
       await call('POST', 'process/execute', { command: 'x', timeout: 1 })
     ).json()) as { result: string };
     expect(big.result.length).toBeLessThanOrEqual(1 << 20);
-    expect((await call('POST', 'process/execute', { command: 'x', timeout: 601 })).status).toBe(
+    expect((await call('POST', 'process/execute', { command: 'x', timeout: 3601 })).status).toBe(
       400,
     );
     expect((await call('POST', 'process/execute', { timeout: 5 })).status).toBe(400);
