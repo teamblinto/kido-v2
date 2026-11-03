@@ -25,6 +25,7 @@ const SAMPLES: Readonly<Record<string, string>> = {
   'netlify-token': 'nfp_Q7mZ2xK9pW4rT8vN3bL6cY1dF5',
   'neon-key': 'napi_k3m9x2q7w4p8r1t6v5n0b3l7c2',
   'local-agent-token': 'bld_Zx8Qm2Lw7Rt4Kp9Vn3Bc6Yd1Fg5Hj0Ss2Aa4Ee6Ii8O',
+  'local-agent-pairing-code': 'GET /api/v1/me/local-agents/pairings/BCDF-GHJK 200',
 };
 
 /** The part of each sample that must never reach storage. */
@@ -46,6 +47,7 @@ const SECRET_PART: Readonly<Record<string, string>> = {
   'netlify-token': 'Q7mZ2xK9pW4rT8vN3bL6cY1dF5',
   'neon-key': 'k3m9x2q7w4p8r1t6v5n0b3l7c2',
   'local-agent-token': 'Zx8Qm2Lw7Rt4Kp9Vn3Bc6Yd1Fg5Hj0Ss2Aa4Ee6Ii8O',
+  'local-agent-pairing-code': 'BCDF-GHJK',
 };
 
 /**

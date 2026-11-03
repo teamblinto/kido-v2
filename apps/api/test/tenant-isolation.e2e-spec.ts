@@ -231,6 +231,18 @@ const ROUTES_WITH_NO_TENANT_RESOURCE = new Set([
   'POST /api/v1/local-agent/pairings/token',
   'GET /api/v1/local-agent/connect',
   'POST /api/v1/local-agent/status',
+  // Spec 041, the agent home: the runner's sign-in report is a companion route like `status`,
+  // reached with the home's device token and naming no organisation (cloud devices only).
+  'POST /api/v1/local-agent/auth',
+  // Spec 041, a person's own subscription (`subscription.controller.ts`): no `:orgId`, no
+  // parameter at all, and every read and write names the session's own user id, as
+  // `/me/linked-accounts` does; `claude` is the catalogue, not an identifier. There is nothing a
+  // caller could point at another person's home.
+  'GET /api/v1/me/subscriptions',
+  'POST /api/v1/me/subscriptions/claude/connect',
+  'POST /api/v1/me/subscriptions/claude/code',
+  'POST /api/v1/me/subscriptions/claude/cancel',
+  'DELETE /api/v1/me/subscriptions/claude',
 ]);
 
 /**
