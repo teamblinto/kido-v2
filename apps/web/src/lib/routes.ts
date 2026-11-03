@@ -52,6 +52,8 @@ export const routes = {
   supabaseCallback: '/connectors/supabase/callback',
   twoFactor: '/sign-in/two-factor',
   unverifiedEmail: '/sign-in/verify-email',
+  /** The caller's subscription limits and run history (Settings → Usage). */
+  usageSettings: '/settings/usage',
   verifyEmail: '/verify-email',
   /** The organisation's outbound webhooks (spec 029). */
   webhooksSettings: '/settings/webhooks',

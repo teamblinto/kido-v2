@@ -25,6 +25,7 @@ import { MembersSettingsPage } from '@/pages/members-settings-page';
 import { NotFoundPage } from '@/pages/not-found-page';
 import { PreviewAuthorizePage } from '@/pages/preview-authorize-page';
 import { ProjectInvitationAcceptPage } from '@/pages/project-invitation-accept-page';
+import { UsageSettingsPage } from '@/pages/usage-settings-page';
 import { WebhooksSettingsPage } from '@/pages/webhooks-settings-page';
 
 export function App(): React.JSX.Element {
@@ -69,6 +70,14 @@ export function App(): React.JSX.Element {
         element={
           <RequireAuth>
             <WebhooksSettingsPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path={routes.usageSettings}
+        element={
+          <RequireAuth>
+            <UsageSettingsPage />
           </RequireAuth>
         }
       />

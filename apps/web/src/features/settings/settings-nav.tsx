@@ -7,6 +7,7 @@ const LINKS = [
   { label: 'Members', to: routes.membersSettings },
   { label: 'Connectors', to: routes.connectorsSettings },
   { label: 'Webhooks', to: routes.webhooksSettings },
+  { label: 'Usage', to: routes.usageSettings },
 ] as const;
 
 /** Links between the organisation's settings pages. */
