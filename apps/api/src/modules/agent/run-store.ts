@@ -7,6 +7,7 @@ import {
   type NewProjectContext,
   type ProjectContext,
   projectContext,
+  projects,
   type RunEventRow,
   runEvents,
   type RunMessage,
@@ -835,6 +836,49 @@ export class RunStore {
         and(
           eq(agentRuns.orgId, orgId),
           eq(agentRuns.projectId, projectId),
+          after === undefined
+            ? undefined
+            : or(
+                lt(agentRuns.createdAt, after.at),
+                and(eq(agentRuns.createdAt, after.at), lt(agentRuns.id, after.id)),
+              ),
+        ),
+      )
+      .orderBy(desc(agentRuns.createdAt), desc(agentRuns.id))
+      .limit(page.limit + 1);
+    const runs = rows.slice(0, page.limit);
+
+    return {
+      nextCursor: rows.length > page.limit ? encodeCursor(runs.at(-1)!) : null,
+      runs,
+    };
+  }
+
+  /**
+   * Settings → Usage: the runs `userId` started in the organisation, every project, newest first,
+   * keyset exactly as `listRuns`. The project's name is joined on the composite FK rather than
+   * asked of `ProjectService`, whose reads drop archived projects — a run's spend outlives that.
+   * shortcut: no `(org_id, user_id, created_at)` index, so this filters the org's runs; add one
+   * (an additive migration) once an organisation's run count makes the page slow.
+   */
+  async listUsage(
+    tx: TenantTransaction,
+    orgId: string,
+    userId: string,
+    page: { cursor?: string; limit: number },
+  ): Promise<{ nextCursor: string | null; runs: (AgentRun & { projectName: string })[] }> {
+    const after = page.cursor === undefined ? undefined : decodeCursor(page.cursor);
+    const rows = await tx
+      .select({ ...getTableColumns(agentRuns), projectName: projects.name })
+      .from(agentRuns)
+      .innerJoin(
+        projects,
+        and(eq(projects.orgId, agentRuns.orgId), eq(projects.id, agentRuns.projectId)),
+      )
+      .where(
+        and(
+          eq(agentRuns.orgId, orgId),
+          eq(agentRuns.userId, userId),
           after === undefined
             ? undefined
             : or(

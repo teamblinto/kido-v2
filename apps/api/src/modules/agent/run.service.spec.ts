@@ -1,5 +1,6 @@
 import { OPTIONAL_DEPS_METADATA } from '@nestjs/common/constants';
 import type { ConfigService } from '@nestjs/config';
+import { usageRunListResponseSchema } from '@repo/contracts';
 import type { AgentRun } from '@repo/db';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -74,6 +75,7 @@ describe('RunService', () => {
     | 'insertRun'
     | 'line'
     | 'listRuns'
+    | 'listUsage'
     | 'readEvents'
     | 'readRun'
     | 'requestCancel'
@@ -123,6 +125,7 @@ describe('RunService', () => {
           },
         ]),
       ),
+      listUsage: vi.fn(() => Promise.resolve({ nextCursor: null, runs: [] })),
       readRun: vi.fn(() => Promise.resolve(row({ nextSeq: 5 }))),
       requestCancel: vi.fn(() => Promise.resolve({ first: true, status: 'running' })),
       setModel: vi.fn(() => Promise.resolve()),
@@ -932,6 +935,43 @@ describe('RunService', () => {
 
       expect(store.transition).not.toHaveBeenCalled();
       expect(outbox.append).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('usage', () => {
+    it('lists the caller’s own runs and maps what paid, the cost and the CLI default', async () => {
+      store.listUsage.mockResolvedValueOnce({
+        nextCursor: 'bmV4dA',
+        runs: [
+          { ...row({ credentialMode: 'BYOS', model: 'claude' }), projectName: 'P' },
+          { ...row({ costMicros: 0, credentialMode: 'BYOK' }), projectName: 'P' },
+          {
+            ...row({
+              costMicros: 4_200,
+              credentialMode: 'PLATFORM',
+              endedAt: new Date(START),
+              status: 'succeeded',
+            }),
+            projectName: 'Q',
+          },
+        ],
+      });
+
+      const page = await service.usage(ORG, USER, { cursor: 'Y3Vyc29y', limit: 3 });
+
+      expect(store.listUsage).toHaveBeenCalledWith(tx, ORG, USER, { cursor: 'Y3Vyc29y', limit: 3 });
+      expect(usageRunListResponseSchema.parse(page)).toEqual(page);
+      expect(page.nextCursor).toBe('bmV4dA');
+      expect(page.runs.map((run) => [run.paidWith, run.costMicros, run.model])).toEqual([
+        ['subscription', null, null],
+        ['api-key', null, 'claude-sonnet-5'],
+        ['platform-credits', 4_200, 'claude-sonnet-5'],
+      ]);
+      expect(page.runs[2]).toMatchObject({
+        finishedAt: START,
+        projectName: 'Q',
+        status: 'succeeded',
+      });
     });
   });
 

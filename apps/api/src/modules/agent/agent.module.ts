@@ -53,6 +53,7 @@ import { ProviderKeyController } from './controllers/provider-key.controller';
 import { ContextAssembler } from './context/context-assembler';
 import { OpenAiProvider } from './openai.adapter';
 import { RunController } from './controllers/run.controller';
+import { UsageController } from './controllers/usage.controller';
 import { EventBatcherFactory } from './event-batcher';
 import { ProviderRouter } from './provider-router';
 import { RunService } from './run.service';
@@ -133,7 +134,13 @@ function proxyFetch(
  * may override like `KEY_VERIFIERS`.
  */
 @Module({
-  controllers: [LinkedAccountController, ModelsController, ProviderKeyController, RunController],
+  controllers: [
+    LinkedAccountController,
+    ModelsController,
+    ProviderKeyController,
+    RunController,
+    UsageController,
+  ],
   // Spec 040: the local agent module registers its executor here and reads a run through the
   // service, so the edge is `local-agent → agent` only.
   // Spec 041: `SandboxTools` is how a local run on the sandbox tool bridge reaches the sandbox.

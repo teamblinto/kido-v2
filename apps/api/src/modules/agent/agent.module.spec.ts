@@ -24,6 +24,7 @@ import { ProviderKeyController } from './controllers/provider-key.controller';
 import { OpenAiProvider } from './openai.adapter';
 import { ProviderRouter } from './provider-router';
 import { RunController } from './controllers/run.controller';
+import { UsageController } from './controllers/usage.controller';
 import { REQUIRED_PERMISSION } from '../rbac/decorators/require-permission.decorator';
 import { RunControl } from './run-control';
 import { RunReaper } from './run-reaper';
@@ -141,12 +142,13 @@ describe('AgentModule', () => {
     expect(tokens).not.toContain(APP_INTERCEPTOR);
   });
 
-  it('exposes the run routes, the model catalogue, the provider keys (020) and the linked accounts (032) on their own controllers', () => {
+  it('exposes the run routes, the model catalogue, the provider keys (020), the linked accounts (032) and usage on their own controllers', () => {
     expect(Reflect.getMetadata('controllers', AgentModule)).toEqual([
       LinkedAccountController,
       ModelsController,
       ProviderKeyController,
       RunController,
+      UsageController,
     ]);
   });
 

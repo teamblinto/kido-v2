@@ -641,6 +641,16 @@ describe('Tenant isolation (e2e) — the §17 gate', () => {
         // every assertion below pass over an empty list.
         expect(addressable.length).toBeGreaterThanOrEqual(6);
       });
+
+      it('sweeps Settings › Usage through :orgId, not as an excused route', () => {
+        // The caller's own runs, read under the path's organisation: the classification is
+        // `:orgId`'s, so beta's list is the control and alpha's probe the refusal. Its other
+        // boundary — another member's runs never appear — is `usage.e2e-spec.ts`'s.
+        expect(pathsOf(addressable)).toContain('GET /api/v1/orgs/:orgId/usage/runs');
+        expect(ROUTES_WITH_NO_TENANT_RESOURCE.has('GET /api/v1/orgs/:orgId/usage/runs')).toBe(
+          false,
+        );
+      });
     });
 
     /**

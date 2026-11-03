@@ -2,11 +2,15 @@ import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   localAgentModelSchema,
+  SUBSCRIPTION_PROVIDERS,
   type SubscriptionRunTarget,
   type RunEvent,
   type RunEventsResponse,
   type RunListResponse,
   type RunResponse,
+  type UsagePaidWith,
+  type UsageRun,
+  type UsageRunListResponse,
 } from '@repo/contracts';
 import type { AgentRun, RunEventRow } from '@repo/db';
 
@@ -384,6 +388,20 @@ export class RunService {
     return { nextCursor, runs: runs.map((run) => toResponse(run, run.promptExcerpt)) };
   }
 
+  /**
+   * Settings → Usage: the caller's own runs in the organisation, every project, newest first.
+   * Another member's runs are not the caller's spend, so `org:read` shows only one's own.
+   */
+  async usage(
+    orgId: string,
+    userId: string,
+    page: { cursor?: string; limit: number },
+  ): Promise<UsageRunListResponse> {
+    const { nextCursor, runs } = await this.store.listUsage(this.tenant.tx, orgId, userId, page);
+
+    return { nextCursor, runs: runs.map(toUsageRun) };
+  }
+
   async events(
     orgId: string,
     projectId: string,
@@ -406,6 +424,33 @@ export class RunService {
 
     return row;
   }
+}
+
+/** Contracts usage.ts: the retired `PLATFORM` stays readable on runs paid before it was retired. */
+const PAID_WITH: Readonly<Record<AgentRun['credentialMode'], UsagePaidWith>> = {
+  BYOK: 'api-key',
+  BYOS: 'subscription',
+  PLATFORM: 'platform-credits',
+};
+
+function toUsageRun(run: AgentRun & { projectName: string }): UsageRun {
+  return {
+    cacheReadTokens: run.cacheReadTokens,
+    cacheWriteTokens: run.cacheWriteTokens,
+    // 0 is "nothing priced it" (an API key's provider states tokens, not cost), not "free".
+    costMicros: run.costMicros > 0 ? run.costMicros : null,
+    createdAt: run.createdAt.toISOString(),
+    finishedAt: run.endedAt?.toISOString() ?? null,
+    id: run.id,
+    inputTokens: run.inputTokens,
+    // 041 stores the provider's name for "the CLI's own default"; that is no model id.
+    model: (SUBSCRIPTION_PROVIDERS as readonly string[]).includes(run.model) ? null : run.model,
+    outputTokens: run.outputTokens,
+    paidWith: PAID_WITH[run.credentialMode],
+    projectId: run.projectId,
+    projectName: run.projectName,
+    status: run.status,
+  };
 }
 
 function notInCatalogue(model: string): DomainError {
