@@ -280,6 +280,7 @@ describe('the editor client', () => {
 
         return HttpResponse.json({
           port: 5173,
+          stage: 'ready',
           url: 'https://a.preview.test',
           visibility: 'private',
         });
@@ -287,7 +288,12 @@ describe('the editor client', () => {
       http.put(`${PROJECT_PATH}/preview/visibility`, async ({ request }) => {
         seen.push(`PUT /preview/visibility ${JSON.stringify(await request.json())}`);
 
-        return HttpResponse.json({ port: 5173, url: 'https://a.preview.test', visibility: 'org' });
+        return HttpResponse.json({
+          port: 5173,
+          stage: 'ready',
+          url: 'https://a.preview.test',
+          visibility: 'org',
+        });
       }),
       http.post(`${PROJECT_PATH}/preview/rotate`, () => {
         seen.push('POST /preview/rotate');

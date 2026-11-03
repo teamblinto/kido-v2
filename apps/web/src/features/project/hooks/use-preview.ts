@@ -27,14 +27,20 @@ function previewKey({ orgId, projectId }: ProjectRef): readonly unknown[] {
   return ['preview', orgId, projectId];
 }
 
-/** The stages a preview settles in; every other one is on its way somewhere. */
-const SETTLED: ReadonlySet<PreviewStage> = new Set(['ready', 'asleep', 'failed']);
+/**
+ * Stages that change only when something else happens (a first run, a wake, a dev server the
+ * supervisor restarts): asked slowly rather than never, so the pane leaves them without a reload.
+ */
+const WAITING: ReadonlySet<PreviewStage> = new Set(['asleep', 'failed', 'no-sandbox']);
 
 export const PREVIEW_POLL_MS = 1_500;
 
+export const PREVIEW_IDLE_POLL_MS = 5_000;
+
 /**
  * Where this project's preview is served, who may reach it, and how far its start-up has got.
- * Asked again every 1.5 s until the stage settles, so the stage pane can walk its steps. React
+ * Asked every 1.5 s while it starts, so the stage pane can walk its steps, and every 5 s while it
+ * waits; never once it is ready. React
  * Query pauses the interval in a hidden tab.
  */
 export function usePreview(project: ProjectRef): UseQueryResult<PreviewResponse, Error> {
@@ -47,7 +53,11 @@ export function usePreview(project: ProjectRef): UseQueryResult<PreviewResponse,
     refetchInterval: (query) => {
       const stage = query.state.data?.stage;
 
-      return stage === undefined || SETTLED.has(stage) ? false : PREVIEW_POLL_MS;
+      if (stage === undefined || stage === 'ready') {
+        return false;
+      }
+
+      return WAITING.has(stage) ? PREVIEW_IDLE_POLL_MS : PREVIEW_POLL_MS;
     },
   });
 }

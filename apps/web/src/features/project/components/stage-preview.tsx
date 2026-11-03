@@ -46,7 +46,8 @@ interface StagePreviewProps {
    * the API would refuse.
    */
   permissions?: readonly string[];
-  phase: RunPhase;
+  /** Absent while the project has no run: no dot or chip claims a run state that does not exist. */
+  phase?: RunPhase;
   /**
    * How many `preview.ready` and `checkpoint` events the run has announced, counted by the page
    * from `useRunStream`'s `onEvent`. Each one reloads the frame; none of them is the address (FR-016).
@@ -114,10 +115,12 @@ export function StagePreview({
         </button>
 
         <p className="bg-muted flex min-w-0 flex-1 items-center gap-2 rounded-md px-[11px] py-1.5">
-          <span
-            aria-hidden="true"
-            className={cn('size-[7px] shrink-0 rounded-full', toneDot[runPhaseTone(phase)])}
-          />
+          {phase ? (
+            <span
+              aria-hidden="true"
+              className={cn('size-[7px] shrink-0 rounded-full', toneDot[runPhaseTone(phase)])}
+            />
+          ) : null}
           {/* The address bar shows the preview's address or nothing — never a plausible-looking one. */}
           <span className="text-mono-sm text-subdued truncate font-mono">
             {url ?? 'No preview yet'}
@@ -206,7 +209,7 @@ export function StagePreview({
           className="shrink-0"
         />
 
-        <RunStatusChip phase={phase} className="shrink-0 max-sm:hidden" />
+        {phase ? <RunStatusChip phase={phase} className="shrink-0 max-sm:hidden" /> : null}
       </div>
 
       <div className="bg-canvas relative flex min-h-0 flex-1 justify-center overflow-auto">

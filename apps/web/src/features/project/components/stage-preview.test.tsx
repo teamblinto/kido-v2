@@ -5,7 +5,7 @@ import { HttpResponse, http } from 'msw';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { PREVIEW_POLL_MS } from '../hooks/use-preview';
+import { PREVIEW_IDLE_POLL_MS, PREVIEW_POLL_MS } from '../hooks/use-preview';
 
 import { API, server } from '@/test/server';
 import { renderScreen } from '@/test/render';
@@ -88,6 +88,24 @@ describe('StagePreview', () => {
     expect(await screen.findByText('https://a.preview.test')).toBeInTheDocument();
     expect(screen.getByText('org')).toBeInTheDocument();
     await waitFor(() => expect(frame()).toHaveAttribute('src', 'https://a.preview.test/?code=1'));
+  });
+
+  it('claims no run state while the project has no run (spec 043)', async () => {
+    server.use(
+      http.get(PREVIEW, () =>
+        HttpResponse.json({
+          port: 3000,
+          stage: 'ready',
+          url: 'https://a.preview.test',
+          visibility: 'org',
+        }),
+      ),
+    );
+
+    renderScreen(<StagePreview orgId={ORG} permissions={[]} projectId={PROJECT} />);
+
+    expect(await screen.findByText('https://a.preview.test')).toBeInTheDocument();
+    expect(screen.queryByText('Queued')).not.toBeInTheDocument();
   });
 
   it('FR-015: rotate changes the address and reloads the frame; a viewer sees no rotate or visibility control', async () => {
@@ -430,6 +448,23 @@ describe('StagePreview start-up', () => {
 
     await waitFor(() => expect(frame()).toHaveAttribute('src', 'https://a.preview.test/?code=1'));
     expect(woken).toBe(true);
+  });
+
+  it('keeps asking slowly while failed, and frames the preview once the dev server recovers', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let recovered = false;
+
+    server.use(http.get(PREVIEW, () => at(recovered ? 'ready' : 'failed')));
+    renderScreen(stage());
+
+    expect(
+      await screen.findByRole('group', { name: 'Your preview could not start' }),
+    ).toBeInTheDocument();
+
+    recovered = true;
+    await act(() => vi.advanceTimersByTimeAsync(PREVIEW_IDLE_POLL_MS));
+
+    await waitFor(() => expect(frame()).toHaveAttribute('src', 'https://a.preview.test/?code=1'));
   });
 
   it('a preview already ready is framed straight away, with no steps', async () => {

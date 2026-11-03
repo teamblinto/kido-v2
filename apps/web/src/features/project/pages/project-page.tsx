@@ -538,7 +538,7 @@ export function ProjectPage(): React.JSX.Element {
               <StagePreview
                 orgId={orgId}
                 permissions={project.data?.project.permissions}
-                phase={phase ?? 'queued'}
+                phase={phase}
                 previewReadyCount={previewReadyCount}
                 projectId={projectId}
                 className="flex-1"
