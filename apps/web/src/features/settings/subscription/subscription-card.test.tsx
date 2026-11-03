@@ -14,11 +14,13 @@ const SIGN_IN_URL = 'https://claude.com/cai/oauth/authorize?code=true&state=abc'
 function status(overrides: Partial<SubscriptionStatus> = {}): SubscriptionStatus {
   return {
     message: null,
+    models: null,
     plan: null,
     provider: 'claude',
     signIn: null,
     state: 'disconnected',
     updatedAt: '2026-11-03T10:00:00.000Z',
+    usage: null,
     ...overrides,
   };
 }
@@ -170,6 +172,9 @@ describe('SubscriptionCard', () => {
 
     await userEvent.click(await screen.findByRole('button', { name: 'Disconnect' }));
     const dialog = within(await screen.findByRole('dialog'));
+    // Platform credits are retired: the fallback is the organisation's key, or nothing.
+    expect(dialog.getByText(/organisation's API key if it has one/u)).toBeInTheDocument();
+    expect(dialog.queryByText(/paid by BAIOS/u)).not.toBeInTheDocument();
     expect(deleted).toBe(false);
     await userEvent.click(dialog.getByRole('button', { name: 'Disconnect' }));
 

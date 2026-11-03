@@ -32,7 +32,7 @@ describe('subscription limit', () => {
   it('reads a 409 subscription-limited refusal the same way as the catalogue entry', () => {
     const limit = limitOfRefusal(
       conflict({
-        alternativeMode: 'PLATFORM',
+        alternativeMode: 'BYOK',
         provider: 'anthropic',
         reason: 'subscription-limited',
         resetsAt: '2026-09-24T09:22:00.000Z',
@@ -40,11 +40,23 @@ describe('subscription limit', () => {
     );
 
     expect(limit).toEqual({
-      alternativeMode: 'PLATFORM',
+      alternativeMode: 'BYOK',
       provider: 'anthropic',
       resetsAt: '2026-09-24T09:22:00.000Z',
     });
     expect(limitSentence(limit!)).toMatch(/^Your Claude subscription is limited until 09:22/);
+  });
+
+  it('platform credits are retired: a PLATFORM alternative offers no fallback', () => {
+    expect(
+      limitOfRefusal(
+        conflict({
+          alternativeMode: 'PLATFORM',
+          provider: 'anthropic',
+          reason: 'subscription-limited',
+        }),
+      ),
+    ).toEqual({ provider: 'anthropic' });
   });
 
   it('a refusal with no organisation credential offers none; other refusals are not limits', () => {

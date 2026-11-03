@@ -99,11 +99,13 @@ export const server = setupServer(
     HttpResponse.json({
       claude: {
         message: null,
+        models: null,
         plan: null,
         provider: 'claude',
         signIn: null,
         state: 'disconnected',
         updatedAt: '2026-11-03T10:00:00.000Z',
+        usage: null,
       },
     }),
   ),

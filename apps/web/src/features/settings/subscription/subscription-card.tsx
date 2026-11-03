@@ -167,8 +167,9 @@ export function SubscriptionCard(): React.JSX.Element {
           <DialogHeader>
             <DialogTitle>Disconnect your Claude subscription?</DialogTitle>
             <DialogDescription>
-              BAIOS signs Claude Code out and deletes your private workspace. Runs go back to being
-              paid by BAIOS until you connect again.
+              BAIOS signs Claude Code out and deletes your private workspace. Until you connect
+              again, runs use your organisation&apos;s API key if it has one; otherwise they cannot
+              start.
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>

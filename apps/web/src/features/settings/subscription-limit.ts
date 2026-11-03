@@ -7,8 +7,11 @@ export interface SubscriptionLimit {
   readonly provider: LlmProvider;
   /** ISO; absent when the provider gave no reset. */
   readonly resetsAt?: string;
-  /** What `credential: 'organisation'` would use instead, when the organisation has one. */
-  readonly alternativeMode?: 'BYOK' | 'PLATFORM';
+  /**
+   * The organisation's API key, which `credential: 'organisation'` would use instead. Absent when
+   * the organisation holds none: platform credits are retired, so there is then no fallback.
+   */
+  readonly alternativeMode?: 'BYOK';
 }
 
 const PROVIDER_LABEL: Record<LlmProvider, string> = { anthropic: 'Claude', openai: 'OpenAI' };
@@ -34,9 +37,7 @@ export function limitOfRefusal(error: unknown): SubscriptionLimit | undefined {
   return {
     provider: detail.provider,
     ...(typeof detail.resetsAt === 'string' ? { resetsAt: detail.resetsAt } : {}),
-    ...(detail.alternativeMode === 'BYOK' || detail.alternativeMode === 'PLATFORM'
-      ? { alternativeMode: detail.alternativeMode }
-      : {}),
+    ...(detail.alternativeMode === 'BYOK' ? { alternativeMode: detail.alternativeMode } : {}),
   };
 }
 
