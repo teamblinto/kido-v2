@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -47,6 +47,39 @@ describe('loadConfig', () => {
     });
     expect(c.previewSecret.length).toBeGreaterThanOrEqual(32);
     expect(loadConfig(env).previewSecret.equals(c.previewSecret)).toBe(true);
+  });
+  describe('preview secret file', () => {
+    const env = (d: string, f: string) => ({
+      SANDBOXD_API_KEY: 'k',
+      SANDBOXD_DATA_DIR: d,
+      SANDBOXD_PREVIEW_SECRET_FILE: f,
+    });
+    it('generates on ENOENT', () => {
+      const d = dir();
+      const f = join(d, 'new');
+      const c = loadConfig(env(d, f));
+      expect(readFileSync(f).equals(c.previewSecret)).toBe(true);
+    });
+    it('throws on empty file', () => {
+      const d = dir();
+      writeFileSync(join(d, 's'), '');
+      expect(() => loadConfig(env(d, join(d, 's')))).toThrow(/32 bytes/);
+    });
+    it('throws on short file', () => {
+      const d = dir();
+      writeFileSync(join(d, 's'), 'short');
+      expect(() => loadConfig(env(d, join(d, 's')))).toThrow(/32 bytes/);
+    });
+    it('reads a valid file unchanged', () => {
+      const d = dir();
+      const b = Buffer.alloc(40, 7);
+      writeFileSync(join(d, 's'), b);
+      expect(loadConfig(env(d, join(d, 's'))).previewSecret.equals(b)).toBe(true);
+    });
+    it('rethrows non-ENOENT errors without overwriting', () => {
+      const d = dir();
+      expect(() => loadConfig(env(d, d))).toThrow(/EISDIR/);
+    });
   });
   it('parses overrides', () => {
     const c = loadConfig({

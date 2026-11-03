@@ -57,9 +57,13 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
   let previewSecret: Buffer;
   try {
     previewSecret = readFileSync(secretFile);
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
     previewSecret = randomBytes(32);
     writeFileSync(secretFile, previewSecret, { mode: 0o600 });
+  }
+  if (previewSecret.length < 32) {
+    throw new Error(`preview secret file ${secretFile} must hold at least 32 bytes`);
   }
 
   const listen = hostPort(env.SANDBOXD_LISTEN ?? '127.0.0.1:3986');
