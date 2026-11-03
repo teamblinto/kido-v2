@@ -6,6 +6,7 @@ import { router, sendJson } from './http.ts';
 import { DockerodePort } from './docker.ts';
 import { watchEvents } from './events.ts';
 import { log } from './log.ts';
+import { createPreviewServer, registerPreviewRoutes } from './preview.ts';
 import { registerSandboxRoutes } from './sandboxes.ts';
 import { Store } from './store.ts';
 import { clearStaleSessions, registerToolboxRoutes } from './toolbox.ts';
@@ -28,6 +29,7 @@ api.route(
 );
 registerSandboxRoutes(api, { cfg: config, store, docker, admission });
 registerToolboxRoutes(api, { cfg: config, store, docker });
+registerPreviewRoutes(api, { cfg: config, store });
 await clearStaleSessions(store, docker);
 
 const unwatch = watchEvents(docker, admission);
@@ -39,10 +41,19 @@ const server = createServer(api.handle).listen(config.listen.port, config.listen
   log('info', 'sandboxd listening', { node: config.nodeId, ...config.listen });
 });
 
+const previewServer = createPreviewServer({ cfg: config, store, docker }).listen(
+  config.previewListen.port,
+  config.previewListen.host,
+  () => {
+    log('info', 'preview proxy listening', { ...config.previewListen });
+  },
+);
+
 const shutdown = () => {
   clearInterval(timer);
   unwatch();
   server.close();
+  previewServer.close();
   store.close();
 };
 process.once('SIGTERM', shutdown);
