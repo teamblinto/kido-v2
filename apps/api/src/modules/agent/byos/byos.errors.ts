@@ -72,7 +72,7 @@ export function subscriptionRefusal(
         readonly kind: 'subscription-limited';
         readonly provider: LlmProviderName;
         readonly resetsAt: Date | null;
-        readonly alternativeMode: 'BYOK' | 'PLATFORM' | null;
+        readonly alternativeMode: 'BYOK' | null;
       },
 ): DomainError {
   if (resolution.kind === 'subscription-needs-reauth') {

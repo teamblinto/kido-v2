@@ -58,7 +58,7 @@ function scope(
 
   return {
     client: {} as LlmClient,
-    credential: { apiKey: 'sk-ant-test', mode: 'PLATFORM', provider: 'anthropic' },
+    credential: { apiKey: 'sk-ant-test', mode: 'BYOK', provider: 'anthropic' },
     dispatch: (fn) => fn(),
     emit: () => Promise.resolve(),
     fence: { epoch: 1, orgId: 'org_1', runId: RUN_ID },

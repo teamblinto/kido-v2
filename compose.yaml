@@ -133,10 +133,10 @@ services:
     environment:
       <<: *app-env
       RUN_PROFILES: 'agent,events,cron'
-      # The only service that may carry a model key (013 R10). The sandboxd URL and key may also
+      # No model key in any service: platform credits are retired, and a run is paid by an
+      # organisation's API key or a person's own subscription. The sandboxd URL and key may also
       # go to the api (R10 as amended by spec 042 design §8: its preview broker mints preview
-      # upstreams), as the VPS overlay does. Uncomment and fill in to run real agent runs locally.
-      # ANTHROPIC_API_KEY: ''
+      # upstreams), as the VPS overlay does.
       # sandboxd (spec 042) speaks Daytona's protocol, so the adapter just points at it. It is
       # on the host network, listening on the `sbx-ctl` bridge gateway (see the sandboxd
       # service); the key is a compose secret file, never an env value (ADR 027).

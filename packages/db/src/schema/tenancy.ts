@@ -44,6 +44,8 @@ export const previewVisibility = pgEnum('preview_visibility', ['private', 'org',
 export const orgs = pgTable(
   'orgs',
   {
+    // Retired with platform credits: archived, never read or written. Kept rather than dropped so
+    // the balances it holds are not destroyed by a migration.
     creditBalance: bigint('credit_balance', { mode: 'number' }).notNull().default(0),
     id: uuid('id').primaryKey().defaultRandom(),
     name: text('name').notNull(),

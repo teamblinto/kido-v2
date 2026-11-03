@@ -41,6 +41,7 @@ import { ProjectService } from '../src/modules/tenancy/services/project.service'
 import { WorkspaceService } from '../src/modules/tenancy/services/workspace.service';
 import { unsafe } from './support/csrf-client';
 import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
+import { seedProviderKey } from './support/seed-provider-key';
 import {
   type EnumeratedRoute,
   enumerateRoutes,
@@ -69,8 +70,6 @@ vi.hoisted(() => {
   // and a `429` in the middle of the sweep would be a refusal that proves nothing about tenancy —
   // it would look exactly like isolation working while the request never reached the guard.
   process.env.THROTTLE_LIMIT = '100000';
-  // 020: run create resolves a credential; a fake platform key the scripted executor never reads.
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-tenant-isolation-e2e';
 });
 
 const postgres = inject('postgresReachable');
@@ -366,6 +365,9 @@ describe('Tenant isolation (e2e) — the §17 gate', () => {
       permissions = app.get(PermissionCache);
 
       const seeded = await createTwoTenantWorld(app);
+      // Beta's probe run below resolves a credential: beta's own key (platform credits are
+      // retired), which the run never reaches — it is cancelled before any worker sees it.
+      await seedProviderKey(app, seeded.beta);
       const listed = await http(app)
         .get('/api/v1/auth/sessions')
         .set('Cookie', seeded.beta.owner.cookie)

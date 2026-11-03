@@ -43,10 +43,9 @@ services:
       DAYTONA_API_URL: http://sandboxd:3986
       DAYTONA_API_KEY: ${DAYTONA_API_KEY:-local-sandboxd-dev-key}
       DAYTONA_API_KEY_FILE: !reset null
-      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:?set ANTHROPIC_API_KEY in .env}
     secrets: !reset []
-  # The api decides at run-create whether a PLATFORM credential exists (PlatformCredentials), so
-  # without the key here every run is refused 422 "model is not in the organisation's catalogue".
-  # The sandboxd URL and key: its preview route broker asks sandboxd for each route's upstream.
+  # No model key: platform credits are retired, so a run is paid by an organisation's API key
+  # (Settings) or a person's own subscription. The sandboxd URL and key: the api's preview route
+  # broker asks sandboxd for each route's upstream.
   api:
     environment: *local-sandboxd

@@ -42,6 +42,7 @@ import { type FakeDaytona, startFakeDaytona } from './support/fake-daytona';
 import { fakeGit } from './support/fake-git';
 import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
 import { enumerateRoutes, fillRoutePath } from './support/route-enumerator';
+import { seedProviderKey } from './support/seed-provider-key';
 import { stepUp } from './support/step-up';
 import {
   createTwoTenantWorld,
@@ -90,7 +91,6 @@ const FAKE = vi.hoisted(() => {
   const daytonaPort = port === 39_999 ? 20_000 : port + 1;
   process.env.DAYTONA_API_URL = `http://127.0.0.1:${daytonaPort}/api`;
   process.env.DAYTONA_API_KEY = 'dtn_fake_key';
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-byos-e2e';
 
   return { daytonaPort, port };
 });
@@ -265,8 +265,9 @@ describe('BYOS (e2e)', () => {
       await resetProviders();
 
       const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
-        // PLATFORM calls go to a loopback fake, never to api.anthropic.com; BYOS calls take the
-        // subscription's own base URL (the double) from the credential (R9).
+        // Calls on the organisation's key go to a loopback fake (`platform`, as it served the
+        // retired platform key), never to api.anthropic.com; BYOS calls take the subscription's
+        // own base URL (the double) from the credential (R9).
         .overrideProvider(ANTHROPIC_TRANSPORT)
         .useValue({ baseURL: platform.baseURL } satisfies AnthropicTransport)
         .overrideProvider(AGENT_TIMINGS)
@@ -532,6 +533,9 @@ describe('BYOS (e2e)', () => {
         ).toBe(0);
         transactions = app.get(TenantTransactionRunner);
         world = await createTwoTenantWorld(app);
+        // The organisation's order, behind a person's own subscription: its key (platform
+        // credits, the old fallback, are retired).
+        await seedProviderKey(app, world.alpha);
         const { orgId, projectId } = world.alpha;
         await transactions.runInTenantScope({ orgId, userId: null }, (tx) =>
           app.get(SandboxService).register(tx, { daytonaId: daytona.sandboxId, orgId, projectId }),
@@ -577,7 +581,7 @@ describe('BYOS (e2e)', () => {
         const unlinked = await start(b);
         await waitFor(unlinked.id, 'succeeded');
         expect(await row(unlinked.id)).toMatchObject({
-          credentialMode: 'PLATFORM',
+          credentialMode: 'BYOK',
           userId: b.userId,
         });
         expect(platform.requests.length).toBeGreaterThan(platformFrom);
@@ -598,10 +602,10 @@ describe('BYOS (e2e)', () => {
         const forB = await catalogue(b);
 
         expect(forA.models.find((model) => model.id === MODEL)?.credentialMode).toBe('BYOS');
-        expect(forB.models.find((model) => model.id === MODEL)?.credentialMode).toBe('PLATFORM');
+        expect(forB.models.find((model) => model.id === MODEL)?.credentialMode).toBe('BYOK');
       });
 
-      it('FR-015: a tool-call run and a cancelled run emit the same events on BYOS as on PLATFORM', async () => {
+      it('FR-015: a tool-call run and a cancelled run emit the same events on BYOS as on BYOK', async () => {
         const toolTurn: ScriptedReply = {
           stopReason: 'tool_use',
           toolUse: [{ id: 'tu_1', input: { path: 'README.md' }, name: 'fs_read' }],
@@ -638,13 +642,13 @@ describe('BYOS (e2e)', () => {
         const platformCancel = await cancelledRun(b, () => platform.script({ hang: true }));
 
         expect((await row(byosTool)).credentialMode).toBe('BYOS');
-        expect((await row(platformTool)).credentialMode).toBe('PLATFORM');
+        expect((await row(platformTool)).credentialMode).toBe('BYOK');
         expect(await eventTypes(byosTool)).toContain('tool.end');
         expect(await eventTypes(byosTool)).toEqual(await eventTypes(platformTool));
         expect(await eventTypes(byosCancel)).toEqual(await eventTypes(platformCancel));
       });
 
-      it("after A unlinks, A's run takes the organisation's order: PLATFORM", async () => {
+      it("after A unlinks, A's run takes the organisation's order: its key, BYOK", async () => {
         await unsafe(http(app).delete(`${ME}/anthropic`), [a.cookie]).expect(204);
         const from = fake.callLog().length;
         platform.script({
@@ -654,7 +658,7 @@ describe('BYOS (e2e)', () => {
         const run = await start(a);
         await waitFor(run.id, 'succeeded');
 
-        expect((await row(run.id)).credentialMode).toBe('PLATFORM');
+        expect((await row(run.id)).credentialMode).toBe('BYOK');
         expect(callsSince(from)).toEqual([]);
       });
 
@@ -802,7 +806,7 @@ describe('BYOS (e2e)', () => {
           const refused = await refusedStart(a).expect(409);
           expect(refused.body).toMatchObject({ reason: 'subscription-limited' });
           const alternative = (refused.body as { alternativeMode: string | null }).alternativeMode;
-          expect(['BYOK', 'PLATFORM']).toContain(alternative);
+          expect(alternative).toBe('BYOK');
 
           platform.script({
             reply: {
@@ -865,7 +869,7 @@ describe('BYOS (e2e)', () => {
           });
           const run = await start(a);
           await waitFor(run.id, 'succeeded');
-          expect(['BYOK', 'PLATFORM']).toContain((await row(run.id)).credentialMode);
+          expect((await row(run.id)).credentialMode).toBe('BYOK');
 
           const models = (await catalogue(a)).models;
           expect(models.some((model) => model.credentialMode === 'BYOS')).toBe(false);

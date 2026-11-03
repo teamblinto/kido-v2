@@ -248,12 +248,12 @@ export const environmentSchema = z
     // The API origin as the runner inside a home reaches it. Unset is the local Daytona's view of
     // the host (`http://host.docker.internal:3000`); required outside `local` to be https.
     AGENT_HOME_SERVER_URL: z.url().optional(),
-    // The Anthropic API key the agent module's adapter constructs a client with (spec 011). Local
-    // only, exactly as DAYTONA_API_KEY is: a key held in the process environment is the plaintext
-    // secret §06 and ADR 027 refuse on a real deployment.
-    ANTHROPIC_API_KEY: z.string().trim().min(1).optional(),
+    // No ANTHROPIC_API_KEY: platform credits are retired, so the process holds no model key; a run
+    // is paid by the organisation's key (BYOK) or a person's subscription. A leftover value in an
+    // old env file is stripped like any unknown variable rather than refused.
     // ponytail: a local Anthropic-compatible proxy for the by-hand exit walk — its base URL and the
-    // model-id prefix it expects (`cc/`). Refused off `local` like the key; 020/023 own the real one.
+    // model-id prefix it expects (`cc/`) — applied to every Anthropic client, BYOK included.
+    // Refused off `local`; 020/023 own the real endpoint.
     ANTHROPIC_BASE_URL: z.url().optional(),
     ANTHROPIC_MODEL_PREFIX: z.string().trim().min(1).optional(),
     ANTHROPIC_TOOL_SUFFIX: z.string().trim().min(1).optional(),
@@ -1098,14 +1098,6 @@ export const environmentSchema = z
         message:
           'RUN_PROFILES combines api with a worker profile; the API is released blue/green and workers roll with drain, so one process cannot be both outside DEPLOY_ENV=local (§13)',
         path: ['RUN_PROFILES'],
-      });
-    }
-
-    if (isRealDeployment && environment.ANTHROPIC_API_KEY !== undefined) {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'an Anthropic API key held in the environment is local-only (ADR 027)',
-        path: ['ANTHROPIC_API_KEY'],
       });
     }
 

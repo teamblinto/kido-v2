@@ -1,5 +1,4 @@
 import { Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { LinkedAccountRow } from '@repo/db';
@@ -7,7 +6,6 @@ import type { LinkedAccountRow } from '@repo/db';
 import { FakeClock } from '../../../common/clock/fake-clock';
 import { plaintext } from '../../../common/crypto/branded';
 import type { DekService } from '../../../common/crypto/dek.service';
-import type { Environment } from '../../../config/environment';
 import type { TenantTransaction } from '../../../database/database.types';
 import type { OrgService } from '../../tenancy/services/org.service';
 import type { ByosProviders } from '../byos/byos-providers';
@@ -15,7 +13,6 @@ import type { ByosTokenService } from '../byos/byos-token.service';
 import type { LinkedAccountRepository } from '../byos/linked-account.repository';
 import { SubscriptionFailure } from '../byos/subscription-client.port';
 import type { CredentialContext } from '../llm-provider.port';
-import { PlatformCredentials } from '../platform-credentials';
 import { CredentialResolver } from './credential-resolver';
 import type { ProviderKeyRecord, ProviderKeyRepository } from './provider-key.repository';
 
@@ -81,7 +78,6 @@ function keyRow(
 function harness(
   options: {
     keys?: ProviderKeyRecord[];
-    platformKey?: string;
     linked?: LinkedAccountRow[];
     offered?: ('anthropic' | 'openai')[];
     allowed?: boolean;
@@ -117,15 +113,9 @@ function harness(
     ),
   };
   const dek = { openSecret: vi.fn(() => Promise.resolve(plaintext(ORG_KEY))) };
-  const platform = new PlatformCredentials(
-    new ConfigService(
-      options.platformKey === undefined ? {} : { ANTHROPIC_API_KEY: options.platformKey },
-    ) as unknown as ConfigService<Environment, true>,
-  );
   const resolver = new CredentialResolver(
     repository as unknown as ProviderKeyRepository,
     dek as unknown as DekService,
-    platform,
     orgs as unknown as OrgService,
     providers as unknown as ByosProviders,
     accounts as unknown as LinkedAccountRepository,
@@ -142,7 +132,7 @@ describe('CredentialResolver', () => {
   });
 
   it('answers unknown-model for an id the catalogue does not carry', async () => {
-    const { dek, resolver } = harness({ platformKey: 'sk-ant-platform' });
+    const { dek, resolver } = harness();
 
     await expect(resolver.forModel(TX, ORG, USER, 'gpt-3')).resolves.toEqual({
       kind: 'unknown-model',
@@ -150,21 +140,8 @@ describe('CredentialResolver', () => {
     expect(dek.openSecret).not.toHaveBeenCalled();
   });
 
-  it('answers platform with the PlatformCredentials context when the org holds no key', async () => {
-    const { dek, resolver } = harness({ platformKey: 'sk-ant-platform' });
-
-    await expect(resolver.forModel(TX, ORG, USER, 'claude-sonnet-5')).resolves.toEqual({
-      credential: { apiKey: 'sk-ant-platform', mode: 'PLATFORM', provider: 'anthropic' },
-      kind: 'platform',
-    });
-    expect(dek.openSecret).not.toHaveBeenCalled();
-  });
-
-  it('answers byok on a platform model when the org holds a healthy key: the org key wins', async () => {
-    const { dek, resolver } = harness({
-      keys: [keyRow('anthropic')],
-      platformKey: 'sk-ant-platform',
-    });
+  it('answers byok on an Anthropic model when the org holds a healthy key', async () => {
+    const { dek, resolver } = harness({ keys: [keyRow('anthropic')] });
 
     await expect(resolver.forModel(TX, ORG, USER, 'claude-sonnet-5')).resolves.toEqual({
       credential: { apiKey: ORG_KEY, keyLastFour: 'ghij', mode: 'BYOK', provider: 'anthropic' },
@@ -178,10 +155,7 @@ describe('CredentialResolver', () => {
   });
 
   it('answers needs_reauth with the last four when the key is needs_reauth', async () => {
-    const { dek, resolver } = harness({
-      keys: [keyRow('anthropic', 'needs_reauth')],
-      platformKey: 'sk-ant-platform',
-    });
+    const { dek, resolver } = harness({ keys: [keyRow('anthropic', 'needs_reauth')] });
 
     await expect(resolver.forModel(TX, ORG, USER, 'claude-sonnet-5')).resolves.toEqual({
       kind: 'needs_reauth',
@@ -192,7 +166,7 @@ describe('CredentialResolver', () => {
   });
 
   it('answers no-credential on an OpenAI model with no key', async () => {
-    const { resolver } = harness({ platformKey: 'sk-ant-platform' });
+    const { resolver } = harness();
 
     await expect(resolver.forModel(TX, ORG, USER, 'gpt-5.2')).resolves.toEqual({
       kind: 'no-credential',
@@ -233,7 +207,7 @@ describe('CredentialResolver', () => {
     expect(JSON.stringify(logged)).not.toContain(ORG_KEY);
   });
 
-  it('answers no-credential on a platform model with no key and no ANTHROPIC_API_KEY', async () => {
+  it('answers no-credential on an Anthropic model with no key: platform credits are retired', async () => {
     const { resolver } = harness();
 
     await expect(resolver.forModel(TX, ORG, USER, 'claude-sonnet-5')).resolves.toEqual({
@@ -260,7 +234,6 @@ describe('CredentialResolver', () => {
       const { dek, resolver, tokens } = harness({
         keys: [keyRow('anthropic')],
         linked: [linkedRow('anthropic')],
-        platformKey: 'sk-ant-platform',
       });
 
       await expect(resolver.forModel(TX, ORG, USER, 'claude-sonnet-5')).resolves.toEqual({
@@ -287,14 +260,14 @@ describe('CredentialResolver', () => {
 
     it("falls to 020's order when the provider is not offered", async () => {
       const { resolver, tokens } = harness({
+        keys: [keyRow('anthropic')],
         linked: [linkedRow('anthropic')],
         offered: [],
-        platformKey: 'sk-ant-platform',
       });
 
       await expect(resolver.forModel(TX, ORG, USER, 'claude-sonnet-5')).resolves.toMatchObject({
-        credential: { mode: 'PLATFORM' },
-        kind: 'platform',
+        credential: { mode: 'BYOK' },
+        kind: 'byok',
       });
       expect(tokens.current).not.toHaveBeenCalled();
     });
@@ -316,7 +289,6 @@ describe('CredentialResolver', () => {
       const { dek, resolver, tokens } = harness({
         keys: [keyRow('anthropic')],
         linked: [linkedRow('anthropic', { health: 'needs_reauth' })],
-        platformKey: 'sk-ant-platform',
       });
 
       await expect(resolver.forModel(TX, ORG, USER, 'claude-sonnet-5')).resolves.toEqual({
@@ -346,7 +318,6 @@ describe('CredentialResolver', () => {
       const withKey = harness({
         keys: [keyRow('anthropic')],
         linked: [linkedRow('anthropic', limited)],
-        platformKey: 'sk-ant-platform',
       });
       await expect(withKey.resolver.forModel(TX, ORG, USER, 'claude-sonnet-5')).resolves.toEqual({
         accountLabel: 'ada@example.com',
@@ -356,13 +327,11 @@ describe('CredentialResolver', () => {
         resetsAt: LATER,
       });
 
-      const platformOnly = harness({
-        linked: [linkedRow('anthropic', limited)],
-        platformKey: 'sk-ant-platform',
-      });
+      // No key: once the platform's would have been offered here; nothing is now.
+      const noKey = harness({ linked: [linkedRow('anthropic', limited)] });
       await expect(
-        platformOnly.resolver.kindOnly(TX, ORG, USER, 'claude-sonnet-5'),
-      ).resolves.toMatchObject({ alternativeMode: 'PLATFORM', kind: 'subscription-limited' });
+        noKey.resolver.kindOnly(TX, ORG, USER, 'claude-sonnet-5'),
+      ).resolves.toMatchObject({ alternativeMode: null, kind: 'subscription-limited' });
 
       const nothing = harness({ linked: [linkedRow('openai', limited)] });
       await expect(nothing.resolver.kindOnly(TX, ORG, USER, 'gpt-5.2')).resolves.toMatchObject({

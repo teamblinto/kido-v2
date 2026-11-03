@@ -1193,49 +1193,27 @@ describe('validateEnvironment', () => {
   });
 
   describe('Anthropic (spec 011)', () => {
-    it('accepts no Anthropic key', () => {
-      const result = validateEnvironment(validEnvironment());
-
-      expect(result.ANTHROPIC_API_KEY).toBeUndefined();
-    });
-
-    it('accepts the key under DEPLOY_ENV=local', () => {
-      // The key rides with the agent profile (spec 013 R10); the fixture's bare `api` would refuse it.
-      const result = validateEnvironment(
-        validEnvironment({ ANTHROPIC_API_KEY: 'sk-ant-placeholder', RUN_PROFILES: 'api,agent' }),
+    // Platform credits are retired: the process holds no model key, so a leftover one in an old env
+    // file is stripped like any unknown variable — never read, never a boot failure.
+    it('strips a leftover ANTHROPIC_API_KEY, and refuses it nowhere', () => {
+      const local = validateEnvironment(
+        validEnvironment({ ANTHROPIC_API_KEY: 'sk-ant-placeholder' }),
       );
+      expect('ANTHROPIC_API_KEY' in local).toBe(false);
 
-      expect(result.ANTHROPIC_API_KEY).toBe('sk-ant-placeholder');
+      const production = environmentSchema.safeParse(
+        validEnvironment({
+          ANTHROPIC_API_KEY: 'sk-ant-placeholder',
+          DEPLOY_ENV: 'production',
+          KEK_PROVIDER: 'openbao',
+          OPENBAO_ADDR: 'https://openbao.internal:8200',
+          OPENBAO_TOKEN: 'placeholder-token',
+        }),
+      );
+      expect(
+        production.error?.issues.filter((issue) => issue.path[0] === 'ANTHROPIC_API_KEY') ?? [],
+      ).toEqual([]);
     });
-
-    // Same refusal, same shape, same reason as `KEK_PROVIDER === 'env'` and Daytona: a secret
-    // held in the process environment is local-only (ADR 027).
-    it.each(['staging', 'production'])(
-      "refuses the key outside local with the env KEK refusal's shape (%s)",
-      (deploy) => {
-        const result = environmentSchema.safeParse(
-          validEnvironment({
-            ANTHROPIC_API_KEY: 'sk-ant-placeholder',
-            DEPLOY_ENV: deploy,
-            KEK_PROVIDER: 'openbao',
-            OPENBAO_ADDR: 'https://openbao.internal:8200',
-            OPENBAO_TOKEN: 'placeholder-token',
-            RUN_PROFILES: 'agent',
-          }),
-        );
-
-        expect(result.success).toBe(false);
-        const anthropic = result.error?.issues.find(
-          (issue) => issue.path[0] === 'ANTHROPIC_API_KEY',
-        );
-        expect(anthropic).toMatchObject({ code: 'custom', path: ['ANTHROPIC_API_KEY'] });
-
-        const kek = environmentSchema.safeParse(validEnvironment({ DEPLOY_ENV: deploy }));
-        const kekIssue = kek.error?.issues.find((issue) => issue.path[0] === 'KEK_PROVIDER');
-        expect(kekIssue?.message).toMatch(/is local-only$/);
-        expect(anthropic?.message).toMatch(/is local-only \(ADR 027\)$/);
-      },
-    );
 
     it('refuses PREVIEW_GATEWAY_PORT outside local', () => {
       expect(

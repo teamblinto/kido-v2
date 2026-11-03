@@ -105,9 +105,6 @@ export const SUMMARY_THRESHOLD_TOKENS = 60_000;
 /** The most recent turns kept verbatim after the summary (021 FR-007). */
 export const SUMMARY_TAIL_TURNS = 6;
 
-/** The provider the `PLATFORM` credential (`ANTHROPIC_API_KEY`) belongs to (020 T007). */
-export const PLATFORM_PROVIDER = 'anthropic' as const;
-
 /**
  * The most runs that may wait behind a project's holder (spec 031, research R3). A fixed number,
  * not a dial or a per-org limit: both were rejected as configuration nobody asked for. A start

@@ -6,13 +6,11 @@ import { revealPlaintext } from '../../../common/crypto/branded';
 import { DekService } from '../../../common/crypto/dek.service';
 import type { TenantTransaction } from '../../../database/database.types';
 import { OrgService } from '../../tenancy/services/org.service';
-import { PLATFORM_PROVIDER } from '../agent.constants';
 import { ByosProviders } from '../byos/byos-providers';
 import { ByosTokenService } from '../byos/byos-token.service';
 import { LinkedAccountRepository } from '../byos/linked-account.repository';
 import { SubscriptionFailure } from '../byos/subscription-client.port';
 import type { CredentialContext, LlmProviderName } from '../llm-provider.port';
-import { PlatformCredentials } from '../platform-credentials';
 import { purposeFor } from './key-shapes';
 import { ProviderKeyRepository } from './provider-key.repository';
 
@@ -20,7 +18,6 @@ import { ProviderKeyRepository } from './provider-key.repository';
 export type Resolution =
   | { kind: 'byos'; credential: CredentialContext }
   | { kind: 'byok'; credential: CredentialContext; keyId: string }
-  | { kind: 'platform'; credential: CredentialContext }
   | { kind: 'needs_reauth'; provider: LlmProviderName; lastFour: string }
   | { kind: 'subscription-needs-reauth'; provider: LlmProviderName; accountLabel: string }
   | {
@@ -29,15 +26,14 @@ export type Resolution =
       accountLabel: string;
       resetsAt: Date;
       /** What `credential: 'organisation'` would use (R7); `null` when nothing would. */
-      alternativeMode: 'BYOK' | 'PLATFORM' | null;
+      alternativeMode: 'BYOK' | null;
     }
   | { kind: 'no-credential'; provider: LlmProviderName }
   | { kind: 'unknown-model' };
 
 /** `kindOnly`'s answer: every refusal in full, the usable kinds without their credential. */
 export type ResolutionKind =
-  | Exclude<Resolution, { kind: 'byos' | 'byok' | 'platform' }>
-  | { kind: 'byos' | 'byok' | 'platform' };
+  Exclude<Resolution, { kind: 'byos' | 'byok' }> | { kind: 'byos' | 'byok' };
 
 export interface ResolveOptions {
   /** 032 A3: honoured only while the caller's subscription is limited. */
@@ -54,9 +50,10 @@ type Located =
  * 032 R7 then 020 R6. First the starter's own subscription: used when the provider is offered,
  * the organisation allows personal accounts, the starter linked one and the model is one it
  * serves; a `needs_reauth` or limited subscription refuses rather than falling through (FR-014),
- * except that a limited one yields to `credential: 'organisation'`. Otherwise 020's order: the
- * organisation's key wins over the platform key; a `needs_reauth` key refuses. Secrets are opened
- * only in `forModel` — `kindOnly` is the run-create answer and opens nothing.
+ * except that a limited one yields to `credential: 'organisation'`. Otherwise the organisation's
+ * key; a `needs_reauth` key refuses, and no key is `no-credential` — platform credits, the old
+ * fallback, are retired. Secrets are opened only in `forModel` — `kindOnly` is the run-create
+ * answer and opens nothing.
  */
 @Injectable()
 export class CredentialResolver {
@@ -66,7 +63,6 @@ export class CredentialResolver {
   constructor(
     @Inject(ProviderKeyRepository) private readonly keys: ProviderKeyRepository,
     @Inject(DekService) private readonly dek: DekService,
-    @Inject(PlatformCredentials) private readonly platform: PlatformCredentials,
     @Inject(OrgService) private readonly orgs: OrgService,
     @Inject(ByosProviders) private readonly byos: ByosProviders,
     @Inject(LinkedAccountRepository) private readonly linked: LinkedAccountRepository,
@@ -131,9 +127,7 @@ export class CredentialResolver {
   ): Promise<ResolutionKind> {
     const located = await this.locate(tx, orgId, userId, model, options);
 
-    return located.kind === 'byos' || located.kind === 'byok' || located.kind === 'platform'
-      ? { kind: located.kind }
-      : located;
+    return located.kind === 'byos' || located.kind === 'byok' ? { kind: located.kind } : located;
   }
 
   private async locate(
@@ -165,12 +159,7 @@ export class CredentialResolver {
         const alternative = await this.organisation(tx, orgId, provider);
         return {
           accountLabel,
-          alternativeMode:
-            alternative.kind === 'byok'
-              ? 'BYOK'
-              : alternative.kind === 'platform'
-                ? 'PLATFORM'
-                : null,
+          alternativeMode: alternative.kind === 'byok' ? 'BYOK' : null,
           kind: 'subscription-limited',
           provider,
           resetsAt: limitedUntil,
@@ -197,7 +186,7 @@ export class CredentialResolver {
     return row;
   }
 
-  /** 020's order, unchanged. */
+  /** The organisation's key for the provider, or nothing to pay with. */
   private async organisation(
     tx: TenantTransaction,
     orgId: string,
@@ -205,16 +194,12 @@ export class CredentialResolver {
   ): Promise<Located> {
     const key = await this.keys.byProvider(tx, orgId, provider);
 
-    if (key !== undefined) {
-      return key.health === 'healthy'
-        ? { keyId: key.id, kind: 'byok', lastFour: key.lastFour, provider, secretId: key.secretId }
-        : { kind: 'needs_reauth', lastFour: key.lastFour, provider };
+    if (key === undefined) {
+      return { kind: 'no-credential', provider };
     }
 
-    const platform = provider === PLATFORM_PROVIDER ? this.platform.context() : undefined;
-
-    return platform === undefined
-      ? { kind: 'no-credential', provider }
-      : { credential: platform, kind: 'platform' };
+    return key.health === 'healthy'
+      ? { keyId: key.id, kind: 'byok', lastFour: key.lastFour, provider, secretId: key.secretId }
+      : { kind: 'needs_reauth', lastFour: key.lastFour, provider };
   }
 }

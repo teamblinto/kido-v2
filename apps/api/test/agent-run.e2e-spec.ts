@@ -31,6 +31,7 @@ import { ScriptedExecutor } from '../src/modules/agent/scripted-executor';
 import { ProjectService } from '../src/modules/tenancy/services/project.service';
 import { unsafe } from './support/csrf-client';
 import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
+import { seedProviderKey } from './support/seed-provider-key';
 import {
   createTwoTenantWorld,
   destroyTwoTenantWorld,
@@ -49,8 +50,6 @@ vi.hoisted(() => {
   process.env.ARGON2_PARALLELISM = '1';
   process.env.ARGON2_TIME_COST = '1';
   process.env.THROTTLE_LIMIT = '100000';
-  // 020: run create resolves a credential; a fake platform key the scripted executor never reads.
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-agent-run-e2e';
 });
 
 const postgres = inject('postgresReachable');
@@ -247,6 +246,10 @@ describe('Agent runs (e2e)', () => {
 
       transactions = app.get(TenantTransactionRunner);
       world = await createTwoTenantWorld(app);
+      // Run create resolves a credential; each organisation's own key, which the scripted
+      // executor never reads (platform credits are retired).
+      await seedProviderKey(app, world.alpha);
+      await seedProviderKey(app, world.beta);
     }, LOCKED_BOOT_TIMEOUT_MS);
 
     /**
@@ -589,11 +592,17 @@ describe('Agent runs (e2e)', () => {
        */
       it('ends a run waiting for input in the request, and the next run in the project starts', async () => {
         const { owner } = world.alpha;
-        const first = await created(owner, JSON.stringify({ script: [{ kind: 'await-input' }] }));
+        const first = await created(
+          owner,
+          JSON.stringify({ script: [{ kind: 'sleep', ms: 500 }, { kind: 'await-input' }] }),
+        );
 
-        await untilStatus(owner, first, 'awaiting_input');
+        // Queued while `first` runs: created once it waits, `second` would be its answer instead.
+        await untilStatus(owner, first, 'running');
 
         const second = await created(owner, 'done');
+
+        await untilStatus(owner, first, 'awaiting_input');
 
         expect(runResponseSchema.parse((await read(owner, second).expect(200)).body).status).toBe(
           'queued',
@@ -746,6 +755,74 @@ describe('Agent runs (e2e)', () => {
           ]);
           // The tool before the input ran once; only the tool after it ran on the resumed attempt.
           expect(page.filter((event) => event.type === 'tool.end')).toHaveLength(2);
+        });
+
+        /** The bug: queued behind a holder only an answer moves, the follow-up waited forever. */
+        it('a follow-up to a run awaiting input answers it instead of queueing behind it', async () => {
+          const { orgId, owner, projectId } = world.alpha;
+          const runId = await created(owner, script({ kind: 'await-input' }, { kind: 'tool' }));
+          const runsOfProject = () =>
+            transactions.runInTenantTransaction(orgId, (tx) =>
+              tx
+                .select({ id: schema.agentRuns.id })
+                .from(schema.agentRuns)
+                .where(eq(schema.agentRuns.projectId, projectId)),
+            );
+
+          await untilStatus(owner, runId, 'awaiting_input');
+
+          const before = (await runsOfProject()).length;
+          const response = await create(owner, {
+            model: 'claude-opus-5',
+            prompt: 'and make it blue',
+          }).expect(201);
+
+          expect(runResponseSchema.parse(response.body)).toMatchObject({
+            id: runId,
+            model: 'claude-opus-5',
+          });
+          expect(await runsOfProject()).toHaveLength(before);
+
+          await untilStatus(owner, runId, 'succeeded');
+
+          const messages = await transactions.runInTenantTransaction(orgId, (tx) =>
+            tx
+              .select({ content: schema.runMessages.content, role: schema.runMessages.role })
+              .from(schema.runMessages)
+              .where(eq(schema.runMessages.runId, runId))
+              .orderBy(schema.runMessages.at),
+          );
+
+          expect(messages.filter((message) => message.role === 'user').at(-1)?.content).toBe(
+            'and make it blue',
+          );
+          expect(await auditFor(runId)).toEqual(['agent-run.created', 'agent-run.input']);
+        });
+
+        it('switches the model from the answer on, and refuses one outside the catalogue (422)', async () => {
+          const { owner } = world.alpha;
+          const runId = await created(owner, script({ kind: 'await-input' }, { kind: 'tool' }));
+
+          await untilStatus(owner, runId, 'awaiting_input');
+
+          const refused = await unsafe(http(app).post(`${runsPath()}/${runId}/input`), [
+            owner.cookie,
+          ])
+            .send({ message: 'go on', model: 'gpt-5.2' })
+            .expect(422);
+
+          expect(problemDetailSchema.parse(refused.body).type).toContain('validation-failed');
+          expect(
+            runResponseSchema.parse((await read(owner, runId).expect(200)).body),
+          ).toMatchObject({ model: 'claude-sonnet-5', status: 'awaiting_input' });
+
+          await unsafe(http(app).post(`${runsPath()}/${runId}/input`), [owner.cookie])
+            .send({ message: 'go on', model: 'claude-opus-5' })
+            .expect(202);
+
+          const run = await untilStatus(owner, runId, 'succeeded');
+
+          expect(run.model).toBe('claude-opus-5');
         });
 
         it('answers conflict naming the state for a run that is not waiting, and writes nothing', async () => {

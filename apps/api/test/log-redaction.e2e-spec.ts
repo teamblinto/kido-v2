@@ -54,6 +54,7 @@ import { fakeGit } from './support/fake-git';
 import { type FakeReceiver, respond, startFakeReceiver } from './support/fake-receiver';
 import { FakeResolver } from './support/fake-resolver';
 import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
+import { seedProviderKey } from './support/seed-provider-key';
 import { ScriptedProvider, type ScriptedStep } from './support/scripted-provider';
 import {
   createTwoTenantWorld,
@@ -82,7 +83,6 @@ const FAKE = vi.hoisted(() => {
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   process.env.DAYTONA_API_URL = `http://127.0.0.1:${port}/api`;
   process.env.DAYTONA_API_KEY = 'dtn_fake_key';
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-redaction-e2e';
   // A distinctive value rather than the published example: a scan for
   // `local-example-webhook-secret` proves nothing, because that string is in the repository
   // already and would be "found" by any careless assertion (spec 026 SC-012).
@@ -674,6 +674,9 @@ describe('log redaction (e2e)', () => {
       fake = await startFakeDaytona({ port: FAKE.port, sandboxId: SANDBOX_ID });
       fakeGit(fake);
       world = await createTwoTenantWorld(app);
+      // Run create resolves a credential: the organisation's own key (platform credits are
+      // retired), which only the scripted provider ever receives.
+      await seedProviderKey(app, world.alpha);
       const transactions = app.get(TenantTransactionRunner);
       const { orgId, projectId } = world.alpha;
       await transactions.runInTenantScope({ orgId, userId: null }, (tx) =>

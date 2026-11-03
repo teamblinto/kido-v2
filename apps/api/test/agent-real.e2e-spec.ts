@@ -16,6 +16,7 @@ import { SANDBOX_PORT, type SandboxPort } from '../src/modules/sandbox/sandbox.p
 import { SandboxService } from '../src/modules/sandbox/sandbox.service';
 import { unsafe } from './support/csrf-client';
 import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
+import { seedProviderKey } from './support/seed-provider-key';
 import {
   createTwoTenantWorld,
   destroyTwoTenantWorld,
@@ -24,7 +25,7 @@ import {
 } from './support/two-tenant-fixture';
 
 vi.hoisted(() => {
-  // The developer's .env carries the model key, which the schema allows only beside `agent`;
+  // The developer's .env carries the model key, which this suite seeds as the organisation's;
   // this suite executes real runs, so it carries every profile.
   process.env.RUN_PROFILES = 'api,agent,events,cron';
 });
@@ -95,6 +96,9 @@ describe('Agent core against the real model and a real sandbox (e2e)', () => {
         transactions = app.get(TenantTransactionRunner);
         port = app.get<SandboxPort>(SANDBOX_PORT);
         world = await createTwoTenantWorld(app);
+        // The developer's key, as the organisation's own: the process holds no model key
+        // (platform credits are retired), so a real run is paid the way a customer's is.
+        await seedProviderKey(app, world.alpha, 'anthropic', process.env.ANTHROPIC_API_KEY);
 
         const { orgId, projectId } = world.alpha;
         await transactions.runInTenantScope({ orgId, userId: null }, (tx) =>

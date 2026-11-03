@@ -54,7 +54,6 @@ import { ContextAssembler } from './context/context-assembler';
 import { OpenAiProvider } from './openai.adapter';
 import { RunController } from './controllers/run.controller';
 import { EventBatcherFactory } from './event-batcher';
-import { PlatformCredentials } from './platform-credentials';
 import { ProviderRouter } from './provider-router';
 import { RunService } from './run.service';
 import { RunAccessConsumer } from './run-access.consumer';
@@ -246,7 +245,6 @@ function proxyFetch(
     LinkedAccountRepository,
     LinkedAccountService,
     OpenAiProvider,
-    PlatformCredentials,
     ProviderKeyHealthConsumer,
     LinkedAccountHealthConsumer,
     ProviderKeyRepository,

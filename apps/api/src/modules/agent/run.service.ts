@@ -1,11 +1,12 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type {
-  SubscriptionRunTarget,
-  RunEvent,
-  RunEventsResponse,
-  RunListResponse,
-  RunResponse,
+import {
+  localAgentModelSchema,
+  type SubscriptionRunTarget,
+  type RunEvent,
+  type RunEventsResponse,
+  type RunListResponse,
+  type RunResponse,
 } from '@repo/contracts';
 import type { AgentRun, RunEventRow } from '@repo/db';
 
@@ -26,7 +27,7 @@ import { ProjectService } from '../tenancy/services/project.service';
 import { RUN_LINE_LIMIT } from './agent.constants';
 import { keyRefusal } from './byok/byok.errors';
 import { subscriptionRefusal } from './byos/byos.errors';
-import { CredentialResolver } from './byok/credential-resolver';
+import { CredentialResolver, type ResolutionKind } from './byok/credential-resolver';
 import { RunControl } from './run-control';
 import { RunExecutorRegistry } from './run-executor-registry';
 import { isLeased } from './run-state-machine';
@@ -90,6 +91,20 @@ export class RunService {
       );
     }
 
+    // A follow-up while the project's run waits on a person is that person's answer (US4: the
+    // answer is message 2). Queued instead, it would wait behind a holder only an answer moves —
+    // forever. Rejected: refusing it as a conflict, which sends the person hunting for the run's
+    // own input box for what reads as one conversation.
+    const holder = await this.store.holder(tx, orgId, projectId);
+
+    if (holder?.status === 'awaiting_input') {
+      await this.input(orgId, projectId, holder.id, userId, prompt, requestedModel);
+
+      return this.read(orgId, projectId, holder.id);
+    }
+
+    // 041: no model is the CLI's own default — the provider's name stands for it, never
+    // AGENT_DEFAULT_MODEL, which is a catalogue id the subscription's CLI may not serve.
     const model = requestedModel ?? subscription?.provider ?? this.model;
     const resolution =
       local === undefined
@@ -102,25 +117,8 @@ export class RunService {
           )
         : ({ kind: 'local' } as const);
 
-    // 032 R7: the starter's subscription refuses rather than falling through (FR-014).
-    if (
-      resolution.kind === 'subscription-needs-reauth' ||
-      resolution.kind === 'subscription-limited'
-    ) {
-      throw subscriptionRefusal(resolution);
-    }
-
-    if (resolution.kind === 'needs_reauth') {
-      throw keyRefusal('needs-reauth', {
-        keyLastFour: resolution.lastFour,
-        provider: resolution.provider,
-      });
-    }
-
-    if (resolution.kind === 'unknown-model' || resolution.kind === 'no-credential') {
-      throw new DomainError('validation-failed', "model is not in the organisation's catalogue", {
-        model,
-      });
+    if (resolution.kind !== 'local') {
+      refuseUnpayable(resolution, model);
     }
 
     await this.projects.read(orgId, projectId);
@@ -138,6 +136,9 @@ export class RunService {
 
     const run = await this.store.insertRun(tx, {
       ...(credential === undefined ? {} : { credentialChoice: credential }),
+      // What pays, stamped now: the column's `PLATFORM` default is the retired credits, and a run
+      // that never starts (or a subscription run, which the executor never stamps) would keep it.
+      credentialMode: resolution.kind === 'byok' ? 'BYOK' : 'BYOS',
       model,
       orgId,
       projectId,
@@ -265,6 +266,10 @@ export class RunService {
    * 041: a subscription run takes input from its starter only — the prompt runs on their own
    * Claude sign-in — and none at all where subscription runs are off. (Cancel stays open to every
    * member with `project:agent.run`: stopping a run is always safe.)
+   *
+   * `model` switches the run's model from this answer on, written on the row so every later turn
+   * (either executor reads `run.model`) uses it: on a subscription run any plain CLI id or alias,
+   * otherwise one the organisation's catalogue can pay for, else `422`.
    */
   async input(
     orgId: string,
@@ -272,10 +277,12 @@ export class RunService {
     runId: string,
     actorId: string,
     message: string,
+    model?: string,
   ): Promise<void> {
     const executors = this.executors;
+    const tx = this.tenant.tx;
 
-    if (await executors.isLocal(this.tenant.tx, orgId, runId)) {
+    if (await executors.isLocal(tx, orgId, runId)) {
       if (executors.localAgent() === undefined) {
         throw new ConflictError('Subscription runs are not enabled on this deployment.', {
           reason: 'local-agent-disabled',
@@ -287,20 +294,43 @@ export class RunService {
           'Only the person who started this run can answer it: it runs on their own subscription.',
         );
       }
+
+      // The route's contract checks this already; a follow-up through create arrives with
+      // create's looser `model`, and the value reaches the CLI's argv (040 § 3).
+      if (model !== undefined && !localAgentModelSchema.safeParse(model).success) {
+        throw notInCatalogue(model);
+      }
+    } else if (model !== undefined) {
+      // As the executor will resolve it: the starter's own subscription first, then the key.
+      const run = await this.row(orgId, projectId, runId);
+      const resolution = await this.resolver.kindOnly(
+        tx,
+        orgId,
+        run.userId,
+        model,
+        run.credentialChoice === 'organisation' ? { credential: 'organisation' } : {},
+      );
+
+      // Not create's `subscription-not-connected`: the run is already paid for, and the answer
+      // only named a model nothing in this organisation can run.
+      if (resolution.kind === 'no-credential') throw notInCatalogue(model);
+      refuseUnpayable(resolution, model);
     }
 
-    await this.requeue(orgId, projectId, runId, 'awaiting_input', async (tx) => {
-      const inserted = await this.store.insertMessage(tx, {
+    await this.requeue(orgId, projectId, runId, 'awaiting_input', async (inner) => {
+      if (model !== undefined) await this.store.setModel(inner, { orgId, runId }, model);
+
+      const inserted = await this.store.insertMessage(inner, {
         content: message,
         orgId,
         role: 'user',
         runId,
       });
 
-      await this.audit.record(tx, {
+      await this.audit.record(inner, {
         action: 'agent-run.input',
         actorId,
-        metadata: { messageId: inserted.id, projectId },
+        metadata: { messageId: inserted.id, projectId, ...(model === undefined ? {} : { model }) },
         orgId,
         target: runId,
       });
@@ -375,6 +405,42 @@ export class RunService {
     }
 
     return row;
+  }
+}
+
+function notInCatalogue(model: string): DomainError {
+  return new DomainError('validation-failed', "model is not in the organisation's catalogue", {
+    model,
+  });
+}
+
+/**
+ * The refusals a resolution carries before anything is written. 032 R7: the starter's
+ * subscription refuses rather than falling through (FR-014). Nothing to pay with is
+ * `subscription-not-connected` — platform credits are retired, and the web answers that problem
+ * with a way to connect one — while a model the catalogue never lists stays `422`.
+ */
+function refuseUnpayable(resolution: ResolutionKind, model: string): void {
+  switch (resolution.kind) {
+    case 'subscription-needs-reauth':
+    case 'subscription-limited':
+      throw subscriptionRefusal(resolution);
+    case 'needs_reauth':
+      throw keyRefusal('needs-reauth', {
+        keyLastFour: resolution.lastFour,
+        provider: resolution.provider,
+      });
+    case 'unknown-model':
+      throw notInCatalogue(model);
+    case 'no-credential':
+      throw new DomainError(
+        'subscription-not-connected',
+        'Nothing can pay for this run yet. Connect your subscription, or add an API key, in Settings.',
+        { model, provider: resolution.provider },
+      );
+    case 'byok':
+    case 'byos':
+      return;
   }
 }
 

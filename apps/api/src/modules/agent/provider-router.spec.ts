@@ -22,7 +22,7 @@ function harness() {
 describe('ProviderRouter', () => {
   it("routes 'anthropic' to the Anthropic provider, credential and model untouched", () => {
     const { anthropic, anthropicClient, openai, router } = harness();
-    const credential: CredentialContext = { mode: 'PLATFORM', provider: 'anthropic', apiKey: 'k' };
+    const credential: CredentialContext = { mode: 'BYOK', provider: 'anthropic', apiKey: 'k' };
 
     expect(router.client(credential, 'claude-x')).toBe(anthropicClient);
     expect(anthropic.client).toHaveBeenCalledWith(credential, 'claude-x');

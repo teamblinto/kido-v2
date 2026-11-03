@@ -272,6 +272,8 @@ export class RunStore {
     tx: TenantTransaction,
     run: {
       credentialChoice?: 'organisation';
+      /** Never `PLATFORM`: platform credits are retired; the enum keeps it for old rows only. */
+      credentialMode?: 'BYOK' | 'BYOS';
       model: string;
       orgId: string;
       projectId: string;
@@ -281,6 +283,18 @@ export class RunStore {
     const [row] = await tx.insert(agentRuns).values(run).returning();
 
     return row!;
+  }
+
+  /**
+   * An answer's model switch (request side, like `input`'s transition: no lease to fence). The
+   * caller's status-guarded `awaiting_input → queued` in the same transaction is what refuses a
+   * run that moved on.
+   */
+  async setModel(tx: TenantTransaction, fence: RunFence, model: string): Promise<void> {
+    await tx
+      .update(agentRuns)
+      .set({ model, updatedAt: this.clock.now() })
+      .where(this.fenced(fence));
   }
 
   async insertMessage(

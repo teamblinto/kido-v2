@@ -14,22 +14,20 @@ import { CLOCK, type ClockPort } from '../../../common/clock/clock.port';
 import type { Environment } from '../../../config/environment';
 import type { TenantTransaction } from '../../../database/database.types';
 import { OrgService } from '../../tenancy/services/org.service';
-import { PLATFORM_PROVIDER } from '../agent.constants';
 import { ByosProviders } from '../byos/byos-providers';
 import { LinkedAccountRepository } from '../byos/linked-account.repository';
 import type { LlmProviderName } from '../llm-provider.port';
-import { PlatformCredentials } from '../platform-credentials';
 import { ProviderKeyRepository } from './provider-key.repository';
 
 /**
  * The per-organisation catalogue (spec 020 § 2, research R8), per caller since 032 R8: an entry
  * the caller's own subscription would pay for (R7 step 1) is `BYOS` — unavailable behind a
  * `needs_reauth` subscription, and carrying `limitedUntil` and the organisation's alternative while
- * limited. Otherwise 020: the platform provider's models are always listed — `PLATFORM` unless the
- * organisation holds its own key for that provider — and another provider's models only while a
- * key for it exists. `available` is false behind a `needs_reauth` key, or for the platform
- * provider when no platform credential is configured. `default` is `AGENT_DEFAULT_MODEL` when
- * available, else the first available entry.
+ * limited. Otherwise a provider's models are listed only while the organisation holds a key for it
+ * (`BYOK`, unavailable behind a `needs_reauth` key). Platform credits are retired, so nothing is
+ * listed that nothing can pay for: no key and no subscription is an empty catalogue with
+ * `default: null`, and the web offers to connect one. `default` is `AGENT_DEFAULT_MODEL` when
+ * available, else the first available entry, else `null`.
  */
 @Injectable()
 export class CatalogueService {
@@ -38,7 +36,6 @@ export class CatalogueService {
   constructor(
     @Inject(ConfigService) config: ConfigService<Environment, true>,
     @Inject(ProviderKeyRepository) private readonly keys: ProviderKeyRepository,
-    @Inject(PlatformCredentials) private readonly platform: PlatformCredentials,
     @Inject(OrgService) private readonly orgs: OrgService,
     @Inject(ByosProviders) private readonly byos: ByosProviders,
     @Inject(LinkedAccountRepository) private readonly linked: LinkedAccountRepository,
@@ -73,9 +70,7 @@ export class CatalogueService {
     const available = models.filter((model) => model.available).map((model) => model.id);
 
     return {
-      default: available.includes(this.defaultModel)
-        ? this.defaultModel
-        : (available[0] ?? this.defaultModel),
+      default: available.includes(this.defaultModel) ? this.defaultModel : (available[0] ?? null),
       models,
     };
   }
@@ -127,30 +122,22 @@ export class CatalogueService {
     };
   }
 
-  /** 020's entry, or `undefined` when the organisation cannot run this provider at all. */
+  /** The organisation's key's entry, or `undefined` when it holds no key for this provider. */
   private organisationEntry(
     entry: CatalogueEntry,
     health: Map<LlmProviderName, string>,
   ): CatalogueModel | undefined {
     const key = health.get(entry.provider);
 
-    if (key !== undefined) {
-      return key === 'healthy'
-        ? { ...entry, available: true, credentialMode: 'BYOK' }
-        : {
-            ...entry,
-            available: false,
-            credentialMode: 'BYOK',
-            unavailableReason: 'key-needs-reauth',
-          };
-    }
-    if (entry.provider === PLATFORM_PROVIDER) {
-      return {
-        ...entry,
-        available: this.platform.context() !== undefined,
-        credentialMode: 'PLATFORM',
-      };
-    }
-    return undefined;
+    if (key === undefined) return undefined;
+
+    return key === 'healthy'
+      ? { ...entry, available: true, credentialMode: 'BYOK' }
+      : {
+          ...entry,
+          available: false,
+          credentialMode: 'BYOK',
+          unavailableReason: 'key-needs-reauth',
+        };
   }
 }

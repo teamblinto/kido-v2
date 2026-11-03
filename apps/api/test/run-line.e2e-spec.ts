@@ -35,13 +35,13 @@ import { OrgService } from '../src/modules/tenancy/services/org.service';
 import { ProjectService } from '../src/modules/tenancy/services/project.service';
 import { openPool } from './support/integration-database';
 import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
+import { seedProviderKey } from './support/seed-provider-key';
 
 vi.hoisted(() => {
   process.env.NODE_ENV = 'test';
   process.env.SWAGGER_ENABLED = 'false';
   // No shipped worker or relay: the suite relays its own org's agent rows by hand.
   process.env.RUN_PROFILES = 'api';
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-run-line-e2e';
 });
 
 const postgres = inject('postgresReachable');
@@ -252,6 +252,9 @@ describe('The run line (e2e)', () => {
         .create(userId, { name: 'Line fixture', slug: `031l-${randomUUID().slice(0, 8)}` });
 
       orgId = org.id;
+      // Run create resolves a credential; the organisation's key, which the scripted executor
+      // never reads (platform credits are retired).
+      await seedProviderKey(app, { orgId, owner: { userId } });
 
       const [workspace] = await inTenant((tx) =>
         tx.select({ id: schema.workspaces.id }).from(schema.workspaces),

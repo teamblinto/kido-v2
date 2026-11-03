@@ -24,7 +24,6 @@ import type { ExecutionContext, RunExecutor } from '../src/modules/agent/run-exe
 import { RunReaper } from '../src/modules/agent/run-reaper';
 import { MaintenanceScheduler } from '../src/modules/sandbox/maintenance.scheduler';
 import { ProjectService } from '../src/modules/tenancy/services/project.service';
-import { PlatformCredentials } from '../src/modules/agent/platform-credentials';
 import { RunStore } from '../src/modules/agent/run-store';
 import { RunService } from '../src/modules/agent/run.service';
 import { ScriptedExecutor } from '../src/modules/agent/scripted-executor';
@@ -36,6 +35,7 @@ import { QueueRegistry } from '../src/modules/outbox/queue-registry';
 import { OutboxRelay } from '../src/modules/outbox/relay';
 import { awaitMail } from './support/mail';
 import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
+import { seedProviderKey } from './support/seed-provider-key';
 import {
   createTwoTenantWorld,
   destroyTwoTenantWorld,
@@ -249,16 +249,6 @@ describe('Run profiles (e2e)', () => {
         .useValue(new Set(['api']))
         .overrideProvider(RUN_EXECUTOR)
         .useValue(apiExecutor)
-        // 020: run create resolves a credential and the process has no `ANTHROPIC_API_KEY` (US3),
-        // so the `api` context alone is handed a platform credential the scripted executor never reads.
-        .overrideProvider(PlatformCredentials)
-        .useValue({
-          context: () => ({
-            apiKey: 'sk-ant-fake-run-profiles',
-            mode: 'PLATFORM',
-            provider: 'anthropic',
-          }),
-        })
         .compile();
 
       apiRelayStart = vi.spyOn(moduleRef.get(OutboxRelay), 'start');
@@ -269,6 +259,9 @@ describe('Run profiles (e2e)', () => {
       db = api.get<ForgeDatabase>(APP_DATABASE);
       transactions = api.get(TenantTransactionRunner);
       world = await createTwoTenantWorld(api);
+      // 020: run create resolves a credential, and no process holds a model key (US3; platform
+      // credits are retired): the organisation's own, which the scripted executor never reads.
+      await seedProviderKey(api, world.alpha);
     }, LOCKED_BOOT_TIMEOUT_MS);
 
     afterEach(async () => {

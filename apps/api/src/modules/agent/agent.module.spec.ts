@@ -22,7 +22,6 @@ import { LinkedAccountController } from './controllers/linked-account.controller
 import { ModelsController } from './controllers/models.controller';
 import { ProviderKeyController } from './controllers/provider-key.controller';
 import { OpenAiProvider } from './openai.adapter';
-import { PlatformCredentials } from './platform-credentials';
 import { ProviderRouter } from './provider-router';
 import { RunController } from './controllers/run.controller';
 import { REQUIRED_PERMISSION } from '../rbac/decorators/require-permission.decorator';
@@ -165,11 +164,10 @@ describe('AgentModule', () => {
     expect(verifiers?.useFactory('A', 'O')).toEqual({ anthropic: 'A', openai: 'O' });
   });
 
-  it('provides the resolver, the catalogue, the health sweep and PlatformCredentials behind them (020 T042)', () => {
+  it('provides the resolver, the catalogue, the health sweep behind them (020 T042)', () => {
     expect(providers).toContain(CredentialResolver);
     expect(providers).toContain(CatalogueService);
     expect(providers).toContain(ProviderKeyHealthConsumer);
-    expect(providers).toContain(PlatformCredentials);
   });
 
   /**

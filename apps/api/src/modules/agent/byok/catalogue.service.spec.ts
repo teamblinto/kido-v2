@@ -7,7 +7,6 @@ import type { TenantTransaction } from '../../../database/database.types';
 import type { OrgService } from '../../tenancy/services/org.service';
 import type { ByosProviders } from '../byos/byos-providers';
 import type { LinkedAccountRepository } from '../byos/linked-account.repository';
-import type { PlatformCredentials } from '../platform-credentials';
 import { FakeClock } from '../../../common/clock/fake-clock';
 import { CatalogueService } from './catalogue.service';
 import type { ProviderKeyRecord, ProviderKeyRepository } from './provider-key.repository';
@@ -34,7 +33,6 @@ function build(
   keys: ProviderKeyRecord[],
   {
     defaultModel = 'claude-sonnet-5',
-    platformKey = true,
     linked = [] as Linked[],
     offered = ['anthropic', 'openai'] as ('anthropic' | 'openai')[],
     allowed = true,
@@ -55,10 +53,6 @@ function build(
       true
     >,
     { forOrg } as unknown as ProviderKeyRepository,
-    {
-      context: () =>
-        platformKey ? { apiKey: 'k', mode: 'PLATFORM', provider: 'anthropic' } : undefined,
-    } as unknown as PlatformCredentials,
     { personalAccountsAllowed: () => Promise.resolve(allowed) } as unknown as OrgService,
     { offeredList: () => Promise.resolve(offered) } as unknown as ByosProviders,
     { listOn: list } as unknown as LinkedAccountRepository,
@@ -69,23 +63,22 @@ function build(
 }
 
 describe('CatalogueService.forOrg', () => {
-  it('no keys → the Anthropic models, PLATFORM and available, read from provider_keys once', async () => {
+  it('no key and no subscription → an empty catalogue, default null, read from provider_keys once', async () => {
     const { forOrg, service } = build([]);
     const body = await service.forOrg(TX, ORG, USER);
 
     expect(forOrg).toHaveBeenCalledTimes(1);
     expect(forOrg).toHaveBeenCalledWith(TX, ORG);
     expect(modelCatalogueResponseSchema.parse(body)).toEqual(body);
-    expect(body.models.map((m) => m.id)).toEqual(ANTHROPIC);
-    expect(body.models.every((m) => m.credentialMode === 'PLATFORM' && m.available)).toBe(true);
-    expect(body.default).toBe('claude-sonnet-5');
+    expect(body).toEqual({ default: null, models: [] });
   });
 
-  it('no keys and no platform credential → the Anthropic models present but unavailable', async () => {
-    const body = await build([], { platformKey: false }).service.forOrg(TX, ORG, USER);
+  it('only needs_reauth keys → the entries listed, unavailable, and no default', async () => {
+    const body = await build([key('anthropic', 'needs_reauth')]).service.forOrg(TX, ORG, USER);
 
     expect(body.models.map((m) => m.id)).toEqual(ANTHROPIC);
     expect(body.models.every((m) => !m.available)).toBe(true);
+    expect(body.default).toBeNull();
   });
 
   it('a healthy Anthropic key → the same ids, BYOK', async () => {
@@ -109,10 +102,11 @@ describe('CatalogueService.forOrg', () => {
     expect(body.default).toBe(OPENAI[0]);
   });
 
-  it('an OpenAI key → the OpenAI group appended after the platform group', async () => {
+  it('an OpenAI key alone → the OpenAI models only, BYOK; no Anthropic model nothing pays for', async () => {
     const body = await build([key('openai', 'healthy')]).service.forOrg(TX, ORG, USER);
 
-    expect(body.models.map((m) => m.id)).toEqual([...ANTHROPIC, ...OPENAI]);
+    expect(body.models.map((m) => m.id)).toEqual(OPENAI);
+    expect(body.default).toBe(OPENAI[0]);
     expect(body.models.filter((m) => m.provider === 'openai')).toEqual(
       MODEL_CATALOGUE.filter((m) => m.provider === 'openai').map((m) => ({
         ...m,
@@ -131,7 +125,9 @@ describe('CatalogueService.forOrg', () => {
   });
 
   it('the default is the first available when AGENT_DEFAULT_MODEL is unavailable', async () => {
-    const body = await build([], { defaultModel: 'gpt-5.2' }).service.forOrg(TX, ORG, USER);
+    const body = await build([key('anthropic', 'healthy')], {
+      defaultModel: 'gpt-5.2',
+    }).service.forOrg(TX, ORG, USER);
 
     expect(body.default).toBe(ANTHROPIC[0]);
   });
@@ -183,10 +179,12 @@ describe('CatalogueService.forOrg', () => {
         limitedUntil: LATER.toISOString(),
       });
 
-      const platform = await build([], {
+      // No key: platform credits once stood in here; now nothing does.
+      const noKey = await build([], {
         linked: [{ limitedUntil: LATER, provider: 'anthropic' }],
       }).service.forOrg(TX, ORG, USER);
-      expect(platform.models[0]).toMatchObject({ alternativeMode: 'PLATFORM' });
+      expect(noKey.models[0]).toMatchObject({ available: true, credentialMode: 'BYOS' });
+      expect(noKey.models[0]).not.toHaveProperty('alternativeMode');
 
       const none = await build([], {
         linked: [{ limitedUntil: LATER, provider: 'openai' }],
@@ -202,8 +200,7 @@ describe('CatalogueService.forOrg', () => {
           linked: [{ provider: 'anthropic' }, { provider: 'openai' }],
           ...options,
         }).service.forOrg(TX, ORG, USER);
-        expect(body.models.map((m) => m.id)).toEqual(ANTHROPIC);
-        expect(body.models.every((m) => m.credentialMode === 'PLATFORM')).toBe(true);
+        expect(body).toEqual({ default: null, models: [] });
       }
     });
   });

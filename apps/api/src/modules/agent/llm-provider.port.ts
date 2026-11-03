@@ -20,7 +20,9 @@ export type { LlmProviderName };
  * `endpoint.headers`; `expiresAt` tells the executor when to ask for a fresh one.
  */
 export interface CredentialContext {
-  readonly mode: 'PLATFORM' | 'BYOK' | 'BYOS';
+  // Platform credits are retired: the organisation's key or a person's own subscription pays.
+  // `PLATFORM` survives only on the `credential_mode` enum, so runs paid with credits still read.
+  readonly mode: 'BYOK' | 'BYOS';
   readonly provider: LlmProviderName;
   readonly apiKey: string;
   /** BYOK only: named in the `credential` failure reason, never the key itself. */

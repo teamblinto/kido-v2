@@ -32,6 +32,7 @@ import { unsafe } from './support/csrf-client';
 import { type FakeDaytona, startFakeDaytona } from './support/fake-daytona';
 import { type FakeGit, fakeGit } from './support/fake-git';
 import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
+import { seedProviderKey } from './support/seed-provider-key';
 import { ScriptedProvider } from './support/scripted-provider';
 import {
   createTwoTenantWorld,
@@ -59,7 +60,6 @@ const FAKE = vi.hoisted(() => {
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   process.env.DAYTONA_API_URL = `http://127.0.0.1:${port}/api`;
   process.env.DAYTONA_API_KEY = 'dtn_fake_key';
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-files-write-e2e';
 
   return { port };
 });
@@ -207,6 +207,9 @@ describe('Saving a file, concurrently (e2e)', () => {
 
         transactions = app.get(TenantTransactionRunner);
         world = await createTwoTenantWorld(app);
+        // Run create resolves a credential: the organisation's own key (platform credits are
+        // retired), which only the scripted provider ever receives.
+        await seedProviderKey(app, world.alpha);
 
         const { orgId, projectId } = world.alpha;
         await transactions.runInTenantScope({ orgId, userId: null }, (tx) =>

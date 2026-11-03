@@ -183,11 +183,11 @@ describe('summarise', () => {
 
     const openai = new ScriptedProvider().script({ text: 's' });
     await summarise(
-      scope(openai, { credential: { apiKey: 'sk-test', mode: 'PLATFORM', provider: 'openai' } }),
+      scope(openai, { credential: { apiKey: 'sk-test', mode: 'BYOK', provider: 'openai' } }),
       rows,
       EMPTY,
     );
     expect(openai.calls[0]?.model).toBe('gpt-5-mini');
-    expect(openai.calls[0]?.credential.mode).toBe('PLATFORM');
+    expect(openai.calls[0]?.credential.mode).toBe('BYOK');
   });
 });

@@ -1,10 +1,8 @@
 import { Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import type { AgentRun, ProjectContext, RunMessage } from '@repo/db';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { FakeClock } from '../../common/clock/fake-clock';
-import type { Environment } from '../../config/environment';
 import { ScriptedProvider } from '../../../test/support/scripted-provider';
 import type { TenantContext } from '../../database/tenant-context';
 import { type CheckpointService, GitStepError } from '../checkpoints/checkpoint.service';
@@ -39,7 +37,6 @@ import type {
   ModelTurn,
 } from './llm-provider.port';
 import { FencedError, type RunFence, type RunStore } from './run-store';
-import { PlatformCredentials } from './platform-credentials';
 import { ProviderError } from './provider-error';
 import { SYSTEM_PROMPT } from './prompt';
 import type { EmittedEvent, ExecutionContext, RunSnapshot } from './run-executor.port';
@@ -201,9 +198,9 @@ class RecordingAssembler {
   }
 }
 
-function credentials(apiKey: string | undefined): PlatformCredentials {
-  const config = new ConfigService(apiKey === undefined ? {} : { ANTHROPIC_API_KEY: apiKey });
-  return new PlatformCredentials(config as unknown as ConfigService<Environment, true>);
+/** What a run resolves to when a test scripts nothing: the organisation's key, no last four. */
+function credentials(apiKey: string | undefined): CredentialContext | undefined {
+  return apiKey === undefined ? undefined : { apiKey, mode: 'BYOK', provider: 'anthropic' };
 }
 
 const BYOK: CredentialContext = {
@@ -218,7 +215,7 @@ const REJECTED_SENTENCE =
 
 /**
  * Answers `forModel` from a queue of resolutions (the last one repeats); with none queued, the
- * platform credential from `ANTHROPIC_API_KEY` as the real resolver would. Records every call.
+ * default key's `byok`, or `no-credential` without one. Records every call.
  */
 class FakeResolver {
   readonly calls: {
@@ -230,14 +227,13 @@ class FakeResolver {
   }[] = [];
   private readonly queue: Resolution[];
 
-  constructor(platform: PlatformCredentials, ...answers: Resolution[]) {
-    const credential = platform.context();
+  constructor(credential: CredentialContext | undefined, ...answers: Resolution[]) {
     this.queue =
       answers.length > 0
         ? answers
         : credential === undefined
           ? [{ kind: 'no-credential', provider: 'anthropic' }]
-          : [{ credential, kind: 'platform' }];
+          : [{ credential, keyId: 'key_default', kind: 'byok' }];
   }
 
   forModel(
@@ -461,7 +457,7 @@ describe('AgentExecutor', () => {
       expect(provider.calls[0]?.model).toBe('claude-test');
       expect(provider.calls[0]?.credential).toEqual({
         apiKey: KEY,
-        mode: 'PLATFORM',
+        mode: 'BYOK',
         provider: 'anthropic',
       });
       expect(provider.calls[0]?.request).toEqual({
@@ -503,7 +499,7 @@ describe('AgentExecutor', () => {
       expect(baselinesAtPrepare).toBe(1);
       expect(assembler.prepares).toHaveLength(1);
       expect(assembler.prepares[0]).toMatchObject({
-        credential: { apiKey: KEY, mode: 'PLATFORM', provider: 'anthropic' },
+        credential: { apiKey: KEY, mode: 'BYOK', provider: 'anthropic' },
         fence: { epoch: 1, orgId: 'org_1', runId: RUN },
         ref: { orgId: 'org_1', projectId: 'proj_1' },
         run: ctx.context.run,
@@ -1276,14 +1272,15 @@ describe('AgentExecutor', () => {
 
     it('fails a non-transient class at once', async () => {
       const { provider, subject } = executor();
-      provider.script({ fail: 'unauthorised' }, { text: 'never' });
+      // Not `unauthorised`: on a key that is the credential failure of 020 US3, tested below.
+      provider.script({ fail: 'rejected' }, { text: 'never' });
       const ctx = context(snapshot(PROMPT));
 
       const running = subject.execute(ctx.context);
       await vi.runAllTimersAsync();
       const outcome = await running;
 
-      expect(outcome).toEqual({ failureClass: 'executor', kind: 'failed', reason: 'unauthorised' });
+      expect(outcome).toEqual({ failureClass: 'executor', kind: 'failed', reason: 'rejected' });
       expect(provider.calls).toHaveLength(1);
     });
 
@@ -1722,26 +1719,18 @@ describe('AgentExecutor', () => {
       expect(ctx.kinds().slice(0, 2)).toEqual(['dispatch', 'dispatch']);
     });
 
-    it('stamps the row PLATFORM on a platform resolution', async () => {
-      const { modes, provider, subject } = executor();
-      provider.script({ text: 'done' });
-
-      await subject.execute(context(snapshot(PROMPT)).context);
-
-      expect(provider.calls[0]?.credential).toEqual({
-        apiKey: KEY,
-        mode: 'PLATFORM',
+    it('resolves again on a resumed attempt: a subscription linked between attempts runs BYOS', async () => {
+      const subscription: CredentialContext = {
+        accountLabel: 'ada@example.com',
+        apiKey: 'sub-token',
+        endpoint: { baseURL: 'https://sub.test/api', headers: {} },
+        mode: 'BYOS',
         provider: 'anthropic',
-      });
-      expect(modes.map((m) => m.mode)).toEqual(['PLATFORM']);
-    });
-
-    it('resolves again on a resumed attempt: a key removed between attempts runs PLATFORM', async () => {
-      const platform: CredentialContext = { apiKey: KEY, mode: 'PLATFORM', provider: 'anthropic' };
+      };
       const { modes, provider, subject } = executor({
         resolutions: [
           { credential: BYOK, keyId: 'key_1', kind: 'byok' },
-          { credential: platform, kind: 'platform' },
+          { credential: subscription, kind: 'byos' },
         ],
       });
       provider.script({ text: 'done' }, { text: 'done' });
@@ -1749,11 +1738,29 @@ describe('AgentExecutor', () => {
       await subject.execute(context(snapshot(PROMPT)).context);
       await subject.execute(context(snapshot(PROMPT, { epoch: 2, status: 'running' })).context);
 
-      expect(provider.calls.map((c) => c.credential.mode)).toEqual(['BYOK', 'PLATFORM']);
+      expect(provider.calls.map((c) => c.credential.mode)).toEqual(['BYOK', 'BYOS']);
       expect(modes.map((m) => [m.fence.epoch, m.mode])).toEqual([
         [1, 'BYOK'],
-        [2, 'PLATFORM'],
+        [2, 'BYOS'],
       ]);
+    });
+
+    it('a key removed between attempts fails the resumed attempt no-credential, without a call', async () => {
+      const { provider, subject } = executor({
+        resolutions: [
+          { credential: BYOK, keyId: 'key_1', kind: 'byok' },
+          { kind: 'no-credential', provider: 'anthropic' },
+        ],
+      });
+      provider.script({ text: 'done' });
+
+      await subject.execute(context(snapshot(PROMPT)).context);
+      const resumed = await subject.execute(
+        context(snapshot(PROMPT, { epoch: 2, status: 'running' })).context,
+      );
+
+      expect(resumed).toMatchObject({ kind: 'failed', reason: 'no-credential' });
+      expect(provider.calls).toHaveLength(1);
     });
 
     it('fails no-credential on an unknown model without touching the row', async () => {
@@ -2070,29 +2077,6 @@ describe('AgentExecutor', () => {
       });
       expect(provider.calls).toHaveLength(DEFAULT_AGENT_TIMINGS.providerAttempts);
       expect(rejected).toEqual([]);
-    });
-
-    it('PLATFORM 401 and 429 stay executor failures and never mark a key', async () => {
-      const unauthorised = executor();
-      unauthorised.provider.script({ fail: 'unauthorised' });
-      expect(await settle(unauthorised.subject.execute(context(snapshot(PROMPT)).context))).toEqual(
-        { failureClass: 'executor', kind: 'failed', reason: 'unauthorised' },
-      );
-
-      const limited = executor();
-      limited.provider.script(
-        { fail: 'rate-limited' },
-        { fail: 'rate-limited' },
-        { fail: 'rate-limited' },
-      );
-      expect(await settle(limited.subject.execute(context(snapshot(PROMPT)).context))).toEqual({
-        failureClass: 'executor',
-        kind: 'failed',
-        reason: 'rate-limited',
-      });
-
-      expect(unauthorised.rejected).toEqual([]);
-      expect(limited.rejected).toEqual([]);
     });
 
     it('a needs_reauth resolution fails as a credential failure before any provider call', async () => {

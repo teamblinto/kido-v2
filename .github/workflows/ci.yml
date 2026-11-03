@@ -438,9 +438,6 @@ jobs:
     # still not a statement.
     env:
       DATABASE_MIGRATION_URL: postgres://forge_migrator:forge_migrator@localhost:5432/forge
-      # compose.override.yaml requires ANTHROPIC_API_KEY (`:?`) so a local stack cannot start
-      # without one. Nothing here calls a model: this placeholder only satisfies interpolation.
-      ANTHROPIC_API_KEY: ci-compose-placeholder-not-a-key
 
     steps:
       - name: Check out repository

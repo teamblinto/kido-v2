@@ -81,7 +81,8 @@ export class AgentExecutor implements RunExecutor {
     // 014: readiness before the first tool call; `tenant.tx` is the scope `dispatch` opens.
     @Inject(SANDBOX_LIFECYCLE) private readonly lifecycle: SandboxLifecycle,
     @Inject(TenantContext) private readonly tenant: TenantContext,
-    // 020 R6: the credential per attempt — the org's key or the platform's — and the row stamp.
+    // 020 R6: the credential per attempt — the org's key or the starter's subscription — and the
+    // row stamp.
     @Inject(CredentialResolver) private readonly resolver: CredentialResolver,
     @Inject(RunStore) private readonly store: RunStore,
     // 020 R7: a provider 401 on the org's key marks it `needs_reauth` in the same dispatch.
@@ -157,11 +158,7 @@ export class AgentExecutor implements RunExecutor {
         provider: resolution.provider,
       });
     }
-    if (
-      resolution.kind !== 'byok' &&
-      resolution.kind !== 'platform' &&
-      resolution.kind !== 'byos'
-    ) {
+    if (resolution.kind !== 'byok' && resolution.kind !== 'byos') {
       return failed('no-credential');
     }
     const { credential } = resolution;

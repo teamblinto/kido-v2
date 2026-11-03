@@ -35,6 +35,7 @@ import { QueueRegistry } from '../src/modules/outbox/queue-registry';
 import { OrgService } from '../src/modules/tenancy/services/org.service';
 import { ProjectService } from '../src/modules/tenancy/services/project.service';
 import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
+import { seedProviderKey } from './support/seed-provider-key';
 
 vi.hoisted(() => {
   process.env.NODE_ENV = 'test';
@@ -42,8 +43,6 @@ vi.hoisted(() => {
   // No shipped worker, relay or reaper: the suite builds its own workers with short timings,
   // relays the one row by hand and drives the reaper by hand, so every kill lands where it says.
   process.env.RUN_PROFILES = 'api';
-  // 020: run create resolves a credential; a fake platform key the scripted executor never reads.
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-agent-run-fencing-e2e';
 });
 
 const postgres = inject('postgresReachable');
@@ -309,6 +308,9 @@ describe('Agent run fencing (e2e)', () => {
         .create(userId, { name: 'Fencing fixture', slug: `008f-${randomUUID().slice(0, 8)}` });
 
       orgId = org.id;
+      // Run create resolves a credential; the organisation's key, which the scripted executor
+      // never reads (platform credits are retired).
+      await seedProviderKey(app, { orgId, owner: { userId } });
 
       const [workspace] = await inTenant((tx) =>
         tx.select({ id: schema.workspaces.id }).from(schema.workspaces),

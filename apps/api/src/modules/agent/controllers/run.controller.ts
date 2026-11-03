@@ -102,7 +102,7 @@ export class RunController {
     @Param('runId') runId: string,
     @Body() body: RunInputDto,
   ): Promise<void> {
-    await this.runs.input(orgId, projectId, runId, caller.userId, body.message);
+    await this.runs.input(orgId, projectId, runId, caller.userId, body.message, body.model);
   }
 
   @Get()

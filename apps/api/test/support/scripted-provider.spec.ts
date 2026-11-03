@@ -3,7 +3,7 @@ import { ScriptedProvider } from './scripted-provider';
 
 const request = { system: 's', tools: [], messages: [] };
 const credential = {
-  mode: 'PLATFORM' as const,
+  mode: 'BYOK' as const,
   provider: 'anthropic' as const,
   apiKey: 'sk-ant-test',
 };

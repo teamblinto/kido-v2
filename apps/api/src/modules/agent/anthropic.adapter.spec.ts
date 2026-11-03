@@ -13,7 +13,7 @@ import { ProviderError, type ProviderFailureClass } from './provider-error';
 import { toInputSchema } from './tool-schema';
 
 const CREDENTIAL: CredentialContext = {
-  mode: 'PLATFORM',
+  mode: 'BYOK',
   provider: 'anthropic',
   apiKey: 'sk-ant-test-key-aaaaaaaa',
 };
@@ -491,7 +491,7 @@ describe('AnthropicProvider', () => {
       expect(headers['x-profile']).toBe('sub');
     });
 
-    it('a PLATFORM credential still travels in x-api-key only', async () => {
+    it('an organisation key still travels in x-api-key only', async () => {
       fake.script({ reply: { text: 'ok', usage: USAGE, stopReason: 'end_turn' } });
 
       await complete().turn;

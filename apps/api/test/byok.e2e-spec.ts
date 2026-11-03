@@ -42,8 +42,8 @@ import {
 
 /**
  * As `agent-core.e2e-spec.ts`: the environment is read when `AppModule` loads, so the fake
- * Daytona's address and the platform key (a fake `sk-ant-…` the scripted provider receives and
- * nothing ever sends) are set first. US2–US4 run real runs over the real queue.
+ * Daytona's address is set first. No process key: platform credits are retired, so the
+ * organisation's key is the only one a run here can use. US2–US4 run real runs over the real queue.
  */
 const FAKE = vi.hoisted(() => {
   process.env.NODE_ENV = 'test';
@@ -58,9 +58,8 @@ const FAKE = vi.hoisted(() => {
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   process.env.DAYTONA_API_URL = `http://127.0.0.1:${port}/api`;
   process.env.DAYTONA_API_KEY = 'dtn_fake_key';
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-byok-e2e';
 
-  return { key: process.env.ANTHROPIC_API_KEY, port };
+  return { port };
 });
 
 const postgres = inject('postgresReachable');
@@ -506,20 +505,37 @@ describe('BYOK (e2e)', () => {
         });
       });
 
-      it('with the key removed the next run is PLATFORM on the platform key', async () => {
+      it('with the key removed nothing pays: the next run is 409 subscription-not-connected and nothing is written', async () => {
         await unsafe(http(app).delete(`${keysOf(world.alpha.orgId)}/anthropic`), [
           admin.cookie,
         ]).expect(204);
-        provider.script({ text: 'done' });
+        const runsBefore = await transactions.runInTenantTransaction(world.alpha.orgId, (tx) =>
+          tx.$count(schema.agentRuns),
+        );
 
-        const created = await createRun({ prompt: 'hello again' });
-        const run = await waitFor(created.id, 'succeeded');
+        const refused = await unsafe(http(app).post(runsOf()), [world.alpha.owner.cookie])
+          .send({ prompt: 'hello again' })
+          .expect(409);
+        bodies.push(refused.body);
 
-        expect(run.credentialMode).toBe('PLATFORM');
-        expect(provider.calls.at(-1)!.credential).toEqual({
-          apiKey: FAKE.key,
-          mode: 'PLATFORM',
+        expect(refused.body).toMatchObject({
+          model: 'claude-sonnet-5',
           provider: 'anthropic',
+          type: `${PROBLEM}subscription-not-connected`,
+        });
+        expect(
+          await transactions.runInTenantTransaction(world.alpha.orgId, (tx) =>
+            tx.$count(schema.agentRuns),
+          ),
+        ).toBe(runsBefore);
+
+        const listed = await http(app)
+          .get(`/api/v1/orgs/${world.alpha.orgId}/models`)
+          .set('Cookie', member.cookie)
+          .expect(200);
+        expect(modelCatalogueResponseSchema.parse(listed.body)).toEqual({
+          default: null,
+          models: [],
         });
       });
 
@@ -552,7 +568,7 @@ describe('BYOK (e2e)', () => {
         });
       });
 
-      it('a run on gpt-5.2 with no OpenAI key is 422', async () => {
+      it('a run on gpt-5.2 with no OpenAI key is 409 subscription-not-connected; an unknown model stays 422', async () => {
         const listed = await http(app)
           .get(`/api/v1/orgs/${world.beta.orgId}/models`)
           .set('Cookie', world.beta.owner.cookie)
@@ -563,9 +579,18 @@ describe('BYOK (e2e)', () => {
 
         const refused = await unsafe(http(app).post(runsOf(world.beta)), [world.beta.owner.cookie])
           .send({ model: 'gpt-5.2', prompt: 'hello' })
-          .expect(422);
+          .expect(409);
         bodies.push(refused.body);
-        expect(refused.body).toMatchObject({ type: `${PROBLEM}validation-failed` });
+        expect(refused.body).toMatchObject({
+          provider: 'openai',
+          type: `${PROBLEM}subscription-not-connected`,
+        });
+
+        const unknown = await unsafe(http(app).post(runsOf(world.beta)), [world.beta.owner.cookie])
+          .send({ model: 'claude-2', prompt: 'hello' })
+          .expect(422);
+        bodies.push(unknown.body);
+        expect(unknown.body).toMatchObject({ type: `${PROBLEM}validation-failed` });
       });
     });
 

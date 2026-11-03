@@ -39,6 +39,7 @@ import { QueueRegistry } from '../src/modules/outbox/queue-registry';
 import { ProjectService } from '../src/modules/tenancy/services/project.service';
 import { unsafe } from './support/csrf-client';
 import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
+import { seedProviderKey } from './support/seed-provider-key';
 import { collect, type Frame, openStream, type OpenStream } from './support/sse';
 import {
   createTwoTenantWorld,
@@ -57,8 +58,6 @@ vi.hoisted(() => {
   process.env.ARGON2_PARALLELISM = '1';
   process.env.ARGON2_TIME_COST = '1';
   process.env.THROTTLE_LIMIT = '100000';
-  // 020: run create resolves a credential; a fake platform key the scripted executor never reads.
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-run-stream-e2e';
 });
 
 const postgres = inject('postgresReachable');
@@ -193,6 +192,9 @@ describe('Run event stream (e2e)', () => {
       portB = portOf(appB);
       stream = appA.get<Redis>(STREAM_REDIS);
       world = await createTwoTenantWorld(appA);
+      // Run create resolves a credential: the organisation's own key (platform credits are
+      // retired), which the scripted executor never reads.
+      await seedProviderKey(appA, world.alpha);
     }, LOCKED_BOOT_TIMEOUT_MS);
 
     /**

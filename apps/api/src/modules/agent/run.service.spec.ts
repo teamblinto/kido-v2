@@ -69,6 +69,7 @@ describe('RunService', () => {
   let store: Record<
     | 'allocateSeq'
     | 'appendEvents'
+    | 'holder'
     | 'insertMessage'
     | 'insertRun'
     | 'line'
@@ -76,6 +77,7 @@ describe('RunService', () => {
     | 'readEvents'
     | 'readRun'
     | 'requestCancel'
+    | 'setModel'
     | 'transition'
     | 'waitingRun',
     ReturnType<typeof vi.fn>
@@ -97,6 +99,7 @@ describe('RunService', () => {
     store = {
       allocateSeq: vi.fn(() => Promise.resolve(1)),
       appendEvents: vi.fn(() => Promise.resolve()),
+      holder: vi.fn(() => Promise.resolve(undefined)),
       insertMessage: vi.fn(() => Promise.resolve({ id: 'm1' })),
       insertRun: vi.fn(() => Promise.resolve(row())),
       listRuns: vi.fn(() =>
@@ -122,6 +125,7 @@ describe('RunService', () => {
       ),
       readRun: vi.fn(() => Promise.resolve(row({ nextSeq: 5 }))),
       requestCancel: vi.fn(() => Promise.resolve({ first: true, status: 'running' })),
+      setModel: vi.fn(() => Promise.resolve()),
       transition: vi.fn(() => Promise.resolve()),
       line: vi.fn(() => Promise.resolve([])),
       waitingRun: vi.fn(() => Promise.resolve(undefined)),
@@ -134,7 +138,7 @@ describe('RunService', () => {
     publisher = { sync: vi.fn(() => Promise.resolve(1)) };
     resolver = {
       forModel: vi.fn(() => Promise.reject(new Error('the plaintext must not be opened here'))),
-      kindOnly: vi.fn((): Promise<ResolutionKind> => Promise.resolve({ kind: 'platform' })),
+      kindOnly: vi.fn((): Promise<ResolutionKind> => Promise.resolve({ kind: 'byok' })),
     };
     afterCommit = [];
     registry = new RunExecutorRegistry();
@@ -164,6 +168,7 @@ describe('RunService', () => {
 
       expect(projects.read).toHaveBeenCalledWith(ORG, PROJECT);
       expect(store.insertRun).toHaveBeenCalledWith(tx, {
+        credentialMode: 'BYOK',
         model: 'claude-sonnet-5',
         orgId: ORG,
         projectId: PROJECT,
@@ -243,6 +248,7 @@ describe('RunService', () => {
       await service.create(ORG, PROJECT, USER, 'build me a todo app', 'claude-haiku-4-5');
 
       expect(store.insertRun).toHaveBeenCalledWith(tx, {
+        credentialMode: 'BYOK',
         model: 'claude-haiku-4-5',
         orgId: ORG,
         projectId: PROJECT,
@@ -261,11 +267,23 @@ describe('RunService', () => {
       await service.create(ORG, PROJECT, USER, 'build me a todo app');
 
       expect(store.insertRun).toHaveBeenCalledWith(tx, {
+        credentialMode: 'BYOK',
         model: 'claude-sonnet-5',
         orgId: ORG,
         projectId: PROJECT,
         userId: USER,
       });
+    });
+
+    it('stamps BYOS when the starter’s own subscription pays (never the retired PLATFORM)', async () => {
+      resolver.kindOnly.mockResolvedValueOnce({ kind: 'byos' });
+
+      await service.create(ORG, PROJECT, USER, 'build me a todo app');
+
+      expect(store.insertRun).toHaveBeenCalledWith(
+        tx,
+        expect.objectContaining({ credentialMode: 'BYOS' }),
+      );
     });
 
     it('refuses an unlisted model before writing', async () => {
@@ -281,15 +299,20 @@ describe('RunService', () => {
       expect(outbox.append).not.toHaveBeenCalled();
     });
 
-    /** 020 contracts § 3: the organisation holds no key for the model's provider. */
-    it('refuses a model the organisation has no credential for as validation-failed', async () => {
-      resolver.kindOnly.mockResolvedValueOnce({ kind: 'no-credential', provider: 'openai' });
+    /** No key and no subscription: platform credits are retired, so nothing pays for the run. */
+    it('refuses a run nothing can pay for as subscription-not-connected, before any write', async () => {
+      resolver.kindOnly.mockResolvedValueOnce({ kind: 'no-credential', provider: 'anthropic' });
 
       await expect(
-        service.create(ORG, PROJECT, USER, 'build me a todo app', 'gpt-5.2'),
-      ).rejects.toMatchObject({ extensions: { model: 'gpt-5.2' }, type: 'validation-failed' });
+        service.create(ORG, PROJECT, USER, 'build me a todo app', 'claude-sonnet-5'),
+      ).rejects.toMatchObject({
+        extensions: { model: 'claude-sonnet-5', provider: 'anthropic' },
+        type: 'subscription-not-connected',
+      });
 
+      expect(projects.read).not.toHaveBeenCalled();
       expect(store.insertRun).not.toHaveBeenCalled();
+      expect(outbox.append).not.toHaveBeenCalled();
     });
 
     it('refuses a needs_reauth key as conflict naming the provider and the last four, before any write', async () => {
@@ -372,6 +395,7 @@ describe('RunService', () => {
       });
       expect(store.insertRun).toHaveBeenCalledWith(tx, {
         credentialChoice: 'organisation',
+        credentialMode: 'BYOK',
         model: 'claude-sonnet-5',
         orgId: ORG,
         projectId: PROJECT,
@@ -386,6 +410,85 @@ describe('RunService', () => {
 
       expect(resolver.forModel).not.toHaveBeenCalled();
       expect(store.insertRun).toHaveBeenCalledTimes(1);
+    });
+
+    /** The holder waits on a person; queued behind it, a new run would wait forever. */
+    describe('while the project’s run waits for input', () => {
+      beforeEach(() => {
+        store.holder.mockResolvedValue(
+          row({ startedAt: new Date(START), status: 'awaiting_input' }),
+        );
+        // The row as the transaction sees it: waiting until the answer's transition re-queues it.
+        store.readRun.mockImplementation(() =>
+          Promise.resolve(
+            row({
+              startedAt: new Date(START),
+              status: store.transition.mock.calls.length > 0 ? 'queued' : 'awaiting_input',
+            }),
+          ),
+        );
+      });
+
+      it('answers that run with the prompt and returns it, inserting no new run', async () => {
+        const response = await service.create(ORG, PROJECT, USER, 'and make it blue');
+
+        expect(store.holder).toHaveBeenCalledWith(tx, ORG, PROJECT);
+        expect(store.insertRun).not.toHaveBeenCalled();
+        expect(store.insertMessage).toHaveBeenCalledWith(tx, {
+          content: 'and make it blue',
+          orgId: ORG,
+          role: 'user',
+          runId: RUN,
+        });
+        expect(store.transition).toHaveBeenCalledWith(tx, {
+          from: 'awaiting_input',
+          orgId: ORG,
+          runId: RUN,
+          to: 'queued',
+        });
+        expect(outbox.append).toHaveBeenCalledTimes(1);
+        expect(response).toMatchObject({ id: RUN, status: 'queued' });
+      });
+
+      it('applies the follow-up’s model to the answered run', async () => {
+        await service.create(ORG, PROJECT, USER, 'and make it blue', 'claude-opus-5');
+
+        expect(resolver.kindOnly).toHaveBeenCalledWith(tx, ORG, USER, 'claude-opus-5', {});
+        expect(store.setModel).toHaveBeenCalledWith(
+          tx,
+          { orgId: ORG, runId: RUN },
+          'claude-opus-5',
+        );
+        expect(store.insertRun).not.toHaveBeenCalled();
+      });
+    });
+
+    it('queues behind a holder that is not waiting on a person', async () => {
+      store.holder.mockResolvedValueOnce(row({ startedAt: new Date(START), status: 'running' }));
+
+      await service.create(ORG, PROJECT, USER, 'build me a todo app');
+
+      expect(store.insertRun).toHaveBeenCalledTimes(1);
+      expect(store.transition).not.toHaveBeenCalled();
+    });
+
+    /** 041: the CLI picks its own default; AGENT_DEFAULT_MODEL is a catalogue id it may not serve. */
+    it('records the provider, not AGENT_DEFAULT_MODEL, for a subscription run with no model', async () => {
+      const admitSubscription = vi.fn(() => Promise.resolve());
+      registry.register({ admitSubscription, execute: vi.fn(), release: vi.fn() });
+
+      await service.create(ORG, PROJECT, USER, 'build me a todo app', undefined, undefined, {
+        provider: 'claude',
+      });
+
+      expect(resolver.kindOnly).not.toHaveBeenCalled();
+      expect(store.insertRun).toHaveBeenCalledWith(tx, {
+        credentialMode: 'BYOS',
+        model: 'claude',
+        orgId: ORG,
+        projectId: PROJECT,
+        userId: USER,
+      });
     });
   });
 
@@ -657,6 +760,60 @@ describe('RunService', () => {
       await expect(service.input(ORG, PROJECT, RUN, USER, 'go on')).rejects.toThrow(NotFoundError);
     });
 
+    describe('with a model', () => {
+      beforeEach(() => {
+        store.readRun.mockResolvedValue(row({ status: 'awaiting_input' }));
+      });
+
+      it('switches the run to a model the catalogue pays for, from this answer on', async () => {
+        await service.input(ORG, PROJECT, RUN, USER, 'go on', 'claude-opus-5');
+
+        expect(resolver.kindOnly).toHaveBeenCalledWith(tx, ORG, USER, 'claude-opus-5', {});
+        expect(store.setModel).toHaveBeenCalledWith(
+          tx,
+          { orgId: ORG, runId: RUN },
+          'claude-opus-5',
+        );
+        expect(store.setModel.mock.invocationCallOrder[0]).toBeLessThan(
+          store.transition.mock.invocationCallOrder[0]!,
+        );
+        expect(audit.record).toHaveBeenCalledWith(tx, {
+          action: 'agent-run.input',
+          actorId: USER,
+          metadata: { messageId: 'm1', model: 'claude-opus-5', projectId: PROJECT },
+          orgId: ORG,
+          target: RUN,
+        });
+      });
+
+      it.each<ResolutionKind>([
+        { kind: 'unknown-model' },
+        { kind: 'no-credential', provider: 'openai' },
+      ])('refuses a model outside the catalogue as 422, writing nothing ($kind)', async (kind) => {
+        resolver.kindOnly.mockResolvedValueOnce(kind);
+
+        await expect(
+          service.input(ORG, PROJECT, RUN, USER, 'go on', 'gpt-5.2'),
+        ).rejects.toMatchObject({ extensions: { model: 'gpt-5.2' }, type: 'validation-failed' });
+        expect(store.setModel).not.toHaveBeenCalled();
+        expect(store.insertMessage).not.toHaveBeenCalled();
+        expect(store.transition).not.toHaveBeenCalled();
+      });
+
+      it('resolves as the starter would, honouring their credential choice', async () => {
+        const OTHER = 'c1000000-0000-4000-8000-000000000009';
+        store.readRun.mockResolvedValue(
+          row({ credentialChoice: 'organisation', status: 'awaiting_input' }),
+        );
+
+        await service.input(ORG, PROJECT, RUN, OTHER, 'go on', 'claude-opus-5');
+
+        expect(resolver.kindOnly).toHaveBeenCalledWith(tx, ORG, USER, 'claude-opus-5', {
+          credential: 'organisation',
+        });
+      });
+    });
+
     /** Spec 041: the answer runs on the starter's own subscription, so only the starter may give it. */
     describe('on a run on the starter’s own subscription', () => {
       const OTHER = 'c1000000-0000-4000-8000-000000000009';
@@ -702,6 +859,25 @@ describe('RunService', () => {
           ForbiddenError,
         );
         expect(store.insertMessage).not.toHaveBeenCalled();
+        expect(store.transition).not.toHaveBeenCalled();
+      });
+
+      it('switches to any plain CLI model id or alias, with no catalogue lookup', async () => {
+        store.readRun.mockResolvedValue(row({ model: 'claude', status: 'awaiting_input' }));
+
+        await local(true).input(ORG, PROJECT, RUN, USER, 'go on', 'opus');
+
+        expect(resolver.kindOnly).not.toHaveBeenCalled();
+        expect(store.setModel).toHaveBeenCalledWith(tx, { orgId: ORG, runId: RUN }, 'opus');
+      });
+
+      it('refuses a model that is no plain CLI token as 422, writing nothing', async () => {
+        store.readRun.mockResolvedValue(row({ status: 'awaiting_input' }));
+
+        await expect(
+          local(true).input(ORG, PROJECT, RUN, USER, 'go on', '--dangerously-skip-permissions'),
+        ).rejects.toMatchObject({ type: 'validation-failed' });
+        expect(store.setModel).not.toHaveBeenCalled();
         expect(store.transition).not.toHaveBeenCalled();
       });
 

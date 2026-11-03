@@ -47,7 +47,7 @@ import { AgentRunConsumer } from '../src/modules/agent/agent-run.consumer';
 import { CredentialResolver } from '../src/modules/agent/byok/credential-resolver';
 import { ProviderKeyService } from '../src/modules/agent/byok/provider-key.service';
 import type { LlmProvider } from '../src/modules/agent/llm-provider.port';
-import { PlatformCredentials } from '../src/modules/agent/platform-credentials';
+import { ProviderKeyRepository } from '../src/modules/agent/byok/provider-key.repository';
 import {
   ProviderError,
   type ProviderFailureClass,
@@ -73,6 +73,7 @@ import { unsafe } from './support/csrf-client';
 import { type FakeDaytona, startFakeDaytona } from './support/fake-daytona';
 import { fakeGit } from './support/fake-git';
 import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
+import { SEEDED_ANTHROPIC_KEY, seedProviderKey } from './support/seed-provider-key';
 import { ScriptedProvider } from './support/scripted-provider';
 import {
   createTwoTenantWorld,
@@ -84,9 +85,10 @@ import {
 
 /**
  * Before any import: `ConfigModule.forRoot` reads the environment when `AppModule` is loaded, so
- * the fake Daytona's address and the platform credential must be known first. Set explicitly
- * rather than defaulted, because `apps/api/.env` may name a real Daytona and this suite must never
- * reach it; the key is a fake `sk-ant-…` the scripted provider receives and nothing ever sends.
+ * the fake Daytona's address must be known first. Set explicitly rather than defaulted, because
+ * `apps/api/.env` may name a real Daytona and this suite must never reach it. The model key is
+ * each organisation's own, seeded below: a fake `sk-ant-…` the scripted provider receives and
+ * nothing ever sends.
  */
 const FAKE = vi.hoisted(() => {
   process.env.NODE_ENV = 'test';
@@ -101,9 +103,8 @@ const FAKE = vi.hoisted(() => {
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   process.env.DAYTONA_API_URL = `http://127.0.0.1:${port}/api`;
   process.env.DAYTONA_API_KEY = 'dtn_fake_key';
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-agent-core-e2e';
 
-  return { key: process.env.ANTHROPIC_API_KEY, port };
+  return { port };
 });
 
 const postgres = inject('postgresReachable');
@@ -128,10 +129,13 @@ const TIMINGS: AgentTimings = {
   reaperMs: 60_000,
   staleAfterMs: 60_000,
 };
-/** Research R3's classes an adapter can throw; `no-credential` is the executor's own and has its own case. */
+/**
+ * Research R3's classes an adapter can throw; `no-credential` is the executor's own and has its own
+ * case. Not `unauthorised` or `rate-limited`: every run is now on the organisation's key or a
+ * subscription, where those two are credential failures (`byok.e2e-spec.ts`, `byos.e2e-spec.ts`);
+ * only the retired platform key made them executor ones.
+ */
 const PROVIDER_CLASSES: readonly ProviderFailureClass[] = [
-  'unauthorised',
-  'rate-limited',
   'overloaded',
   'unavailable',
   'timeout',
@@ -431,6 +435,9 @@ describe('Agent core (e2e)', () => {
         runStore = app.get(RunStore);
         registry = app.get(QueueRegistry);
         world = await createTwoTenantWorld(app);
+        // Platform credits are retired: each organisation runs on its own key.
+        await seedProviderKey(app, world.alpha);
+        await seedProviderKey(app, world.beta);
 
         // Project A has the fake's sandbox; project B (beta's) has none.
         const { orgId, projectId } = world.alpha;
@@ -799,14 +806,14 @@ describe('Agent core (e2e)', () => {
         );
 
         it(
-          'fails with no-credential before any provider call when the key is unset',
+          'fails with no-credential before any provider call when the key is gone',
           async () => {
             const before = provider.calls.length;
 
             // 020 T025: create itself refuses a model with no credential, so the key goes missing
             // once the run is accepted — the relay hands it to the worker a tick later.
             const created = await createRun({ prompt: 'No key' });
-            vi.spyOn(app.get(PlatformCredentials), 'context').mockReturnValue(undefined);
+            vi.spyOn(app.get(ProviderKeyRepository), 'byProvider').mockResolvedValue(undefined);
             const run = await waitFor(created.id, 'failed');
 
             expect(run.failureClass).toBe('executor');
@@ -863,7 +870,7 @@ describe('Agent core (e2e)', () => {
 
             expect(provider.clients - clients).toBe(2);
             expect(calls).toHaveLength(2);
-            for (const call of calls) expect(call.credential.apiKey).toBe(FAKE.key);
+            for (const call of calls) expect(call.credential.apiKey).toBe(SEEDED_ANTHROPIC_KEY);
 
             const everyEvent = await transactions.runInTenantTransaction(world.alpha.orgId, (tx) =>
               tx.select({ data: schema.runEvents.data }).from(schema.runEvents),
@@ -873,14 +880,14 @@ describe('Agent core (e2e)', () => {
               (tx) => tx.select({ content: schema.runMessages.content }).from(schema.runMessages),
             );
 
-            expect(JSON.stringify(everyEvent)).not.toContain(FAKE.key);
+            expect(JSON.stringify(everyEvent)).not.toContain(SEEDED_ANTHROPIC_KEY);
             expect(everyMessage.map((message) => message.content).join('\n')).not.toContain(
-              FAKE.key,
+              SEEDED_ANTHROPIC_KEY,
             );
             expect(fake.requests.length).toBeGreaterThan(0);
-            expect(JSON.stringify(fake.requests)).not.toContain(FAKE.key);
+            expect(JSON.stringify(fake.requests)).not.toContain(SEEDED_ANTHROPIC_KEY);
             expect(captured.length).toBeGreaterThan(0);
-            expect(captured).not.toContain(FAKE.key);
+            expect(captured).not.toContain(SEEDED_ANTHROPIC_KEY);
           },
           RUN_TIMEOUT_MS + 5_000,
         );
@@ -914,9 +921,9 @@ describe('Agent core (e2e)', () => {
       });
 
       /**
-       * US6 (quickstart row 9); per organisation since 020 (research R8): with no provider key the
-       * catalogue is the platform provider's models as `PLATFORM`, the same for every
-       * organisation. `model` on create is validated.
+       * US6 (quickstart row 9); per organisation since 020 (research R8): with the same provider's
+       * key each organisation sees that provider's models as `BYOK` — platform credits, the old
+       * keyless answer, are retired. `model` on create is validated.
        */
       describe('the model choice', () => {
         const models = (orgId: string) => `/api/v1/orgs/${orgId}/models`;
@@ -925,7 +932,7 @@ describe('Agent core (e2e)', () => {
           return app.get(ConfigService).get<string>('AGENT_DEFAULT_MODEL')!;
         }
 
-        it('reports the platform catalogue to two organisations with the default first-class', async () => {
+        it('reports each organisation the models its own key pays for, with the default first-class', async () => {
           const [alpha, beta] = await Promise.all(
             [world.alpha, world.beta].map(async (tenant) =>
               modelCatalogueResponseSchema.parse(
@@ -945,7 +952,7 @@ describe('Agent core (e2e)', () => {
             MODEL_CATALOGUE.filter((model) => model.provider === 'anthropic').map((model) => ({
               ...model,
               available: true,
-              credentialMode: 'PLATFORM',
+              credentialMode: 'BYOK',
             })),
           );
           expect(alpha!.models.map((model) => model.id)).toContain(alpha!.default);

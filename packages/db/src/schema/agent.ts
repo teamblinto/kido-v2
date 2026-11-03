@@ -51,7 +51,12 @@ export const runFailureClass = pgEnum('run_failure_class', [
 
 export const runMessageRole = pgEnum('run_message_role', ['user', 'assistant', 'tool']);
 
-/** Only `PLATFORM` is written until BYOK/BYOS arrive (ADR 027); the enum is the whole vocabulary. */
+/**
+ * What paid for a run. `PLATFORM` (platform credits) is retired and never written; it stays in the
+ * enum, and as `agent_runs`' column default, so runs paid with credits still read — dropping an
+ * enum value or changing the default would be a migration for no reader. Run create stamps
+ * `BYOK` or `BYOS` explicitly.
+ */
 export const credentialMode = pgEnum('credential_mode', ['PLATFORM', 'BYOK', 'BYOS']);
 
 /** Spec 021 (research R7): one entry per turn whose context step was skipped, and why. */
