@@ -5,6 +5,11 @@ packages:
 allowBuilds:
   '@scarf/scarf': false
   esbuild: true
+  # dockerode -> docker-modem -> ssh2: optional native crypto accelerators; ssh2 falls back to pure JS.
+  # protobufjs postinstall only checks its version.
+  cpu-features: false
+  protobufjs: false
+  ssh2: false
   # bullmq -> msgpackr's optional native accelerator. Its postinstall only probes for a prebuilt
   # binary (shipped as platform optionalDependencies) and would fall back to node-gyp; msgpackr
   # is pure JS without it, and a job payload is a few hundred bytes, so nothing is gained.
@@ -38,6 +43,7 @@ catalog:
   '@testing-library/react': 16.3.2
   '@testing-library/user-event': 14.6.4
   '@types/compression': 1.8.1
+  '@types/dockerode': 4.0.1
   '@types/cookie-parser': 1.4.10
   '@types/node': 26.2.0
   '@types/pg': 8.21.0
@@ -57,6 +63,7 @@ catalog:
   compression: 1.8.1
   cookie-parser: 1.4.7
   dependency-cruiser: 18.2.0
+  dockerode: 5.0.1
   drizzle-kit: 0.31.10
   drizzle-orm: 0.45.2
   eslint: 10.8.1
