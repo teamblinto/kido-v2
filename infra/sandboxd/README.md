@@ -243,16 +243,17 @@ take a lock, and the workflow's `concurrency` also serialises them. Each deploy 
 (its release directory is new) and, when its image changed, sandboxd, which drops live previews.
 
 `kido.env` holds `COMPOSE_FILE`, `APP_HOST=kido.blinto.co`,
-`HOOKS_HOST=hooks.preview.kido.blinto.co` (it must differ from `APP_HOST`; under the preview
-wildcard it needs no DNS record of its own, and Caddy's exact site wins over the wildcard one),
+`HOOKS_HOST=hooks.kido.blinto.co` (it must differ from `APP_HOST`, and it must not sit under
+`PREVIEW_DOMAIN`: Caddy would put it under the wildcard's on-demand TLS policy, whose `ask` only
+approves preview labels, so it would never get a certificate),
 `PREVIEW_DOMAIN=preview.kido.blinto.co`, `AGENT_HOME_CLAUDE_VERSION` and the secrets above, made
 as in the overlay section above plus `BROKER_SHARED_SECRET=$(openssl rand -hex 32)`.
 
 DNS: `kido.blinto.co` is Cloudflare-proxied (Caddy gets its certificate from Let's Encrypt over
 HTTP-01 through the proxy, so Cloudflare must pass `/.well-known/acme-challenge/` on port 80 to
-the origin). `*.preview.kido.blinto.co` must be a DNS-only (grey cloud) `A` record to the VPS:
-Cloudflare's universal certificate does not cover a second-level wildcard, and Caddy issues
-preview certificates on demand.
+the origin). `*.preview.kido.blinto.co` and `hooks.kido.blinto.co` must be DNS-only (grey cloud)
+`A` records to the VPS: Cloudflare's universal certificate covers `*.blinto.co` only, not these
+deeper names, and Caddy issues their certificates itself (previews on demand).
 
 Operator commands (as root on the VPS):
 
