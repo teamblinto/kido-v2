@@ -26,6 +26,8 @@ export interface Config {
   apiHost: string;
   egressAgentDefault: string[];
   storageQuota: boolean;
+  /** Real deployment: firewall cannot be disabled and the API host is mandatory. */
+  real: boolean;
 }
 
 const list = (v: string | undefined, dflt: string[] = []): string[] =>
@@ -80,6 +82,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
       );
     }
   }
+  const real = env.SANDBOXD_REAL === '1';
+  if (real && env.SANDBOXD_FIREWALL === 'off') {
+    throw new Error('SANDBOXD_FIREWALL=off is refused when SANDBOXD_REAL=1');
+  }
+  if (real && !env.SANDBOXD_API_HOST) throw new Error('SANDBOXD_API_HOST is required when SANDBOXD_REAL=1');
   const listen = hostPort(env.SANDBOXD_LISTEN ?? '127.0.0.1:3986');
   const previewListen = hostPort(env.SANDBOXD_PREVIEW_LISTEN ?? '127.0.0.1:3987');
   return {
@@ -105,5 +112,6 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
       'statsig.anthropic.com',
     ]),
     storageQuota: env.SANDBOXD_STORAGE_QUOTA === '1',
+    real,
   };
 }

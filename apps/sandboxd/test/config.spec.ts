@@ -33,6 +33,14 @@ describe('loadConfig', () => {
         .previewPublicUrl,
     ).toBe('https://pv.example.com');
   });
+  it('SANDBOXD_REAL refuses firewall=off and requires the API host', () => {
+    const env = { SANDBOXD_API_KEY: 'k', SANDBOXD_DATA_DIR: dir(), SANDBOXD_REAL: '1' };
+    expect(() => loadConfig({ ...env, SANDBOXD_API_HOST: 'a.test', SANDBOXD_FIREWALL: 'off' })).toThrow(
+      /FIREWALL/,
+    );
+    expect(() => loadConfig(env)).toThrow(/SANDBOXD_API_HOST/);
+    expect(loadConfig({ ...env, SANDBOXD_API_HOST: 'a.test' }).real).toBe(true);
+  });
   it('applies defaults and generates the preview secret once', () => {
     const d = dir();
     const env = { SANDBOXD_API_KEY: 'k', SANDBOXD_DATA_DIR: d };

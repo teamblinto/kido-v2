@@ -202,8 +202,7 @@ export function createPreviewServer(d: Deps): Server {
           up.setTimeout(0);
           let msg = `${req.method} ${req.url} HTTP/1.1\r\n`;
           for (const [k, v] of Object.entries(upstreamHeaders(req, t))) {
-            for (const x of [v ?? []].flat())
-              msg += `${k}: ${x}\r\n`;
+            for (const x of [v ?? []].flat()) msg += `${k}: ${x}\r\n`;
           }
           up.write(`${msg}\r\n`);
           if (head.length) up.write(head);
