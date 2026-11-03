@@ -39,7 +39,37 @@ describe('loadConfig', () => {
       loadConfig({ ...env, SANDBOXD_API_HOST: 'a.test', SANDBOXD_FIREWALL: 'off' }),
     ).toThrow(/FIREWALL/);
     expect(() => loadConfig(env)).toThrow(/SANDBOXD_API_HOST/);
-    expect(loadConfig({ ...env, SANDBOXD_API_HOST: 'a.test' }).real).toBe(true);
+    expect(loadConfig({ ...env, SANDBOXD_API_HOST: 'a.test' }).apiHost).toBe('a.test');
+  });
+  it('numbers: positive integers, ports 1-65535', () => {
+    const env = { SANDBOXD_API_KEY: 'k', SANDBOXD_DATA_DIR: dir() };
+    for (const bad of ['0', '-1', '1.5', 'abc', '', ' '])
+      for (const k of ['SANDBOXD_MAX_RUNNING', 'SANDBOXD_MIN_MEM_AVAILABLE_MB'])
+        expect(() => loadConfig({ ...env, [k]: bad })).toThrow(new RegExp(k));
+    expect(
+      loadConfig({ ...env, SANDBOXD_MAX_RUNNING: '2', SANDBOXD_MIN_MEM_AVAILABLE_MB: '64' }),
+    ).toMatchObject({ maxRunning: 2, minMemAvailableBytes: 64 * 1024 * 1024 });
+    for (const k of ['SANDBOXD_LISTEN', 'SANDBOXD_PREVIEW_LISTEN', 'SANDBOXD_EGRESS_LISTEN'])
+      for (const bad of ['h:0', 'h:65536', 'h:-1', 'h:1.5', 'h:', ':80', 'h'])
+        expect(() => loadConfig({ ...env, [k]: bad })).toThrow(/host:port/);
+    expect(loadConfig({ ...env, SANDBOXD_LISTEN: '10.0.0.1:65535' }).listen).toEqual({
+      host: '10.0.0.1',
+      port: 65535,
+    });
+  });
+  it('SANDBOXD_DNS refuses private and non-public resolvers', () => {
+    const env = { SANDBOXD_API_KEY: 'k', SANDBOXD_DATA_DIR: dir() };
+    for (const bad of [
+      '10.0.0.2',
+      '192.168.1.1',
+      '127.0.0.53',
+      '172.17.0.1',
+      '169.254.169.254',
+      '100.64.0.1',
+      '0.0.0.0',
+      '1.1.1.1,10.0.0.2',
+    ])
+      expect(() => loadConfig({ ...env, SANDBOXD_DNS: bad })).toThrow(/SANDBOXD_DNS/);
   });
   it('SANDBOXD_DNS: IPv4 literals only, default 1.1.1.1 and 9.9.9.9', () => {
     const env = { SANDBOXD_API_KEY: 'k', SANDBOXD_DATA_DIR: dir() };

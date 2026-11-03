@@ -3,6 +3,8 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { isIP } from 'node:net';
 import { join } from 'node:path';
 
+import { isPrivateAddress } from './egress.ts';
+
 export interface HostPort {
   host: string;
   port: number;
@@ -31,8 +33,6 @@ export interface Config {
   storageQuota: boolean;
   /** IPv4 resolvers gVisor sandboxes use (classes.ts resolv.conf, firewall.sh accepts them). */
   dns: string[];
-  /** Real deployment: firewall cannot be disabled and the API host is mandatory. */
-  real: boolean;
 }
 
 const list = (v: string | undefined, dflt: string[] = []): string[] =>
@@ -43,19 +43,37 @@ const list = (v: string | undefined, dflt: string[] = []): string[] =>
         .map((s) => s.trim())
         .filter(Boolean);
 
-/** Validated: the values go into a resolv.conf and into iptables rules. */
+/**
+ * Validated: the values go into a resolv.conf and into iptables rules. Public resolvers only:
+ * firewall.sh's private-range denies come after its DNS accepts, so a private resolver here would
+ * open a hole into that range (and dropping it silently would leave sandboxes without DNS).
+ */
 function dnsList(v: string | undefined): string[] {
   const l = list(v, ['1.1.1.1', '9.9.9.9']);
-  if (l.length === 0 || !l.every((a) => isIP(a) === 4)) {
-    throw new Error(`SANDBOXD_DNS must be a comma list of IPv4 addresses, got "${v ?? ''}"`);
+  if (l.length === 0 || !l.every((a) => isIP(a) === 4 && !isPrivateAddress(a))) {
+    throw new Error(`SANDBOXD_DNS must be a comma list of public IPv4 resolvers, got "${v ?? ''}"`);
   }
   return l;
 }
 
+/** A whole number >= 1 from `name`, or `dflt` when unset. */
+function positiveInt(env: NodeJS.ProcessEnv, name: string, dflt: number): number {
+  const v = env[name];
+  if (v === undefined) return dflt;
+  const n = Number(v);
+  if (!/^\d+$/.test(v.trim()) || !Number.isSafeInteger(n) || n < 1) {
+    throw new Error(`${name} must be a positive integer, got "${v}"`);
+  }
+  return n;
+}
+
 function hostPort(v: string): HostPort {
   const i = v.lastIndexOf(':');
-  const port = Number(v.slice(i + 1));
-  if (i < 1 || !Number.isInteger(port)) throw new Error(`invalid host:port "${v}"`);
+  const raw = v.slice(i + 1);
+  const port = Number(raw);
+  if (i < 1 || !/^\d+$/.test(raw) || port < 1 || port > 65535) {
+    throw new Error(`invalid host:port "${v}" (port 1-65535)`);
+  }
   return { host: v.slice(0, i), port };
 }
 
@@ -117,8 +135,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     dataDir,
     dockerRoot: env.SANDBOXD_DOCKER_ROOT ?? '/var/lib/docker',
     runtimeProject: env.SANDBOXD_RUNTIME_PROJECT ?? 'runsc',
-    maxRunning: Number(env.SANDBOXD_MAX_RUNNING ?? 22),
-    minMemAvailableBytes: Number(env.SANDBOXD_MIN_MEM_AVAILABLE_MB ?? 1024) * 1024 * 1024,
+    maxRunning: positiveInt(env, 'SANDBOXD_MAX_RUNNING', 22),
+    minMemAvailableBytes: positiveInt(env, 'SANDBOXD_MIN_MEM_AVAILABLE_MB', 1024) * 1024 * 1024,
     imageAllow: list(env.SANDBOXD_IMAGE_ALLOW),
     apiHost: env.SANDBOXD_API_HOST ?? '',
     egressAgentDefault: list(env.SANDBOXD_EGRESS_AGENT_DEFAULT, [
@@ -129,6 +147,5 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     ]),
     storageQuota: env.SANDBOXD_STORAGE_QUOTA === '1',
     dns: dnsList(env.SANDBOXD_DNS),
-    real,
   };
 }
