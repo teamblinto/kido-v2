@@ -207,8 +207,9 @@ omitted. Unknown endpoints return 404.
 Every sandbox container:
 
 - non-root uid 1000; `--cap-drop ALL`; `--security-opt no-new-privileges`; Docker default seccomp
-  (runc) / gVisor's own syscall filtering (runsc); no `--privileged`, no host mounts, no Docker
-  socket, no device access.
+  (runc) / gVisor's own syscall filtering (runsc); no `--privileged`, no Docker socket, no device
+  access, and no host mounts except one: gVisor sandboxes get sandboxd's generated resolv.conf
+  read-only as `/etc/resolv.conf` (gVisor cannot reach Docker's embedded resolver; §9).
 - dockerd with `userns-remap` so uid 0 in any container is unprivileged on the host.
 - `--memory` = `--memory-swap` cap, `--pids-limit`, `--cpus`, `--ulimit nofile`.
 - Disk: `--storage-opt size=` on overlay2 over XFS with `pquota` (deploy doc formats the Docker data
@@ -224,6 +225,14 @@ sandboxd itself:
 - Authenticated by a bearer key. On real deployments the key comes from a compose secret file, not
   the environment (respects ADR 027's "no env-held key outside local"): the adapter gains
   `DAYTONA_API_KEY_FILE` support; env-held key stays local-only.
+- Who holds that key: the worker, and also the api. This amends spec 013 R10 ("only the worker
+  holds a sandbox credential"): the api's preview route broker mints each preview's signed
+  upstream from sandboxd (`signed-preview-url`), so without the key no preview resolves. The api
+  still holds no model key.
+- On the staging mesh the control and preview listeners bind the host's WireGuard address;
+  `firewall.sh` pins INPUT so those ports are accepted only from that interface (and `lo`), the
+  interface being derived at boot from the address. On a single host the same pin uses the
+  `sbx-ctl` bridge.
 - Validates every input (ids, paths, ports, image names against an allow-list of `forge-snap/*` and
   `forge/*`, extendable by `SANDBOXD_IMAGE_ALLOW` for test images); never accepts arbitrary image
   refs, mounts, or Docker options from callers.
@@ -302,11 +311,16 @@ Budget (steady state, start values; verified under load in the plan):
 | api + worker (Node)                                                                   | ~0.7 GiB     |
 | Postgres                                                                              | ~0.5 GiB     |
 | 4× Redis (existing maxmemory caps)                                                    | ~0.3 GiB     |
-| OpenBao, Caddy, gateway, sandboxd                                                     | ~0.3 GiB     |
+| OpenBao, Caddy, gateway, sandboxd (see below)                                         | ~0.3 GiB     |
 | **Platform subtotal**                                                                 | **~2.2 GiB** |
 | 10 project sandboxes, dev server running (~400 MiB + gVisor ~40 MiB)                  | ~4.4 GiB     |
 | 10 agent homes (companion idle ~80 MiB; ~350 MiB while a turn runs, assume half busy) | ~2.1 GiB     |
 | **Total**                                                                             | **~8.7 GiB** |
+
+sandboxd itself idles at ~40 MiB, but its compose `mem_limit` is 768 MiB, not 256 MiB: a 64 MiB
+upload is buffered 2-3x (multipart parse, then exec stdin) and downloads run concurrently, and an
+OOM kill of sandboxd drops every live preview and HMR socket. The single-VPS overlay runs no
+OpenBao (env KEK), which frees its share.
 
 That is over 8 GiB, so:
 

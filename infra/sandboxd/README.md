@@ -31,7 +31,10 @@ Daytona's wire protocol, so the API's adapter just points `DAYTONA_API_URL` at i
   bridge, and `--dns` does not change that. sandboxd writes `/var/lib/sandboxd/resolv.sandbox.conf`
   from `SANDBOXD_DNS` (IPv4 resolvers, default `1.1.1.1,9.9.9.9`) at boot and bind-mounts it
   read-only as `/etc/resolv.conf` into every gVisor sandbox: the only host mount a sandbox gets.
-  `firewall.sh` accepts udp/tcp 53 from `sbx-proj` to exactly those resolvers. dockerd resolves
+  `firewall.sh` accepts udp/tcp 53 from `sbx-proj` to exactly those resolvers (before its private-range
+  denies, so sandboxd refuses to boot with a private or otherwise non-public resolver). The file is
+  bound when a sandbox is created, so after changing `SANDBOXD_DNS` restart sandboxd and then the
+  sandboxes (stop/start) for running ones to pick it up. dockerd resolves
   the bind source on the host, so sandboxd's data dir must be the same path inside its container
   and on the host (compose mounts `/var/lib/sandboxd` at `/var/lib/sandboxd`). Agent homes never
   resolve names (the proxy does) and runc sandboxes keep Docker's DNS.
@@ -78,9 +81,10 @@ Daytona's wire protocol, so the API's adapter just points `DAYTONA_API_URL` at i
 ### The single-VPS overlay (`compose.vps.yaml`) and what it is not
 
 On the server, put `COMPOSE_FILE=compose.yaml:compose.vps.yaml` in `.env`. That also stops compose
-loading the local-dev `compose.override.yaml`. The overlay unpublishes Postgres, the four Redis
-instances and OpenBao (the base file publishes them for local development), publishes only Caddy on
-80/443 with TLS from Let's Encrypt, and adds the preview gateway (`apps/gateway/Dockerfile`).
+loading the local-dev `compose.override.yaml`. The overlay unpublishes Postgres and the four Redis
+instances (the base file publishes them for local development), does not run OpenBao (the KEK is
+the env provider), publishes only Caddy on 80/443 with TLS from Let's Encrypt, and adds the preview
+gateway (`apps/gateway/Dockerfile`).
 
 **This is a single-host, `DEPLOY_ENV=local`-grade deployment, not a hardened production one.** These
 are not production-hardened, and the real deployment path is `infra/ansible`:
@@ -89,8 +93,9 @@ are not production-hardened, and the real deployment path is `infra/ansible`:
   public host that means: mail goes to the console mailer (printed to the api log, never
   delivered: no sign-up or reset emails), outbound webhooks may target plain `http://` URLs, and
   agent homes get `BAIOS_ALLOW_INSECURE_HTTP=1`;
-- OpenBao is the in-memory dev server with a fixed, published root token, and it loses its keys on
-  restart; `KEK_ENV_MASTER_KEY` is the all-zero placeholder, so tenant data keys are not protected;
+- the KEK is the env provider: `KEK_ENV_MASTER_KEY` sits in `.env` on the host, so anyone with
+  root there can unwrap tenant data keys. No OpenBao runs (its dev server would regenerate the KEK
+  on every restart and make all tenant-encrypted data unreadable);
 - Postgres and Redis keep the repository's fixed passwords or none (reachable only inside the
   compose network);
 - the gateway uses the plain broker over a shared network namespace, not mTLS. It therefore sits
@@ -112,10 +117,14 @@ are not production-hardened, and the real deployment path is `infra/ansible`:
   hostnames), so random names cannot exhaust the domain's Let's Encrypt quota. The alternative,
   one wildcard certificate, needs the DNS-01 challenge and therefore a Caddy build with your DNS
   provider's module (`xcaddy build --with github.com/caddy-dns/<provider>`); not done here.
-- `SANDBOXD_API_HOST=<APP_HOST>`: the host agent homes may reach through the egress proxy. The
-  callback URL the api hands to sandboxes (`SANDBOX_CALLBACK_URL`) is set by the overlay to
-  `https://<APP_HOST>/api/v1/internal/sandbox-callbacks`; project sandboxes reach it on the host's
-  public address.
+- Derived from `APP_HOST` by the overlay, nothing to set: `SANDBOXD_API_HOST` (the one BAIOS
+  host agent homes may reach through the egress proxy), `AGENT_HOME_SERVER_URL=https://<APP_HOST>`
+  (where a home's companion calls the api: proxy -> host's public address -> Caddy -> api) and
+  `SANDBOX_CALLBACK_URL=https://<APP_HOST>/api/v1/internal/sandbox-callbacks` (project sandboxes
+  reach it on the host's public address).
+- `KEK_ENV_MASTER_KEY`, generated once: `openssl rand -base64 32`. Every tenant data key is
+  wrapped with it: back it up with the database, and never change it on a stack that holds data
+  (the data becomes unreadable).
 - `PREVIEW_SIGNING_KEY`, `PREVIEW_SIGNING_KEY_ID`, `PREVIEW_PUBLIC_JWKS`, generated once:
 
       node -e "const c=require('crypto');const k=c.generateKeyPairSync('ed25519');const kid='vps-1';console.log('PREVIEW_SIGNING_KEY='+k.privateKey.export({type:'pkcs8',format:'der'}).toString('base64'));console.log('PREVIEW_SIGNING_KEY_ID='+kid);const j=k.publicKey.export({format:'jwk'});console.log('PREVIEW_PUBLIC_JWKS='+JSON.stringify({keys:[{kty:'OKP',crv:'Ed25519',x:j.x,kid}]}))"
@@ -134,12 +143,21 @@ are not production-hardened, and the real deployment path is `infra/ansible`:
 
 Staging mesh: [`infra/ansible/sandboxd.yml`](../ansible/sandboxd.yml) replaces the old `daytona`
 host. It runs host-setup.sh and the container with `SANDBOXD_LISTEN` set to the host's WireGuard
-address (never `0.0.0.0`), so the app and gateway hosts reach it over the mesh without TLS. The
-app pool mounts the key as a file (`vault_sandboxd_api_key`). Release does not publish a sandboxd
+address (never `0.0.0.0`), so the app and gateway hosts reach it over the mesh without TLS;
+`firewall.sh` accepts the two listener ports on that address only from the interface that owns it
+(found from the address at boot). The app pool mounts the key as a file
+(`vault_sandboxd_api_key`) into both the worker and the api (whose preview route broker mints
+preview upstreams; spec 013 R10 is amended for this, design §8). sandboxd is not in
+`infra/deploy.sh`'s `CREDENTIAL_FREE_SERVICES_PATTERN`: that pattern names services of the rendered
+app-pool stack (`compose.staging.yaml`) whose environment must carry no platform credential, and
+sandboxd is never in that stack (its own Ansible play, its own host); its environment holds no
+credential either (the key is a file), and deploy.sh is pinned byte-for-byte by `check-fr038.sh`. Release does not publish a sandboxd
 image yet; `forge_sandboxd_image` must be one built from `apps/sandboxd/Dockerfile`.
 
 ## Capacity and operations
 
+- sandboxd idles at about 40 MiB; its `mem_limit` is 768 MiB because a 64 MiB upload is buffered
+  2-3x and downloads run concurrently, and an OOM kill would drop every live preview at once.
 - 8 GB comfortably serves about 6-8 people actively building, about 10 at the limit with swap.
   Beyond that move to 16 GB or a second sandbox host. `SANDBOXD_MAX_RUNNING` and
   `SANDBOXD_MIN_MEM_AVAILABLE_MB` queue new sandboxes (they report `starting`) rather than refuse them.
@@ -150,13 +168,21 @@ diskFreeBytes, diskUsedPct` (df's definition, of `SANDBOXD_DOCKER_ROOT`). **Aler
 
       */10 * * * * curl -fsS -H @/etc/sandboxd/capacity.header http://172.30.2.1:3986/capacity | jq -e '.diskUsedPct < 70' >/dev/null || echo 'sandboxd disk >= 70%' | mail -s sandboxd root
 
+  With `--loop-size` the XFS data root is a sparse file on the root disk, which can fill before
+  `diskUsedPct` says so; check the root disk too:
+
+      */10 * * * * [ "$(df --output=pcent / | tail -1 | tr -dc 0-9)" -lt 70 ] || echo 'root disk >= 70%' | mail -s sandboxd root
+
   `/healthz` is unauthenticated.
 
 - **Never run `docker system prune`** (or `docker image prune -a`, `docker volume prune`) on this
   host: it deletes template and checkpoint images (`forge-snap/*`) that stopped sandboxes depend on.
 - Local development: `compose.override.yaml` runs sandboxd on the default network with
-  `SANDBOXD_FIREWALL=off` and runc. Sandboxes are not isolated there, and the preview proxy cannot
-  reach sandbox IPs on Docker Desktop (the real suites' `preview-real` runs in CI on Linux).
+  `SANDBOXD_FIREWALL=off` and runc. Sandboxes are not isolated there, the preview proxy cannot
+  reach sandbox IPs on Docker Desktop (the real suites' `preview-real` runs in CI on Linux), and
+  **agent homes do not work**: their only way out is the egress proxy on the `sbx-agent` gateway,
+  which sandboxd cannot bind without host networking, and with inter-container traffic off the
+  bridge drops a home's packets to a sandboxd container attached to it. Use a Linux host for them.
 
 ### Running the real suites against a VPS
 
@@ -170,7 +196,9 @@ stack's worker for `sandbox-lifecycle-real`: it competes for the same pool and q
 ## Upgrade and rollback
 
 Upgrade: `git pull && docker compose up -d --build sandboxd`. Running sandboxes are plain Docker
-containers, so they survive a sandboxd restart (it re-adopts them from its sqlite file).
+containers, so they survive a sandboxd restart (it re-adopts them from its sqlite file), but every
+live preview connection and Vite HMR WebSocket goes through sandboxd and is dropped: open previews
+reconnect (HMR) or need a reload. Upgrade when nobody is mid-build.
 Rollback: `git checkout <previous> && docker compose up -d --build sandboxd`. To go back to
 Daytona, point the worker's `DAYTONA_API_URL`/key back at it; that stays possible until
 `infra/daytona` is deleted (design §14 step 8, after a staging soak).

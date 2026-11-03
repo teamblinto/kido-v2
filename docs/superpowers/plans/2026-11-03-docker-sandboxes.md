@@ -12,11 +12,11 @@
 
 ## Global Constraints
 
-- Wire contract = what `daytona.adapter.ts` sends and what `daytona.schemas.ts` parses. Reference behaviour = `apps/api/test/support/fake-daytona.ts`. When in doubt, match the fake.
+- Wire contract = what `daytona.adapter.ts` sends and what `daytona.schemas.ts` parses. Reference behaviour = `apps/api/test/support/fake-daytona.ts`. When in doubt, match the fake. There is no standalone contract test against `daytona.schemas.ts` (design §14 step 3): the CI `sandboxd` job runs the API's `*-real` suites, whose adapter parses every sandboxd response with those schemas, against a real sandboxd.
 - No Daytona source code is read or copied (AGPL). Only our own adapter/fake/schemas are the reference.
 - No BAIOS code reads `.credentials.json`, keychain, or any Claude token. Never add `--dangerously-*`/bypass flags. Do not modify the `claude` binary.
 - Only sandboxd holds `/var/run/docker.sock`. Callers can never pass image refs outside the allow-list (`forge/*`, `forge-snap/*`, plus `SANDBOXD_IMAGE_ALLOW`), mounts, or Docker options.
-- Containers: uid 1000, `CapDrop: ["ALL"]`, `SecurityOpt: ["no-new-privileges"]`, no privileged, no host mounts, `Memory` = `MemorySwap` cap, `PidsLimit`, `NanoCpus`, `Ulimits nofile 4096`.
+- Containers: uid 1000, `CapDrop: ["ALL"]`, `SecurityOpt: ["no-new-privileges"]`, no privileged, no host mounts except the read-only `/etc/resolv.conf` bind gVisor sandboxes get (`writeResolvConf`, design §8), `Memory` = `MemorySwap` cap, `PidsLimit`, `NanoCpus`, `Ulimits nofile 4096`.
 - Class limits (§7): project 1 vCPU/1.5 GiB/512 PIDs/5 GiB disk, runtime `SANDBOXD_RUNTIME_PROJECT` (default `runsc`); agent home 0.5 vCPU/768 MiB/128 PIDs/2 GiB, runtime `runc`; build 2 vCPU/2 GiB/1024 PIDs/10 GiB, runtime `SANDBOXD_RUNTIME_PROJECT`. Swap allowance project 0.5 GiB.
 - Sandbox ids: `<SANDBOXD_NODE_ID>-<uuid v4>`. `runnerId` = node id.
 - Container home/workdir stays `/home/daytona`, user `daytona` (uid 1000).
@@ -193,7 +193,7 @@ infra/sandboxd/
 
 **Files:** Create `src/preview.ts`, `test/preview.spec.ts`. Route in control API: `GET /sandbox/:id/ports/:port/signed-preview-url?expiresInSeconds=`.
 
-**Interfaces — Produces:** `mintPreviewToken(secret: Buffer, sandboxId: string, port: number, expiresAt: number /* unix s */): string` (format `base64url(json{s,p,e}) + '.' + base64url(hmac)`); `verifyPreviewToken(secret, token, now): {sandboxId, port} | null` (constant-time compare; rejects expired, malformed). Route answers `{url: cfg.previewPublicUrl, token}`; port 1–65535, `expiresInSeconds` 60–86400. Preview server (listen `previewListen`): read `x-daytona-preview-token`, verify, look up container IP via `docker.inspect`, proxy request (keep path/query, strip the token header, set `x-forwarded-*` passthrough) or `upgrade` (pipe sockets after writing the upstream 101). Bad/missing token → 401 (HTTP) or socket destroyed (upgrade). Sandbox not running → 503 `{message:'sandbox not running'}`. Upstream refused → 502.
+**Interfaces — Produces:** `mintPreviewToken(secret: Buffer, sandboxId: string, port: number, expiresAt: number /* unix s */): string` (format `base64url(json{s,p,e}) + '.' + base64url(hmac)`); `verifyPreviewToken(secret, token, now): {sandboxId, port} | null` (constant-time compare; rejects expired, malformed). Route answers `{url: cfg.previewPublicUrl, token}`; port 1–65535, `expiresInSeconds` 1–86400 (the API route broker asks for 30 s). Preview server (listen `previewListen`): read `x-daytona-preview-token`, verify, look up container IP via `docker.inspect`, proxy request (keep path/query, strip the token header, set `x-forwarded-*` passthrough) or `upgrade` (pipe sockets after writing the upstream 101). Bad/missing token → 401 (HTTP) or socket destroyed (upgrade). Sandbox not running → 503 `{message:'sandbox not running'}`. Upstream refused → 502.
 
 - [ ] **Step 1:** Tests: round-trip; tampered payload/sig → null; expired → null; token for (A,3000) used against sandbox B is impossible by construction (route uses token's sandboxId — assert proxy dialled A's IP); HTTP proxy to a local test server via FakeDocker IP `127.0.0.1` returns body and path/query intact; WS upgrade through proxy echoes a frame (use `node:http` upgrade + raw socket, no ws dependency); bad token on upgrade → socket closed, upstream never contacted.
 - [ ] **Step 2:** FAIL → **Step 3:** implement → **Step 4:** PASS.
