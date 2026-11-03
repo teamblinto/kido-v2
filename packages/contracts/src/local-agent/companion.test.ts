@@ -260,6 +260,7 @@ describe('companion uplink', () => {
       { data: { chunk: 'a.txt', toolId: 't1' }, type: 'tool.output' },
       { data: { ok: true, summary: null, toolId: 't1' }, type: 'tool.end' },
       { data: { inputTokens: 1, outputTokens: 2 }, type: 'usage' },
+      { data: { costMicros: 41_250, inputTokens: 1, outputTokens: 2 }, type: 'usage' },
       { data: { callId: 'c1', input: { command: 'ls' }, name: 'exec' }, type: 'tool.call' },
       { data: { status: 'completed' }, type: 'terminal' },
       {
@@ -277,6 +278,18 @@ describe('companion uplink', () => {
         event.type,
       ).toMatchObject({ success: true });
     });
+  });
+
+  it('refuses a negative or fractional run cost', () => {
+    for (const costMicros of [-1, 1.5]) {
+      expect(
+        companionRunEventSchema.safeParse({
+          data: { costMicros, inputTokens: 1, outputTokens: 2 },
+          seq: 1,
+          type: 'usage',
+        }).success,
+      ).toBe(false);
+    }
   });
 
   it('refuses the retired file.change and approval.request events', () => {

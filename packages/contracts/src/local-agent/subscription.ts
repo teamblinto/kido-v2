@@ -1,6 +1,6 @@
 import { z } from 'zod';
 
-import { localAgentModelSchema } from './provider';
+import { localAgentModelSchema, subscriptionUsageSchema } from './provider';
 
 /**
  * The cloud subscription agent (spec 041): a person's own Claude Code, signed in by them through
@@ -87,30 +87,14 @@ export const subscriptionModelSchema = z.strictObject({
 
 export type SubscriptionModel = z.output<typeof subscriptionModelSchema>;
 
-/** `session` is the CLI's five-hour window; the weekly ones are its seven-day windows. */
-export const SUBSCRIPTION_USAGE_WINDOWS = [
-  'session',
-  'weekly',
-  'weekly-opus',
-  'weekly-sonnet',
-] as const;
-
-export const subscriptionUsageWindowSchema = z.strictObject({
-  kind: z.enum(SUBSCRIPTION_USAGE_WINDOWS),
-  resetsAt: z.iso.datetime({ offset: true }).nullable(),
-  /** Percent of the window used, 0–100, as the CLI's `get_usage` reported it. */
-  utilization: z.number().min(0).max(100),
-});
-
-export type SubscriptionUsageWindow = z.output<typeof subscriptionUsageWindowSchema>;
-
-/** The subscription's own limits, from the CLI's `get_usage` (which sends no model request). */
-export const subscriptionUsageSchema = z.strictObject({
-  checkedAt: z.iso.datetime(),
-  windows: z.array(subscriptionUsageWindowSchema).max(20),
-});
-
-export type SubscriptionUsage = z.output<typeof subscriptionUsageSchema>;
+// Defined beside the runner's status report, which carries them too (provider.ts cannot import this file).
+export {
+  SUBSCRIPTION_USAGE_WINDOWS,
+  type SubscriptionUsage,
+  subscriptionUsageSchema,
+  type SubscriptionUsageWindow,
+  subscriptionUsageWindowSchema,
+} from './provider';
 
 /** `GET /me/subscriptions`' entry, and the answer to `connect`. */
 export const subscriptionStatusSchema = z.strictObject({

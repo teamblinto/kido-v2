@@ -79,6 +79,34 @@ export type LocalAgentPolicy = z.output<typeof localAgentPolicySchema>;
 
 const shortText = z.string().trim().min(1).max(200);
 
+// The usage shapes live here rather than in subscription.ts (which re-exports them) because the
+// status report carries them and subscription.ts already imports this file.
+
+/** `session` is the CLI's five-hour window; the weekly ones are its seven-day windows. */
+export const SUBSCRIPTION_USAGE_WINDOWS = [
+  'session',
+  'weekly',
+  'weekly-opus',
+  'weekly-sonnet',
+] as const;
+
+export const subscriptionUsageWindowSchema = z.strictObject({
+  kind: z.enum(SUBSCRIPTION_USAGE_WINDOWS),
+  resetsAt: z.iso.datetime({ offset: true }).nullable(),
+  /** Percent of the window used, 0–100, as the CLI's `get_usage` reported it. */
+  utilization: z.number().min(0).max(100),
+});
+
+export type SubscriptionUsageWindow = z.output<typeof subscriptionUsageWindowSchema>;
+
+/** The subscription's own limits, from the CLI's `get_usage` (which sends no model request). */
+export const subscriptionUsageSchema = z.strictObject({
+  checkedAt: z.iso.datetime(),
+  windows: z.array(subscriptionUsageWindowSchema).max(20),
+});
+
+export type SubscriptionUsage = z.output<typeof subscriptionUsageSchema>;
+
 /** The CLI in an agent home, as its official status command reported it. */
 export const localAgentProviderStatusSchema = z.strictObject({
   auth: z.strictObject({
@@ -90,10 +118,24 @@ export const localAgentProviderStatusSchema = z.strictObject({
   checkedAt: z.iso.datetime(),
   installed: z.boolean(),
   message: z.string().max(500).nullable(),
-  models: z.array(z.strictObject({ id: shortText, label: shortText })).max(100),
+  /**
+   * What the signed-in CLI's own `initialize` lists; empty when it could not be asked. Optional
+   * fields are additive, so an older runner's report still parses.
+   */
+  models: z
+    .array(
+      z.strictObject({
+        description: z.string().max(200).nullable().optional(),
+        id: shortText,
+        label: shortText,
+      }),
+    )
+    .max(100),
   /** Recomputed by the server from config and `auth.method`; a reported value is never trusted. */
   policy: localAgentPolicySchema,
   provider: localAgentProviderSchema,
+  /** The CLI's `get_usage`, when it could state its limits. */
+  usage: subscriptionUsageSchema.optional(),
   version: z.string().max(100).nullable(),
 });
 

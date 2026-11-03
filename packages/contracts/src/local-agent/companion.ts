@@ -250,6 +250,11 @@ export const companionRunEventSchema = z.discriminatedUnion('type', [
   }),
   z.strictObject({
     data: z.strictObject({
+      /**
+       * What the CLI priced this turn at (its `total_cost_usd`, in micro-dollars). Optional, so an
+       * older runner's event still parses; it is the list-price equivalent, not a charge.
+       */
+      costMicros: z.number().int().min(0).optional(),
       inputTokens: z.number().int().min(0),
       outputTokens: z.number().int().min(0),
     }),
