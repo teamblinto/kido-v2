@@ -17,14 +17,24 @@ Daytona's wire protocol, so the API's adapter just points `DAYTONA_API_URL` at i
   `sbx-ctl`.
 - That address is a local one, and Linux accepts packets for any local address from any interface,
   so binding to it is not enough. `firewall.sh` therefore pins INPUT rules (derived from the config
-  by `firewallEnv`): traffic to `172.30.2.1` is accepted from `lo` and from `sbx-ctl0` only, and
-  traffic to the egress proxy address `172.30.0.1` from `lo` and `sbx-agent0` only. They apply only
-  when sandboxd listens on that bridge gateway; on the staging mesh it listens on a WireGuard
-  address and these rules are skipped.
+  by `firewallEnv`): traffic to `172.30.2.1` is accepted from `lo`, and from `sbx-ctl0` on the two
+  listener ports (an explicit ACCEPT, because UFW's default-deny INPUT policy would otherwise drop
+  the worker and gateway), and dropped from anywhere else; traffic to the egress proxy address
+  `172.30.0.1` from `lo` and `sbx-agent0` only (sandboxes reach the proxy port through the `SBX-IN`
+  chain). They apply only when sandboxd listens on that bridge gateway; on the staging mesh it
+  listens on a WireGuard address and these rules are skipped.
 - Sandboxes live on `sbx-agent` (`172.30.0.0/24`, internal, egress proxy only) and `sbx-proj`
   (`172.30.1.0/24`, filtered); `firewall.sh` owns the iptables chains. Project sandboxes run under
   gVisor (`runsc`), agent homes under hardened runc. Docker uses `userns-remap`. Sandbox containers
   get `OomScoreAdj: 500`, so memory pressure kills a sandbox before the platform.
+- DNS: gVisor's netstack cannot reach Docker's embedded resolver (`127.0.0.11`) on a user-defined
+  bridge, and `--dns` does not change that. sandboxd writes `/var/lib/sandboxd/resolv.sandbox.conf`
+  from `SANDBOXD_DNS` (IPv4 resolvers, default `1.1.1.1,9.9.9.9`) at boot and bind-mounts it
+  read-only as `/etc/resolv.conf` into every gVisor sandbox: the only host mount a sandbox gets.
+  `firewall.sh` accepts udp/tcp 53 from `sbx-proj` to exactly those resolvers. dockerd resolves
+  the bind source on the host, so sandboxd's data dir must be the same path inside its container
+  and on the host (compose mounts `/var/lib/sandboxd` at `/var/lib/sandboxd`). Agent homes never
+  resolve names (the proxy does) and runc sandboxes keep Docker's DNS.
 - Single host: a project sandbox calls the BAIOS API on the host's public address, which Docker
   DNATs to the edge container on a `10.x` network; `firewall.sh` accepts that DNAT'd path for the
   allowed ports (443) before its private-range denies.
@@ -50,8 +60,17 @@ Daytona's wire protocol, so the API's adapter just points `DAYTONA_API_URL` at i
    (`--loop-size 40G` is the default: `/var/lib/sbx-xfs.img`, `loop,pquota,nofail` in fstab; it checks
    the free space first). `--loop-size 0` skips XFS, and then you must set
    `SANDBOXD_STORAGE_QUOTA=0` (quotas off; weaker). Do this on a fresh host.
-3. Build the web app Caddy serves: `pnpm --filter @repo/web... build` (writes `apps/web/dist`).
-4. Create `.env` next to `compose.yaml` (below), then `docker compose up -d --build`.
+3. Build the web app Caddy serves (writes `apps/web/dist`). The host needs no Node; build it in a
+   throwaway container:
+
+       docker run --rm -v "$PWD":/repo -w /repo node:24-bookworm-slim sh -c 'corepack enable && CI=1 pnpm install --frozen-lockfile && pnpm --filter "@repo/web..." build'
+
+   (it leaves a `node_modules` tree in the checkout; harmless, and the image builds ignore it).
+
+4. Create `.env` next to `compose.yaml` (below), then `docker compose up -d --build`. The overlay's
+   one-shot `migrate` service applies the database migrations first (the image's own migrator,
+   on every `up`; the api and worker wait for it). To run it by hand:
+   `docker compose run --rm migrate`.
 5. `bash infra/sandboxd/spike.sh` as a final check; `curl` `/healthz` on `172.30.2.1:3986`.
 
 ### The single-VPS overlay (`compose.vps.yaml`) and what it is not
@@ -64,12 +83,18 @@ instances and OpenBao (the base file publishes them for local development), publ
 **This is a single-host, `DEPLOY_ENV=local`-grade deployment, not a hardened production one.** These
 are not production-hardened, and the real deployment path is `infra/ansible`:
 
-- the app runs with `DEPLOY_ENV=local`, which relaxes checks that real deployments enforce;
+- the app runs with `DEPLOY_ENV=local`, which relaxes checks that real deployments enforce. On a
+  public host that means: mail goes to the console mailer (printed to the api log, never
+  delivered: no sign-up or reset emails), outbound webhooks may target plain `http://` URLs, and
+  agent homes get `BAIOS_ALLOW_INSECURE_HTTP=1`;
 - OpenBao is the in-memory dev server with a fixed, published root token, and it loses its keys on
   restart; `KEK_ENV_MASTER_KEY` is the all-zero placeholder, so tenant data keys are not protected;
 - Postgres and Redis keep the repository's fixed passwords or none (reachable only inside the
   compose network);
-- the gateway uses the plain broker over a shared network namespace, not mTLS;
+- the gateway uses the plain broker over a shared network namespace, not mTLS. It therefore sits
+  in the api's network namespace: a gateway compromise reaches everything the api can (the stores,
+  the broker, sandboxd's control port). If the api container restarts on its own, the gateway is
+  left in the dead namespace and turns unhealthy: `docker compose restart gateway`;
 - no object store is configured unless you add `OBJECT_STORE_*`, so features that need one
   (repository mirrors, deployed sites, some checkpoint artifacts) are unavailable;
 - there are no backups and no replication.
@@ -79,8 +104,12 @@ are not production-hardened, and the real deployment path is `infra/ansible`:
 - `APP_HOST` (apex, e.g. `app.example.com`), `HOOKS_HOST` (e.g. `hooks.example.com`),
   `PREVIEW_DOMAIN` (e.g. `preview.example.com`). DNS: `A` records for `APP_HOST` and `HOOKS_HOST`
   and a wildcard `A` record for `*.PREVIEW_DOMAIN`, all pointing at the VPS. Ports 80 and 443 must
-  be open. Preview certificates are issued on demand per hostname (Caddy asks a local endpoint that
-  allows only names under `PREVIEW_DOMAIN`), so the first load of a new preview is slow.
+  be open. Preview certificates are issued on demand per hostname, so the first load of a new
+  preview is slow. Before issuing, Caddy asks the gateway (`TLS_ASK_PORT`), which approves only a
+  label the broker knows, on its live route's port (a cold sandbox's label: at most three
+  hostnames), so random names cannot exhaust the domain's Let's Encrypt quota. The alternative,
+  one wildcard certificate, needs the DNS-01 challenge and therefore a Caddy build with your DNS
+  provider's module (`xcaddy build --with github.com/caddy-dns/<provider>`); not done here.
 - `SANDBOXD_API_HOST=<APP_HOST>`: the host agent homes may reach through the egress proxy. The
   callback URL the api hands to sandboxes (`SANDBOX_CALLBACK_URL`) is set by the overlay to
   `https://<APP_HOST>/api/v1/internal/sandbox-callbacks`; project sandboxes reach it on the host's
@@ -91,6 +120,12 @@ are not production-hardened, and the real deployment path is `infra/ansible`:
 
   Quote the JWKS line in `.env` with single quotes.
 
+- `AGENT_HOME_CLAUDE_VERSION` (required by the overlay): an exact Claude Code version (e.g. `2.1.311`) for agent homes.
+  The default `stable` installs whatever is current at template-publish time; pin it so the binary
+  is one you chose, and bump it deliberately (a new value is a new template on the next publish).
+- `SANDBOXD_DNS`, `SANDBOXD_MAX_RUNNING`, `SANDBOXD_MIN_MEM_AVAILABLE_MB` (optional): the
+  sandbox resolvers and admission limits; compose passes them through with the defaults
+  `1.1.1.1,9.9.9.9`, `22`, `1024`.
 - `ANTHROPIC_API_KEY` only if you use the platform-key path (a platform credential in the model
   catalogue): add it to the `api` and `worker` environment in a third compose file listed in
   `COMPOSE_FILE`. Subscription (BYOS) linking needs none.
@@ -107,10 +142,11 @@ image yet; `forge_sandboxd_image` must be one built from `apps/sandboxd/Dockerfi
   Beyond that move to 16 GB or a second sandbox host. `SANDBOXD_MAX_RUNNING` and
   `SANDBOXD_MIN_MEM_AVAILABLE_MB` queue new sandboxes (they report `starting`) rather than refuse them.
 - `GET /capacity` (bearer key) returns `running, queued, maxRunning, memAvailableBytes,
-diskFreeBytes, diskUsedPct` (df's definition, of `SANDBOXD_DOCKER_ROOT`). **Alert at 70.** A cron
-  line that alerts past the threshold:
+diskFreeBytes, diskUsedPct` (df's definition, of `SANDBOXD_DOCKER_ROOT`). **Alert at 70.** A root
+  cron line that alerts past the threshold; the key is read by curl from the root-only header file
+  `host-setup.sh` writes, so it never appears in a process list:
 
-      */10 * * * * curl -fsS -H "authorization: Bearer $(cat /etc/sandboxd/api_key)" http://172.30.2.1:3986/capacity | jq -e '.diskUsedPct < 70' >/dev/null || echo 'sandboxd disk >= 70%' | mail -s sandboxd root
+      */10 * * * * curl -fsS -H @/etc/sandboxd/capacity.header http://172.30.2.1:3986/capacity | jq -e '.diskUsedPct < 70' >/dev/null || echo 'sandboxd disk >= 70%' | mail -s sandboxd root
 
   `/healthz` is unauthenticated.
 
@@ -119,6 +155,15 @@ diskFreeBytes, diskUsedPct` (df's definition, of `SANDBOXD_DOCKER_ROOT`). **Aler
 - Local development: `compose.override.yaml` runs sandboxd on the default network with
   `SANDBOXD_FIREWALL=off` and runc. Sandboxes are not isolated there, and the preview proxy cannot
   reach sandbox IPs on Docker Desktop (the real suites' `preview-real` runs in CI on Linux).
+
+### Running the real suites against a VPS
+
+`sandbox-real`, `sandbox-lifecycle-real` (api) and `preview-real` (gateway) can run against the
+compose stack from a throwaway Node 24 container attached to the compose network and `sbx-ctl`
+(Postgres and Redis are not published). Use the compose hostnames for `DATABASE_*`/`REDIS_*_URL`,
+`DAYTONA_API_URL=http://172.30.2.1:3986`, `PREVIEW_UPSTREAM_DIAL=http://172.30.2.1:3987` (the spec
+dials that host and port), and read the key as gid 3986 (`docker exec -u 0:3986 ...`). Stop the
+stack's worker for `sandbox-lifecycle-real`: it competes for the same pool and queue.
 
 ## Upgrade and rollback
 
@@ -140,14 +185,15 @@ Run on the VPS (as a user in the `docker` group, gVisor installed and registered
 
     bash infra/sandboxd/spike.sh
 
-Local Docker Desktop (runc only) expected: 1, 2, 3, 6 SKIP; 5 PASS; exit 0.
+Local Docker Desktop (runc only) expected: 1, 2, 3, 6, 8 SKIP; 5 PASS; exit 0.
 
-| Check                                                       | If it FAILs, the spec changes                                                                                                                           |
-| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1 runsc + `--overlay2=none`, `docker commit` keeps writes   | Template snapshots cannot use `docker commit`; build templates with `docker build` and drop snapshot-from-sandbox                                       |
-| 2 `--storage-opt size=1G` returns ENOSPC                    | Disk quota fallback (loop-mounted per-sandbox volumes or XFS project quotas by hand); SKIP means Docker data root is not XFS+pquota, fix the host first |
-| 3 Vite on 5173 returns 200 and WS 101 over the container IP | Preview proxying design (§ preview) must change, e.g. publish ports or use a different runtime for dev servers                                          |
-| 4 `npm ci` runc vs runsc                                    | Informational: use the ratio to size build timeouts                                                                                                     |
-| 5 `enable_icc=false` blocks A to B                          | Network isolation falls back to per-sandbox networks or iptables rules                                                                                  |
-| 6 `169.254.169.254` unreachable after `firewall.sh`         | Egress firewall rules are wrong; fix `firewall.sh` before any sandbox runs                                                                              |
-| 7 idle memory runc vs runsc                                 | Informational: adjust per-host sandbox density                                                                                                          |
+| Check                                                                             | If it FAILs, the spec changes                                                                                                                           |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 runsc + `--overlay2=none`, `docker commit` keeps writes                         | Template snapshots cannot use `docker commit`; build templates with `docker build` and drop snapshot-from-sandbox                                       |
+| 2 `--storage-opt size=1G` returns ENOSPC                                          | Disk quota fallback (loop-mounted per-sandbox volumes or XFS project quotas by hand); SKIP means Docker data root is not XFS+pquota, fix the host first |
+| 3 Vite on 5173 returns 200 and WS 101 over the container IP                       | Preview proxying design (§ preview) must change, e.g. publish ports or use a different runtime for dev servers                                          |
+| 4 `npm ci` runc vs runsc                                                          | Informational: use the ratio to size build timeouts                                                                                                     |
+| 5 `enable_icc=false` blocks A to B                                                | Network isolation falls back to per-sandbox networks or iptables rules                                                                                  |
+| 6 `169.254.169.254` unreachable after `firewall.sh`                               | Egress firewall rules are wrong; fix `firewall.sh` before any sandbox runs                                                                              |
+| 7 idle memory runc vs runsc                                                       | Informational: adjust per-host sandbox density                                                                                                          |
+| 8 runsc on a user-defined bridge resolves names with sandboxd's bound resolv.conf | gVisor sandboxes have no DNS: check outbound udp/53 to the resolvers and the `Binds` in classes.ts                                                      |

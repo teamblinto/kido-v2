@@ -25,7 +25,7 @@ YES=0 FORCE=0 DATA_DISK="" LOOP_SIZE=40G DATA_ROOT=/var/lib/docker-sbx SWAP_SIZE
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOOP_IMG=/var/lib/sbx-xfs.img
 DAEMON=/etc/docker/daemon.json
-SANDBOXD_GID=3986 # group that may read /etc/sandboxd/api_key (compose group_add on api/worker)
+SANDBOXD_GID=3986 # group that may read /etc/sandboxd/api_key (compose group_add on the worker)
 
 while (($#)); do
   case "$1" in
@@ -60,8 +60,10 @@ sandboxd host setup will:
   1. install Docker CE and gVisor (runsc) from their official apt repositories, if missing
   2. storage: $STORAGE
   3. write $DAEMON from infra/sandboxd/daemon.json$DR_NOTE, back up any existing file, RESTART docker
+     (an existing $DAEMON with different content is only replaced with --force)
   4. create a $SWAP_SIZE /swapfile and set vm.swappiness=10
-  5. create /var/lib/sandboxd (0700) and /etc/sandboxd/api_key (0640, group = dockremap subgid base + $SANDBOXD_GID, generated once)
+  5. create /var/lib/sandboxd (0700) and /etc/sandboxd/api_key (0640, group = dockremap subgid base + $SANDBOXD_GID, generated once),
+     and /etc/sandboxd/capacity.header (0600, the key as a curl header file for the disk alert)
   6. $([[ $BUILD_IMAGE == 1 ]] && echo "docker build forge/sandbox-base:1" || echo "(skip) base image")
 EOF
 if ((!YES)); then
@@ -163,10 +165,8 @@ fi
 # dockerd must never start on an unmounted data root (it would silently fill the root disk).
 if ((USE_DATA_ROOT)); then
   dropin=/etc/systemd/system/docker.service.d/sandboxd.conf
-  printf '[Unit]
-RequiresMountsFor=%s
-' "$DATA_ROOT" >"$dropin.new"
   install -d /etc/systemd/system/docker.service.d
+  printf '[Unit]\nRequiresMountsFor=%s\n' "$DATA_ROOT" >"$dropin.new"
   if ! cmp -s "$dropin.new" "$dropin" 2>/dev/null; then
     mv -f "$dropin.new" "$dropin"
     systemctl daemon-reload
@@ -219,6 +219,8 @@ fi
 # supplementary gid 3986 compose gives it, which the host sees as $KEY_GID; sandboxd is real root.
 chown root:"$KEY_GID" /etc/sandboxd/api_key
 chmod 0640 /etc/sandboxd/api_key
+# For `curl -H @file` (README disk alert): the key never appears in a process's argv.
+(umask 077 && printf 'authorization: Bearer %s\n' "$(cat /etc/sandboxd/api_key)" >/etc/sandboxd/capacity.header)
 
 # ---- 6. base image -----------------------------------------------------------------------------
 if ((BUILD_IMAGE)); then

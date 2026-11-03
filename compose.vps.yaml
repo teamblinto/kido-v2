@@ -12,7 +12,8 @@
 # Ansible path (infra/ansible).
 #
 # Required in .env: APP_HOST, HOOKS_HOST, PREVIEW_DOMAIN, PREVIEW_SIGNING_KEY,
-# PREVIEW_SIGNING_KEY_ID, PREVIEW_PUBLIC_JWKS (how to make them: infra/sandboxd/README.md).
+# PREVIEW_SIGNING_KEY_ID, PREVIEW_PUBLIC_JWKS, AGENT_HOME_CLAUDE_VERSION (how to make them:
+# infra/sandboxd/README.md).
 services:
   # Nothing but the edge is reachable from outside: drop every published store port.
   postgres:
@@ -29,6 +30,11 @@ services:
     ports: !reset []
 
   caddy:
+    healthcheck:
+      test: ['CMD', 'wget', '--quiet', '--tries=1', '--spider', 'http://127.0.0.1:9123/healthz']
+      interval: 10s
+      timeout: 3s
+      retries: 5
     environment:
       APP_HOST: ${APP_HOST:?set APP_HOST in .env}
       HOOKS_HOST: ${HOOKS_HOST:?set HOOKS_HOST in .env}
@@ -43,8 +49,41 @@ services:
       - ./apps/web/dist:/srv:ro
       - caddy-data:/data
 
-  api: &vps-app
-    environment: &vps-app-env
+  # The schema migration, run once on every `docker compose up` before the api starts: the api
+  # image runs none, and Postgres is unpublished here, so `pnpm db:migrate` from the host cannot
+  # reach it. It is the image's own drizzle-orm migrator over the image's own migrations (the same
+  # program as infra/deploy.sh step 3, minus the advisory lock: one host, one migrate container).
+  migrate:
+    image: forge-app
+    # Built by the api service's `build:`; never pulled.
+    pull_policy: never
+    command:
+      - node
+      - --input-type=module
+      - --eval
+      - |
+        import { drizzle } from 'drizzle-orm/node-postgres';
+        import { migrate } from 'drizzle-orm/node-postgres/migrator';
+        import pg from 'pg';
+        const client = new pg.Client({ connectionString: process.env.DATABASE_MIGRATION_URL });
+        await client.connect();
+        await migrate(drizzle(client), { migrationsFolder: '/app/node_modules/@repo/db/migrations' });
+        await client.end();
+        console.log('migrations applied');
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_MIGRATION_URL: postgres://forge_migrator:forge_migrator@postgres:5432/forge
+    restart: 'no'
+
+  api:
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      &vps-app-env # An exact Claude Code version for agent homes, never `stable`: what runs is what we chose.
+      AGENT_HOME_CLAUDE_VERSION: ${AGENT_HOME_CLAUDE_VERSION:?pin an exact x.y.z in .env}
       APP_URL: https://${APP_HOST:?}
       CORS_ORIGINS: https://${APP_HOST:?}
       HOOKS_HOST: ${HOOKS_HOST:?}
@@ -59,13 +98,23 @@ services:
     networks: [default, sbx-ctl]
 
   worker:
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     environment:
       <<: *vps-app-env
 
   # The preview gateway (spec 017): verifies a signed route record and proxies to the sandbox
-  # through sandboxd's preview listener. It holds no database or platform credential. Local-grade
-  # wiring: network_mode service:api puts it where the api's loopback-only plain broker is, so no
-  # mTLS material is needed; the hardened path is infra/ansible/gateway.yml (mTLS broker).
+  # through sandboxd's preview listener. Local-grade wiring: network_mode service:api puts it
+  # where the api's loopback-only plain broker is, so no mTLS material is needed; the hardened
+  # path is infra/ansible/gateway.yml (mTLS broker). The price: the gateway shares the api's
+  # network namespace, so it can reach everything the api can (the stores, the plain broker,
+  # sandboxd's control port), and a gateway compromise is a compromise of that namespace.
+  #
+  # When the api container is recreated or restarts, the gateway is left in the old, dead
+  # namespace: `restart: true` re-creates it on compose-driven api restarts, and the healthcheck
+  # (the api's health on the shared loopback) turns it unhealthy otherwise; then
+  # `docker compose restart gateway`.
   gateway:
     build:
       context: .
@@ -74,6 +123,7 @@ services:
     depends_on:
       api:
         condition: service_healthy
+        restart: true
     environment:
       BROKER_HOST: 127.0.0.1
       BROKER_TRANSPORT: plain
@@ -85,6 +135,18 @@ services:
       # sbx-ctl and keep the minted Host, exactly as the preview-real suite does.
       PREVIEW_UPSTREAM_DIAL: http://172.30.2.1:3987
       PRODUCT_ORIGIN: https://${APP_HOST:?}
+      # Caddy's on-demand TLS `ask` (infra/Caddyfile.vps), reached as api:3201; never proxied.
+      TLS_ASK_PORT: 3201
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "Promise.all([fetch('http://127.0.0.1:3000/api/v1/health'), fetch('http://127.0.0.1:3201/')]).then(([api]) => process.exit(api.ok ? 0 : 1), () => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     mem_limit: 256m
     network_mode: service:api
     restart: unless-stopped

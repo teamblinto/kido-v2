@@ -174,9 +174,14 @@ services:
     environment:
       SANDBOXD_API_HOST: ${SANDBOXD_API_HOST:-}
       SANDBOXD_API_KEY_FILE: /run/secrets/sandboxd_api_key
+      # IPv4 resolvers gVisor sandboxes use (Docker's 127.0.0.11 is unreachable under runsc).
+      SANDBOXD_DNS: ${SANDBOXD_DNS:-1.1.1.1,9.9.9.9}
       SANDBOXD_DOCKER_ROOT: ${SANDBOXD_DOCKER_ROOT:-/var/lib/docker-sbx}
       SANDBOXD_EGRESS_LISTEN: 172.30.0.1:3988
       SANDBOXD_LISTEN: 172.30.2.1:3986
+      # Admission (README "Capacity"): past either limit new sandboxes queue as `starting`.
+      SANDBOXD_MAX_RUNNING: ${SANDBOXD_MAX_RUNNING:-22}
+      SANDBOXD_MIN_MEM_AVAILABLE_MB: ${SANDBOXD_MIN_MEM_AVAILABLE_MB:-1024}
       SANDBOXD_PREVIEW_LISTEN: 172.30.2.1:3987
       SANDBOXD_PREVIEW_PUBLIC_URL: ${SANDBOXD_PREVIEW_PUBLIC_URL:-http://172.30.2.1:3987}
       SANDBOXD_PUBLIC_URL: http://172.30.2.1:3986
@@ -202,6 +207,8 @@ services:
     volumes:
       # Read-only and only for GET /capacity's statfs of the Docker data root (disk alert at 70%).
       - ${SANDBOXD_DOCKER_ROOT:-/var/lib/docker-sbx}:${SANDBOXD_DOCKER_ROOT:-/var/lib/docker-sbx}:ro
+      # Same path inside and out: sandboxd hands dockerd <dataDir>/resolv.sandbox.conf as a bind
+      # source, which dockerd resolves on the host.
       - /var/lib/sandboxd:/var/lib/sandboxd
       - /var/run/docker.sock:/var/run/docker.sock
 

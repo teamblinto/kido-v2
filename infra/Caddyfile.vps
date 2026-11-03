@@ -8,18 +8,19 @@
 
 	# Preview hostnames are <label>-<port>.<PREVIEW_DOMAIN>: unbounded, and a stock Caddy cannot
 	# do the DNS challenge a wildcard certificate needs, so certificates are issued on demand
-	# per hostname. `ask` is what stops anyone minting certificates for arbitrary names: Caddy
-	# asks this local listener first, and it says yes only for names under PREVIEW_DOMAIN.
+	# per hostname. Without a strict `ask`, anyone could send random SNI names and burn the
+	# domain's Let's Encrypt quota, so Caddy asks the gateway (TLS_ASK_PORT, compose.vps.yaml),
+	# which says yes only for a label the broker knows, on its live route's port (a cold one: at
+	# most a few hostnames per label). See apps/gateway/src/tls-ask.ts.
 	on_demand_tls {
-		ask http://127.0.0.1:9123/allowed
+		ask http://api:3201/allowed
 	}
 }
 
+# Liveness for the compose healthcheck; loopback only.
 http://127.0.0.1:9123 {
 	bind 127.0.0.1
-	@allowed expression {query.domain}.endsWith('.{$PREVIEW_DOMAIN}')
-	respond @allowed 200
-	respond 403
+	respond /healthz 200
 }
 
 # The app, the API and the hooks origin. Caddy provisions certificates for both names.
