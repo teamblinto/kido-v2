@@ -103,6 +103,8 @@ let proxyPort: number;
 let current: SandboxRow | undefined;
 let dns: Record<string, string[]>;
 let dialed: { ip: string; port: number }[];
+let dead: Set<string>;
+let deadPort: number;
 
 beforeEach(async () => {
   current = row();
@@ -114,6 +116,10 @@ beforeEach(async () => {
     'cidr.example.com': ['1.2.3.4'],
   };
   dialed = [];
+  dead = new Set();
+  const closed = createServer();
+  deadPort = await listen(closed);
+  await new Promise((ok) => closed.close(ok));
   target = createServer((s) => {
     s.on('data', (d) => s.write(`echo:${d.toString()}`));
   });
@@ -121,10 +127,10 @@ beforeEach(async () => {
   proxy = startEgressProxy(cfg, {
     sandboxForIp: (ip) => (ip === '127.0.0.1' ? current : undefined),
     resolve: (h) => (dns[h] ? Promise.resolve(dns[h]) : Promise.reject(new Error('nx'))),
-    // Redirect every upstream dial to the local echo server.
+    // Redirect every upstream dial to the local echo server; a `dead` address refuses at once.
     dial: (ip, port) => {
       dialed.push({ ip, port });
-      return connect(targetPort, '127.0.0.1');
+      return connect(dead.has(ip) ? deadPort : targetPort, '127.0.0.1');
     },
   });
   proxyPort = await listen(proxy);
@@ -217,6 +223,30 @@ describe('CONNECT', () => {
     dns['2606:4700::1'] = ['2606:4700::1'];
     expect((await doConnect('[2606:4700::1]:443')).status).toBe(200);
     expect(dialed).toEqual([{ ip: '2606:4700::1', port: 443 }]);
+  });
+  it('dials IPv4 addresses before IPv6 ones', async () => {
+    dns['api.anthropic.com'] = ['2606:4700::7', '203.0.113.7'];
+    expect((await doConnect('api.anthropic.com:443')).status).toBe(200);
+    expect(dialed).toEqual([{ ip: '203.0.113.7', port: 443 }]);
+  });
+  it('falls back to the next allowed address when a dial fails', async () => {
+    dns['api.anthropic.com'] = ['2606:4700::7', '203.0.113.7', '203.0.113.8'];
+    dead.add('203.0.113.7');
+    expect(await doConnect('api.anthropic.com:443')).toEqual({ status: 200, echo: 'echo:ping' });
+    expect(dialed.map((d) => d.ip)).toEqual(['203.0.113.7', '203.0.113.8']);
+  });
+  it('502 when every address fails', async () => {
+    dns['api.anthropic.com'] = ['203.0.113.7', '2606:4700::7'];
+    dead.add('203.0.113.7').add('2606:4700::7');
+    expect((await doConnect('api.anthropic.com:443')).status).toBe(502);
+    expect(dialed.map((d) => d.ip)).toEqual(['203.0.113.7', '2606:4700::7']);
+  });
+  it('CIDR entries: only the matching addresses are tried', async () => {
+    current = row({ networkAllow: ['1.2.3.0/24'] });
+    dns['cidr.example.com'] = ['1.2.4.4', '1.2.3.4', '1.2.3.5'];
+    dead.add('1.2.3.4');
+    expect((await doConnect('cidr.example.com:443')).status).toBe(200);
+    expect(dialed.map((d) => d.ip)).toEqual(['1.2.3.4', '1.2.3.5']);
   });
   it('502 when DNS fails', async () => {
     current = row({ networkAllow: ['gone.example.com'] });

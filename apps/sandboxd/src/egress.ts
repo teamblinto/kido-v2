@@ -142,7 +142,7 @@ function stripHop(h: IncomingMessage['headers']): OutgoingHttpHeaders {
 }
 
 type Decision =
-  | { ok: true; row: SandboxRow; ip: string }
+  | { ok: true; row: SandboxRow; ips: string[] }
   | { ok: false; status: number; reason: string; row?: SandboxRow };
 
 export function startEgressProxy(cfg: Config, deps: EgressDeps): Server {
@@ -192,8 +192,30 @@ export function startEgressProxy(cfg: Config, deps: EgressDeps): Server {
     }
     if (addrs.length === 0) return fail(502, 'dns');
     if (!isApi && addrs.some(isPrivateAddress)) return fail(403, 'private-address');
-    const ip = nameOk ? addrs[0] : addrs.find((a) => ipEntries.some((e) => matchesIp(a, e)));
-    return ip === undefined ? fail(403, 'not-allowed') : { ok: true, row, ip };
+    const ips = nameOk ? addrs : addrs.filter((a) => ipEntries.some((e) => matchesIp(a, e)));
+    // IPv4 first: a host without an IPv6 route would otherwise sit out a connect timeout.
+    ips.sort((a, b) => Number(isIP(a) === 6) - Number(isIP(b) === 6));
+    return ips.length === 0 ? fail(403, 'not-allowed') : { ok: true, row, ips };
+  }
+
+  /** Each address in turn, each with its own connect timeout; the first that connects wins. */
+  async function open(ips: string[], port: number): Promise<Socket> {
+    let err: unknown;
+    for (const ip of ips) {
+      const s = dial(ip, port);
+      try {
+        await new Promise<void>((ok, no) => {
+          s.once('connect', ok);
+          s.once('error', no);
+        });
+        s.removeAllListeners('error');
+        return s;
+      } catch (e) {
+        s.destroy();
+        err = e;
+      }
+    }
+    throw err;
   }
 
   const refusal = (d: Extract<Decision, { ok: false }>, host: string, port: number) =>
@@ -231,8 +253,15 @@ export function startEgressProxy(cfg: Config, deps: EgressDeps): Server {
         return;
       }
       const t0 = Date.now();
+      let sock: Socket;
+      try {
+        sock = await open(d.ips, 80);
+      } catch {
+        res.writeHead(502).end();
+        return;
+      }
       const up = request({
-        createConnection: () => dial(d.ip, 80),
+        createConnection: () => sock,
         method: req.method,
         path: u.pathname + u.search,
         headers: { ...stripHop(req.headers), host: u.host },
@@ -280,20 +309,19 @@ export function startEgressProxy(cfg: Config, deps: EgressDeps): Server {
         return;
       }
       const t0 = Date.now();
-      const up = dial(d.ip, port);
+      let up: Socket;
+      try {
+        up = await open(d.ips, port);
+      } catch {
+        client.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+        return;
+      }
+      if (client.destroyed) {
+        up.destroy();
+        return;
+      }
       let bytesUp = 0;
       let bytesDown = 0;
-      up.once('connect', () => {
-        client.setTimeout(IDLE_TIMEOUT_MS, done);
-        up.setTimeout(IDLE_TIMEOUT_MS, done);
-        client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
-        if (head.length > 0) up.write(head);
-        client.on('data', (b: Buffer) => (bytesUp += b.length));
-        up.on('data', (b: Buffer) => (bytesDown += b.length));
-        client.pipe(up);
-        up.pipe(client);
-        log('info', 'egress tunnel open', { op: 'egress', sandboxId: d.row.id, host, port });
-      });
       let closed = false;
       const done = () => {
         if (closed) return;
@@ -310,14 +338,18 @@ export function startEgressProxy(cfg: Config, deps: EgressDeps): Server {
           durationMs: Date.now() - t0,
         });
       };
-      up.on('error', () => {
-        if (!up.connecting && up.bytesWritten === 0 && bytesDown === 0 && !client.destroyed) {
-          client.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
-        }
-        done();
-      });
+      up.on('error', done);
       up.on('close', done);
       client.on('close', done);
+      client.setTimeout(IDLE_TIMEOUT_MS, done);
+      up.setTimeout(IDLE_TIMEOUT_MS, done);
+      client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
+      if (head.length > 0) up.write(head);
+      client.on('data', (b: Buffer) => (bytesUp += b.length));
+      up.on('data', (b: Buffer) => (bytesDown += b.length));
+      client.pipe(up);
+      up.pipe(client);
+      log('info', 'egress tunnel open', { op: 'egress', sandboxId: d.row.id, host, port });
     })().catch((e: unknown) => {
       log('error', 'egress internal error', { op: 'egress', err: String(e) });
       client.destroy();
