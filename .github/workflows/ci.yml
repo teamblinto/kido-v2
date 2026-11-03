@@ -12,14 +12,101 @@ concurrency:
 permissions:
   contents: read
 
+# The merge gate is five independent jobs rather than one serial one, so its wall time is the
+# slowest job rather than the sum of all of them:
+#
+#   static        format, lint, module boundaries, type-check, build -- no services
+#   test          the suites against Postgres and four Redis roles; the api suite is sharded
+#   api-coverage  merges the api shards' coverage and enforces the 100% branch gate on the whole
+#   compose       the compose stack boots, serves and migrates from empty
+#   sandboxd      sandboxd and the real-sandbox suites
+#
+# The api suite is ~390 files and ran ~15 minutes as one process: a private repository's runner
+# has 2 vCPUs, so Vitest runs a single worker and the suite is effectively serial. Splitting it
+# across jobs is the lever that scales; more workers on the same 2 vCPUs would not.
 jobs:
-  quality:
-    name: Quality and build
+  static:
+    name: Format, lint, boundaries, type-check and build
     runs-on: ubuntu-latest
-    # The api suite alone is ~390 files and runs for well over ten minutes (759s on a
-    # developer machine), on top of install, lint, typecheck and build. At 20 the job was
-    # cancelled mid-suite with every test so far green -- a budget, not a hang.
-    timeout-minutes: 45
+    timeout-minutes: 20
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm, Node.js and dependencies
+        uses: ./.github/actions/setup
+
+      # lint, typecheck and build are pure functions of the source, so their turbo cache is safe to
+      # carry between runs: an unchanged package replays instead of re-running. `test` is never
+      # cached (see TURBO_FORCE in `test`). Keyed per commit and restored from the newest, so the
+      # cache follows main; the prune step at the end of this job keeps it from growing forever.
+      - name: Restore the turbo cache
+        uses: actions/cache@v4
+        with:
+          path: .turbo/cache
+          key: turbo-static-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-static-${{ runner.os }}-
+
+      - name: Check formatting
+        run: pnpm format:check
+
+      - name: Lint
+        run: pnpm lint
+
+      # Before type-check, because a boundary error should be the first thing a PR
+      # author reads, and this step costs seconds where typecheck costs minutes. No
+      # `if`, no `continue-on-error`, no env: a gate that can be switched off is a
+      # convention, and the ruleset in `.dependency-cruiser.cjs` is only a rule
+      # while this step is unconditional.
+      - name: Check module boundaries
+        run: pnpm boundaries
+
+      - name: Type-check
+        run: pnpm typecheck
+
+      - name: Build
+        run: pnpm build
+
+      # A hit does not refresh an entry's mtime, so an entry unused for a week goes and is rebuilt
+      # once on its next use; everything else in the cache is from the last week of runs.
+      - name: Prune turbo cache entries older than a week
+        run: find .turbo/cache -type f -mtime +7 -delete 2>/dev/null || true
+
+  test:
+    name: Test (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    # The longest shard runs in a few minutes; this is a hang guard, not a budget.
+    timeout-minutes: 25
+
+    strategy:
+      # Every shard reports, so one red shard does not hide a second failure behind a cancellation.
+      fail-fast: false
+      matrix:
+        include:
+          # Every workspace except the api, whose suite is the shards below.
+          - name: workspace
+            filter: '!@repo/api'
+          # Six shards, a number `api-coverage` also checks: a shard that never reports fails the
+          # merged gate rather than passing by omission.
+          - name: api 1/6
+            filter: '@repo/api'
+            vitest: --shard=1/6 --reporter=default --reporter=blob
+          - name: api 2/6
+            filter: '@repo/api'
+            vitest: --shard=2/6 --reporter=default --reporter=blob
+          - name: api 3/6
+            filter: '@repo/api'
+            vitest: --shard=3/6 --reporter=default --reporter=blob
+          - name: api 4/6
+            filter: '@repo/api'
+            vitest: --shard=4/6 --reporter=default --reporter=blob
+          - name: api 5/6
+            filter: '@repo/api'
+            vitest: --shard=5/6 --reporter=default --reporter=blob
+          - name: api 6/6
+            filter: '@repo/api'
+            vitest: --shard=6/6 --reporter=default --reporter=blob
 
     # Every connection string is set explicitly, and none of them is allowed to be a
     # default. `packages/db/src/env.ts` falls back to
@@ -53,7 +140,9 @@ jobs:
     # applied instead by the "Configure Redis eviction policies" step below, with
     # CONFIG SET, before any suite runs -- see the note there for why they are not
     # simply left at the defaults.
-    services:
+    #
+    # Anchored, because `sandboxd` runs against exactly the same five containers.
+    services: &integration-services
       postgres:
         image: postgres:16-alpine
         env:
@@ -110,23 +199,6 @@ jobs:
           --health-retries 10
 
     steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
       # Deleting EXPECT_INTEGRATION from the env block above is invisible while the
       # services happen to be up: the suites run, pass, and nothing says the guard is
       # gone. This step makes that edit fail the job on the spot.
@@ -137,6 +209,12 @@ jobs:
             exit 1
           fi
           echo "EXPECT_INTEGRATION=1 — an unreachable database fails this job rather than skipping it."
+
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm, Node.js and dependencies
+        uses: ./.github/actions/setup
 
       # A service container runs the image, but the repository is not checked out
       # until the steps begin, so there is nothing to mount into
@@ -199,51 +277,96 @@ jobs:
       - name: Migrate database
         run: pnpm --filter @repo/db db:migrate
 
-      - name: Check formatting
-        run: pnpm format:check
-
-      - name: Lint
-        run: pnpm lint
-
-      # Before type-check, because a boundary error should be the first thing a PR
-      # author reads, and this step costs seconds where typecheck costs minutes. No
-      # `if`, no `continue-on-error`, no env: a gate that can be switched off is a
-      # convention, and the ruleset in `.dependency-cruiser.cjs` is only a rule
-      # while this step is unconditional.
-      - name: Check module boundaries
-        run: pnpm boundaries
-
-      - name: Type-check
-        run: pnpm typecheck
-
       # TURBO_FORCE, because a turbo cache key is a hash of source and declared env
       # and cannot encode "a live Postgres answered on 5432". A cached green
-      # `@repo/db#test` replays as green with the database stopped — verified
-      # locally, and the only reason it is not reachable on a runner today is that
-      # nothing restores the turbo cache. It is scoped to this step: lint, typecheck
-      # and build are pure functions of the source and stay cacheable.
+      # `@repo/db#test` replays as green with the database stopped. Scoped to this
+      # step: lint, typecheck and build are pure functions of the source and are
+      # cached in `static`.
       #
       # set -o pipefail, because the default shell for `run` is `bash -e`, without
       # it — so `pnpm test | tee` would report tee's exit code and swallow a failure.
       #
-      # This one step carries three gates, and none of them is a separate run:
-      #
-      #   * the suites themselves;
-      #   * `--allowOnly=false` (in `apps/api/package.json` and again in
-      #     `vitest.config.mts`), so a stray `.only` fails the job rather than
-      #     narrowing it to one test and passing;
-      #   * branch coverage on `rbac/` and `common/crypto/`, enforced at 100% by
-      #     the thresholds in `vitest.config.mts`. Coverage is enabled in the
-      #     config rather than behind a `--coverage` flag on a second invocation:
-      #     the api suite takes over ten minutes, and running it twice to
-      #     produce a number is ten minutes spent on something the first run
-      #     already knew.
+      # `--allowOnly=false` (in `apps/api/package.json` and again in
+      # `vitest.config.mts`) refuses a stray `.only` in every shard. An api shard writes
+      # its coverage to a blob report instead of judging it; the 100% branch gate binds
+      # in `api-coverage`, on the merged run.
       - name: Test
         env:
           TURBO_FORCE: true
+          TURBO_FILTER: ${{ matrix.filter }}
+          VITEST_ARGS: ${{ matrix.vitest }}
         run: |
           set -o pipefail
-          pnpm test 2>&1 | tee test.log
+          pnpm exec turbo run test --filter="${TURBO_FILTER}" ${VITEST_ARGS:+-- ${VITEST_ARGS}} 2>&1 | tee test.log
+
+      # EXPECT_INTEGRATION covers the case where the database is unreachable. This
+      # covers every other reason a suite might decide to skip itself: the repository
+      # convention is that a skipped integration suite prints a banner containing
+      # SKIPPING, and in CI that banner is a failure rather than a warning.
+      - name: Refuse a silently skipped integration suite
+        run: |
+          if grep -q 'SKIPPING' test.log; then
+            echo "::error::An integration suite skipped in CI. A skip here means the assertion never ran."
+            grep -n -A2 'SKIPPING' test.log
+            exit 1
+          fi
+          echo "No integration suite skipped."
+
+      # Uploaded from a red shard too: the merged coverage is most useful exactly when somebody
+      # wants to know whether a gap is a broken test or a branch nobody wrote one for.
+      - name: Upload the api shard's blob report
+        if: ${{ !cancelled() && matrix.vitest }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-blob-${{ strategy.job-index }}
+          path: apps/api/.vitest-reports/
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 1
+
+  # The 100% branch gate on rbac/, common/crypto/ and deploy/ is a property of the whole suite, so it
+  # binds here on the shards' merged coverage rather than on any one shard.
+  api-coverage:
+    name: API coverage gate (merged shards)
+    needs: test
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # `vitest.config.mts` enforces its thresholds exactly when this is 1 -- the same condition
+      # under which the shards were required to run every integration suite.
+      EXPECT_INTEGRATION: 1
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up pnpm, Node.js and dependencies
+        uses: ./.github/actions/setup
+
+      - name: Download the api shards' blob reports
+        uses: actions/download-artifact@v4
+        with:
+          pattern: api-blob-*
+          path: apps/api/.vitest-reports
+          merge-multiple: true
+
+      # Six or nothing: a shard that never reported would otherwise be coverage nobody measured,
+      # and its files would fail the gate below with a misleading per-file number.
+      - name: Require every api shard's report
+        run: |
+          count="$(find apps/api/.vitest-reports -name 'blob-*.json' | wc -l)"
+          echo "api shard reports: ${count}"
+          if [ "${count}" != "6" ]; then
+            echo "::error::Expected 6 api shard reports, found ${count}. A shard failed before reporting; see the Test jobs."
+            exit 1
+          fi
+
+      # Merges the shards' results and coverage, prints the combined report, and applies the
+      # thresholds in `vitest.config.mts` to the whole suite. A failed test in any shard fails this
+      # step too.
+      - name: Merge reports and enforce coverage thresholds
+        run: pnpm --filter @repo/api exec vitest --merge-reports
 
       # The threshold is only a gate while it runs. `coverage.enabled: false`, a
       # deleted `thresholds` block, or an `include` that stops matching either
@@ -286,23 +409,7 @@ jobs:
             console.log(`Coverage gate held: ${files.length} files across rbac/, common/crypto/ and deploy/, ${branches.covered}/${branches.total} branches.`);
           '
 
-      # EXPECT_INTEGRATION covers the case where the database is unreachable. This
-      # covers every other reason a suite might decide to skip itself: the repository
-      # convention is that a skipped integration suite prints a banner containing
-      # SKIPPING, and in CI that banner is a failure rather than a warning.
-      - name: Refuse a silently skipped integration suite
-        run: |
-          if grep -q 'SKIPPING' test.log; then
-            echo "::error::An integration suite skipped in CI. A skip here means the assertion never ran."
-            grep -n -A2 'SKIPPING' test.log
-            exit 1
-          fi
-          echo "No integration suite skipped."
-
-      - name: Build
-        run: pnpm build
-
-  # Spec 001 criteria 20-21 (#20): the compose stack is a deliverable, and `quality`
+  # Spec 001 criteria 20-21 (#20): the compose stack is a deliverable, and `test`
   # never touches it -- it proves the code against service containers whose ports
   # happen to mirror compose.yaml. Nothing above notices a compose file that does not
   # parse, an api image that does not build, a `depends_on` on a service that does not
@@ -310,7 +417,7 @@ jobs:
   # roles. This job proves those things, and that the migrations apply from an empty
   # database and are idempotent (SC-009, SC-012).
   #
-  # The suites are not run here (research R14, FR-030): `quality` already runs every
+  # The suites are not run here (research R14, FR-030): `test` already runs every
   # one of them against the same ports, so a second run under compose would prove
   # nothing new and double the slowest job. What is proved here is the stack, not the
   # code.
@@ -326,7 +433,7 @@ jobs:
     timeout-minutes: 20
 
     # The host-side address of the compose Postgres, for `db:migrate` run on the runner
-    # rather than in a container. Set explicitly for the same reason `quality` sets it:
+    # rather than in a container. Set explicitly for the same reason `test` sets it:
     # `packages/db/src/env.ts` has a default, and a default that happens to be right is
     # still not a statement.
     env:
@@ -380,19 +487,8 @@ jobs:
           PY
 
       # pnpm and Node only for `db:migrate`; the stack itself needs neither.
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Set up pnpm, Node.js and dependencies
+        uses: ./.github/actions/setup
 
       # The edge serves the built single-page app from a mount rather than from an image of
       # its own (025 T012), so the build happens here. It is the one thing `--build` used to
@@ -596,7 +692,7 @@ jobs:
           # The forwarded-header set itself (CHK002.3 to CHK002.6) is not asserted here, and the
           # omission is deliberate rather than overlooked: nothing the API exposes echoes a
           # request header back, so there is no observable through the edge to assert on. What
-          # covers it instead is `bootstrap.ts`'s `trust proxy` and the api suites in `quality`,
+          # covers it instead is `bootstrap.ts`'s `trust proxy` and the api suites in `test`,
           # plus the edge's own configuration -- nginx sets the four explicitly, and Caddy's
           # `reverse_proxy` sets X-Forwarded-For, -Host and -Proto and preserves the client's
           # Host by default. Asserting it end to end needs a route that reflects its request.
@@ -764,7 +860,7 @@ jobs:
         run: docker compose down -v
 
   # Spec 042 §14 step 5: the `*-real` suites exist to prove the API's Daytona adapter against a
-  # real sandbox runtime, and sandboxd is that runtime now. `quality` cannot run them (they need
+  # real sandbox runtime, and sandboxd is that runtime now. `test` cannot run them (they need
   # Docker and a running sandboxd), and `compose` runs no suites, so this job does: it builds the
   # sandbox base image, starts sandboxd directly under node (runc, firewall off -- gVisor and the
   # host iptables are proved on the staging VPS by infra/sandboxd/spike.sh, not on a shared
@@ -779,7 +875,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
-    # The same connection strings and service containers as `quality`, for the same reasons (see
+    # The same connection strings and service containers as `test`, for the same reasons (see
     # the comments there); the real suites boot the whole app.
     env:
       DATABASE_MIGRATION_URL: postgres://forge_migrator:forge_migrator@localhost:5432/forge
@@ -796,79 +892,14 @@ jobs:
       DAYTONA_API_URL: http://127.0.0.1:3986
       DAYTONA_API_KEY: ci-sandboxd-key
 
-    services:
-      postgres:
-        image: postgres:16-alpine
-        env:
-          POSTGRES_DB: forge
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_USER: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U postgres -d forge"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-          --health-start-period 10s
-
-      redis-session:
-        image: redis:7-alpine
-        ports:
-          - 6379:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
-      redis-cache:
-        image: redis:7-alpine
-        ports:
-          - 6380:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
-      redis-queue:
-        image: redis:7-alpine
-        ports:
-          - 6381:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
-
-      redis-stream:
-        image: redis:7-alpine
-        ports:
-          - 6382:6379
-        options: >-
-          --health-cmd "redis-cli ping"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
+    services: *integration-services
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install pnpm
-        uses: pnpm/action-setup@v4
-        with:
-          run_install: false
-
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 24
-          cache: pnpm
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Set up pnpm, Node.js and dependencies
+        uses: ./.github/actions/setup
 
       - name: Bootstrap database roles and extensions
         run: |
@@ -937,7 +968,7 @@ jobs:
           exit 1
 
       # Coverage off: these are three files out of ~390, and the 100% gate on rbac/ and crypto/
-      # is `quality`'s to enforce on the whole suite, not here on a slice.
+      # is `api-coverage`'s to enforce on the whole suite, not here on a slice.
       - name: API real-sandbox suites
         run: |
           set -o pipefail

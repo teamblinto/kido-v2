@@ -1,0 +1,22 @@
+name: Set up pnpm, Node.js and dependencies
+description: >-
+  The three steps every job that runs repository code repeats. The pnpm store is cached by
+  setup-node, keyed on pnpm-lock.yaml, so an unchanged lockfile installs from the cache.
+
+runs:
+  using: composite
+  steps:
+    - name: Install pnpm
+      uses: pnpm/action-setup@v4
+      with:
+        run_install: false
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: 24
+        cache: pnpm
+
+    - name: Install dependencies
+      shell: bash
+      run: pnpm install --frozen-lockfile

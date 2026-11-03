@@ -444,6 +444,7 @@ export class ProjectService {
     orgId: string,
     extra: SQL | undefined,
   ): Promise<{ createdAt: Date; id: string; name: string }[]> {
+    // `id` breaks ties: rows created in one transaction share `now()`, so their order is otherwise undefined.
     return this.tenant.tx
       .select({
         createdAt: projects.createdAt,
@@ -452,7 +453,7 @@ export class ProjectService {
       })
       .from(projects)
       .where(and(eq(projects.orgId, orgId), isNull(projects.deletedAt), extra))
-      .orderBy(asc(projects.createdAt));
+      .orderBy(asc(projects.createdAt), asc(projects.id));
   }
 }
 

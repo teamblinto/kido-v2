@@ -306,10 +306,10 @@ describe('Guest access through project grants (e2e)', () => {
           .set('Cookie', guest.cookie)
           .expect(200);
 
-        expect(projectListResponseSchema.parse(response.body).projects.map((p) => p.name)).toEqual([
-          'Alpha',
-          'Gamma',
-        ]);
+        // Sorted: seedTenant creates all three in one transaction, so they share `created_at` and
+        // the listing orders them by random uuid, not by name.
+        const names = projectListResponseSchema.parse(response.body).projects.map((p) => p.name);
+        expect(names.sort()).toEqual(['Alpha', 'Gamma']);
       });
 
       /**

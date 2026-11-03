@@ -16,7 +16,18 @@ import { defineConfig } from 'vitest/config';
  * pushing runs `EXPECT_INTEGRATION=1 pnpm --filter @repo/api test`, which is the same command that
  * turns a skipped integration suite into a failure. The two belong together.
  */
-const COVERAGE_ENFORCED = process.env.EXPECT_INTEGRATION === '1';
+const COVERAGE_ENFORCED = process.env.EXPECT_INTEGRATION === '1' && !isShard();
+
+/**
+ * CI splits this suite across jobs with `--shard`, and a shard sees only some of the tests behind a
+ * gated file, so a per-file 100% threshold on one shard fails on branches another shard covers. The
+ * shards write blob reports instead, and the gate binds on `vitest --merge-reports`, which combines
+ * their coverage and applies these same thresholds to the whole suite (`api-coverage` in ci.yml).
+ * Read from argv rather than an env var, so there is no switch that turns the gate off.
+ */
+function isShard(): boolean {
+  return process.argv.some((arg) => arg.startsWith('--shard'));
+}
 
 /** No uncovered branch, per spec 001's testing strategy. See the comment on `thresholds` below. */
 const FULL_COVERAGE = {
