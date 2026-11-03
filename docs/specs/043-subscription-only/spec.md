@@ -40,7 +40,7 @@
   page refreshes itself.
 - **Found while verifying.** sandbox.ops job ids collided with the previous cycle's completed job,
   so a second hibernate was dropped and the row stayed `hibernating` with every run refused; job
-  ids now carry the outbox event id.
+  ids now carry the transition cycle (`since`).
 
 ## Success criteria
 
@@ -55,6 +55,6 @@
 | Staged start; frame only at ready                   | `walks the steps at creating / installing / starting, with no frame yet`; `polls until ready, then mounts the frame and stops asking`; `maps a settled %s row whose dev server reported %s to %s`                                 |
 | Usage: caller's runs only, readable retired credits | e2e `another member’s and another organisation’s runs never appear`; `lists the caller’s own runs and maps what paid, the cost and the CLI default; an agent-home run is the subscription`                                        |
 | Gateway recovers from a restarted api               | `declares the namespace dead after three consecutive unanswered probes past the start period`; live: `docker restart kido-api-1` → gateway rejoined in ~20 s                                                                      |
-| Second hibernate is not dropped                     | `gives the second hibernate of a sandbox its own job, and a republished event the same one (spec 043)`                                                                                                                            |
+| Second hibernate is not dropped                     | `is one job per transition cycle: the same cycle collapses, the next is new (spec 043)`; e2e `hibernates the same sandbox again on its next idle cycle, after the first completed`                                                |
 | Waking page reaches the app                         | live: 202 Waking up → 503 not serving (refreshing) → 200 app, no manual reload                                                                                                                                                    |
 | `installing` is a real phase                        | ✗ — dependencies are baked into the template image; the API never reports `installing`, so the step completes with creation.                                                                                                      |
