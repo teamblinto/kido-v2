@@ -66,6 +66,18 @@ describe.skipIf(!up)('DockerodePort', () => {
     expect(ps.output.toString()).not.toMatch(/sleep 30/);
   });
 
+  it('on timeout also kills children that left the process group, and leaves nothing in /tmp', async () => {
+    const before = await run(['ls', '-A', '/tmp']);
+    const r = await run(['sh', '-c', 'setsid sleep 31 & sleep 30'], { timeoutMs: 1000 });
+    expect(r).toEqual({ timedOut: true });
+    const ps = await run(['ps', '-eo', 'args']);
+    if (ps.timedOut || before.timedOut) throw new Error('timed out');
+    expect(ps.output.toString()).not.toMatch(/sleep 3[01]/);
+    const after = await run(['ls', '-A', '/tmp']);
+    if (after.timedOut) throw new Error('ls timed out');
+    expect(after.output.toString()).toBe(before.output.toString());
+  });
+
   it('commits, then removes', async () => {
     await docker.commit(cid, tag);
     expect(await docker.imageExists(tag)).toBe(true);

@@ -174,11 +174,23 @@ export function registerToolboxRoutes(api: ReturnType<typeof router>, d: Deps): 
       const p = queryPath(url);
       const stdin = await readUpload(req);
       ok(
-        await run(cid, ['sh', '-c', 'mkdir -p -- "$(dirname -- "$1")" && cat > "$1"', 'sh', p], {
-          stdin,
-          max: 64 << 10,
-          timeoutMs: 120_000,
-        }),
+        // Builtins only until `cat` (no dirname subshell, mkdir only when missing): every
+        // process costs 100+ ms under gVisor.
+        await run(
+          cid,
+          [
+            'sh',
+            '-c',
+            'd=${1%/*}; [ -d "${d:-/}" ] || mkdir -p -- "$d" || exit 1; exec cat > "$1"',
+            'sh',
+            p,
+          ],
+          {
+            stdin,
+            max: 64 << 10,
+            timeoutMs: 120_000,
+          },
+        ),
         'upload',
       );
       empty(res);

@@ -153,25 +153,18 @@ export class DockerodePort implements DockerPort {
   }
 
   async exec(cid: string, opts: ExecOpts): Promise<ExecOutcome> {
-    const pidFile = `/tmp/.sbx-exec-${randomBytes(8).toString('hex')}`;
+    // Every process of this call inherits the marker, so a timeout kills them by it, including
+    // children that left the process group (setsid, daemons). The argv runs as is: under gVisor
+    // each extra process (a wrapper shell, a pid file to rm) costs 100+ ms per call.
+    const marker = `SBX_EXEC=${randomBytes(8).toString('hex')}`;
     const user = opts.user ?? '1000:1000';
     const exec = await this.docker.getContainer(cid).exec({
-      // setsid makes the shell a group leader so a timeout can kill the whole tree; -w because
-      // exec'd processes are already group leaders, so setsid would fork and exit 0 at once.
-      Cmd: [
-        'setsid',
-        '-w',
-        'sh',
-        '-c',
-        `echo $$ > ${pidFile}; "$@"; rc=$?; rm -f ${pidFile}; exit $rc`,
-        'sh',
-        ...opts.argv,
-      ],
+      Cmd: opts.argv,
       AttachStdout: true,
       AttachStderr: true,
       AttachStdin: !!opts.stdin,
       WorkingDir: opts.cwd,
-      Env: envList(opts.env),
+      Env: [...envList(opts.env), marker],
       User: user,
     });
     const stream = await exec.start({ hijack: true, stdin: !!opts.stdin });
@@ -209,18 +202,24 @@ export class DockerodePort implements DockerPort {
 
     if (outcome === 'timeout') {
       stream.destroy();
-      // The pid file may not exist yet if the timeout beat the wrapper; retry ~1s.
+      // Kill every process whose environment holds the marker; repeat until a pass finds none
+      // (a child forked mid-pass). The process may not exist yet if the timeout beat it: ~1 s.
       const code = await this.runQuiet(
         cid,
         [
           'sh',
           '-c',
-          `i=0; while [ $i -lt 10 ]; do if [ -s ${pidFile} ]; then kill -KILL -$(cat ${pidFile}); rm -f ${pidFile}; exit 0; fi; i=$((i+1)); sleep 0.1; done; exit 1`,
+          'hit=1; i=0; while [ $i -lt 10 ]; do ' +
+            'ps=$(grep -lzx -- "$1" /proc/[0-9]*/environ 2>/dev/null); ' +
+            'if [ -n "$ps" ]; then hit=0; for f in $ps; do f=${f#/proc/}; kill -KILL "${f%/environ}" 2>/dev/null; done; ' +
+            'elif [ $hit = 0 ]; then exit 0; fi; i=$((i+1)); sleep 0.1; done; exit $hit',
+          'sh',
+          marker,
         ],
         user,
       );
       if (code !== 0) {
-        log('warn', 'exec timeout kill found no process group', { cid, pidFile, code });
+        log('warn', 'exec timeout kill found no process', { cid, code });
       }
       return { timedOut: true };
     }
