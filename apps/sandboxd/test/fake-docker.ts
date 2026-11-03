@@ -5,6 +5,7 @@ import type {
   ContainerStatus,
   DockerEvent,
   DockerPort,
+  NetworkOpts,
   ExecOpts,
   ExecOutcome,
 } from '../src/docker.ts';
@@ -18,7 +19,7 @@ export class FakeDocker implements DockerPort {
   images = new Set<string>();
   /** Images removeImage refuses with 'in-use', as docker does for a image with a container. */
   imagesInUse = new Set<string>();
-  networks = new Map<string, { internal: boolean; icc?: boolean }>();
+  networks = new Map<string, NetworkOpts>();
   execHandler: ExecHandler = () => ({
     timedOut: false,
     exitCode: 0,
@@ -88,11 +89,13 @@ export class FakeDocker implements DockerPort {
     this.rec('execDetached', cid, opts);
     return Promise.resolve();
   }
-  ensureNetwork(name: string, opts: { internal: boolean; icc?: boolean }) {
+  ensureNetwork(name: string, opts: NetworkOpts) {
     this.rec('ensureNetwork', name, opts);
     const have = this.networks.get(name);
-    if (have && have.internal !== opts.internal) {
-      return Promise.reject(new Error(`network ${name} exists with internal=${have.internal}`));
+    const bad =
+      have && (Object.keys(opts) as (keyof NetworkOpts)[]).find((k) => have[k] !== opts[k]);
+    if (have && bad) {
+      return Promise.reject(new Error(`network ${name} exists with ${bad}=${String(have[bad])}`));
     }
     this.networks.set(name, opts);
     return Promise.resolve();

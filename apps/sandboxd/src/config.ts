@@ -86,7 +86,8 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
   if (real && env.SANDBOXD_FIREWALL === 'off') {
     throw new Error('SANDBOXD_FIREWALL=off is refused when SANDBOXD_REAL=1');
   }
-  if (real && !env.SANDBOXD_API_HOST) throw new Error('SANDBOXD_API_HOST is required when SANDBOXD_REAL=1');
+  if (real && !env.SANDBOXD_API_HOST)
+    throw new Error('SANDBOXD_API_HOST is required when SANDBOXD_REAL=1');
   const listen = hostPort(env.SANDBOXD_LISTEN ?? '127.0.0.1:3986');
   const previewListen = hostPort(env.SANDBOXD_PREVIEW_LISTEN ?? '127.0.0.1:3987');
   return {

@@ -66,6 +66,40 @@ describe('ensureNetwork', () => {
     expect(stub.createNetwork).not.toHaveBeenCalled();
   });
 
+  it('rejects a mismatched subnet or bridge name', async () => {
+    const stub = existing({
+      Internal: true,
+      Options: { 'com.docker.network.bridge.enable_icc': 'false' },
+      IPAM: { Config: [{ Subnet: '10.0.0.0/24', Gateway: '10.0.0.1' }] },
+    });
+    const o = { internal: true, icc: false, subnet: '172.30.0.0/24', gateway: '172.30.0.1' };
+    await expect(port(stub).ensureNetwork('sbx-agent', o)).rejects.toThrow(/subnet=10\.0\.0\.0/);
+    await expect(
+      port(stub).ensureNetwork('sbx-agent', { internal: true, bridgeName: 'sbx-agent0' }),
+    ).rejects.toThrow(/bridgeName/);
+  });
+
+  it('creates with IPAM, icc and bridge name', async () => {
+    const createNetwork = vi.fn();
+    await port({ listNetworks: () => Promise.resolve([]), createNetwork }).ensureNetwork('n', {
+      internal: true,
+      icc: false,
+      subnet: '172.30.0.0/24',
+      gateway: '172.30.0.1',
+      bridgeName: 'sbx-agent0',
+    });
+    expect(createNetwork).toHaveBeenCalledWith({
+      Name: 'n',
+      Driver: 'bridge',
+      Internal: true,
+      Options: {
+        'com.docker.network.bridge.enable_icc': 'false',
+        'com.docker.network.bridge.name': 'sbx-agent0',
+      },
+      IPAM: { Driver: 'default', Config: [{ Subnet: '172.30.0.0/24', Gateway: '172.30.0.1' }] },
+    });
+  });
+
   it('FakeDocker mirrors the check', async () => {
     const f = new FakeDocker();
     await f.ensureNetwork('n', { internal: false });

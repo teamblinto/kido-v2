@@ -35,9 +35,9 @@ describe('loadConfig', () => {
   });
   it('SANDBOXD_REAL refuses firewall=off and requires the API host', () => {
     const env = { SANDBOXD_API_KEY: 'k', SANDBOXD_DATA_DIR: dir(), SANDBOXD_REAL: '1' };
-    expect(() => loadConfig({ ...env, SANDBOXD_API_HOST: 'a.test', SANDBOXD_FIREWALL: 'off' })).toThrow(
-      /FIREWALL/,
-    );
+    expect(() =>
+      loadConfig({ ...env, SANDBOXD_API_HOST: 'a.test', SANDBOXD_FIREWALL: 'off' }),
+    ).toThrow(/FIREWALL/);
     expect(() => loadConfig(env)).toThrow(/SANDBOXD_API_HOST/);
     expect(loadConfig({ ...env, SANDBOXD_API_HOST: 'a.test' }).real).toBe(true);
   });

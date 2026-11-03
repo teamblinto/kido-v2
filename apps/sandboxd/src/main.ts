@@ -1,4 +1,4 @@
-import { createServer } from 'node:http';
+import { createServer, type Server } from 'node:http';
 
 import { Admission } from './admission.ts';
 import { loadConfig } from './config.ts';
@@ -6,6 +6,7 @@ import { router, sendJson } from './http.ts';
 import { DockerodePort } from './docker.ts';
 import { startEgressProxy } from './egress.ts';
 import { watchEvents } from './events.ts';
+import { applyFirewall, checkFirewall, ensureNetworks, firewallMode } from './network.ts';
 import { createIpMap } from './ip-map.ts';
 import { log } from './log.ts';
 import { createPreviewServer, registerPreviewRoutes } from './preview.ts';
@@ -18,14 +19,25 @@ const store = new Store(config.dataDir);
 const docker = new DockerodePort();
 const admission = new Admission({ cfg: config, store, docker });
 
+// Networks first (the egress bind address is the bridge gateway), then rules, then servers.
+await ensureNetworks(docker);
+const fwMode = firewallMode();
+if (fwMode === 'on') await applyFirewall();
+else log('warn', 'firewall skipped (local dev only): sandboxes are NOT isolated');
+
 const api = router(config.apiKey);
-// firewall checks are wired in by later tasks.
 api.route(
   'GET',
   '/healthz',
   async (_req, res) => {
     store.all();
-    sendJson(res, 200, { ok: true, store: true, docker: await docker.ping() });
+    const firewall = fwMode === 'on' ? await checkFirewall() : 'skipped';
+    sendJson(res, firewall === false ? 503 : 200, {
+      ok: firewall !== false,
+      store: true,
+      docker: await docker.ping(),
+      firewall,
+    });
   },
   { auth: false },
 );
@@ -39,31 +51,32 @@ await admission.recover();
 const timer = setInterval(() => void admission.tick(), 2000);
 void admission.tick();
 
-const server = createServer(api.handle).listen(config.listen.port, config.listen.host, () => {
-  log('info', 'sandboxd listening', { node: config.nodeId, ...config.listen });
-});
+let closing = false;
+/** Listen; on any error log it, and if not yet listening (bridge late, port busy) retry in 5 s. */
+function listen(srv: Server, name: string, hp: { host: string; port: number }): Server {
+  srv.on('error', (e: NodeJS.ErrnoException) => {
+    log('error', `${name} server error`, { code: e.code, message: e.message, ...hp });
+    if (!srv.listening && !closing) setTimeout(() => srv.listen(hp.port, hp.host), 5000);
+  });
+  return srv.listen(hp.port, hp.host, () => log('info', `${name} listening`, { ...hp }));
+}
 
-const previewServer = createPreviewServer({ cfg: config, store, docker }).listen(
-  config.previewListen.port,
-  config.previewListen.host,
-  () => {
-    log('info', 'preview proxy listening', { ...config.previewListen });
-  },
+const server = listen(createServer(api.handle), 'sandboxd', config.listen);
+const previewServer = listen(
+  createPreviewServer({ cfg: config, store, docker }),
+  'preview proxy',
+  config.previewListen,
 );
 
-if (config.apiHost === '') log('warn', 'SANDBOXD_API_HOST is empty: agent homes cannot reach the BAIOS API');
+if (config.apiHost === '')
+  log('warn', 'SANDBOXD_API_HOST is empty: agent homes cannot reach the BAIOS API');
 const ipMap = await createIpMap(store, docker);
-const egressServer = startEgressProxy(config, ipMap);
-// The bridge address only exists once networks are created; tolerate its absence until then.
-egressServer.once('error', (e: NodeJS.ErrnoException) => {
-  if (e.code !== 'EADDRNOTAVAIL') throw e;
-  log('warn', 'egress proxy not listening: bind address unavailable', { ...config.egressListen });
-});
-egressServer.listen(config.egressListen.port, config.egressListen.host, () => {
-  log('info', 'egress proxy listening', { ...config.egressListen });
-});
+// With the firewall on, networks exist first so the bridge gateway is bindable; on Docker Desktop
+// (firewall skipped) it is not, and the retry loop just keeps warning.
+const egressServer = listen(startEgressProxy(config, ipMap), 'egress proxy', config.egressListen);
 
 const shutdown = () => {
+  closing = true;
   ipMap.stop();
   egressServer.close();
   clearInterval(timer);

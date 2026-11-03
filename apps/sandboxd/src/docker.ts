@@ -39,6 +39,15 @@ export interface DockerEvent {
   labels: Record<string, string>;
 }
 
+export interface NetworkOpts {
+  internal: boolean;
+  icc?: boolean;
+  subnet?: string;
+  gateway?: string;
+  /** Linux bridge interface name (`com.docker.network.bridge.name`). */
+  bridgeName?: string;
+}
+
 export interface DockerPort {
   create(spec: ContainerSpec): Promise<string>;
   start(cid: string): Promise<void>;
@@ -52,7 +61,7 @@ export interface DockerPort {
   removeImage(ref: string): Promise<'removed' | 'missing' | 'in-use'>;
   exec(cid: string, opts: ExecOpts): Promise<ExecOutcome>;
   execDetached(cid: string, opts: Omit<ExecOpts, 'stdin' | 'timeoutMs'>): Promise<void>;
-  ensureNetwork(name: string, opts: { internal: boolean; icc?: boolean }): Promise<void>;
+  ensureNetwork(name: string, opts: NetworkOpts): Promise<void>;
   events(onEvent: (e: DockerEvent) => void): () => void;
   ping(): Promise<boolean>;
 }
@@ -240,26 +249,44 @@ export class DockerodePort implements DockerPort {
     await exec.start({ Detach: true });
   }
 
-  async ensureNetwork(name: string, opts: { internal: boolean; icc?: boolean }): Promise<void> {
+  async ensureNetwork(name: string, opts: NetworkOpts): Promise<void> {
     // The name filter is a substring match, so require an exact name.
     const found = (await this.docker.listNetworks({ filters: { name: [name] } })).find(
       (n) => n.Name === name,
     );
     if (found) {
-      const icc = found.Options?.['com.docker.network.bridge.enable_icc'] !== 'false';
-      if (!!found.Internal !== opts.internal || (opts.icc !== undefined && icc !== opts.icc)) {
+      const o = found.Options;
+      const ipam = (found.IPAM?.Config?.[0] ?? {}) as { Subnet?: string; Gateway?: string };
+      const have = {
+        internal: !!found.Internal,
+        icc: o?.['com.docker.network.bridge.enable_icc'] !== 'false',
+        subnet: ipam.Subnet,
+        gateway: ipam.Gateway,
+        bridgeName: o?.['com.docker.network.bridge.name'],
+      };
+      const bad = (Object.keys(have) as (keyof typeof have)[]).filter(
+        (k) => opts[k] !== undefined && opts[k] !== have[k],
+      );
+      if (bad.length) {
         throw new Error(
-          `network ${name} exists with internal=${!!found.Internal} icc=${icc}, expected internal=${opts.internal}` +
-            (opts.icc === undefined ? '' : ` icc=${opts.icc}`),
+          `network ${name} exists with ${bad.map((k) => `${k}=${String(have[k])}`).join(' ')}, ` +
+            `expected ${bad.map((k) => `${k}=${String(opts[k])}`).join(' ')}`,
         );
       }
       return;
     }
+    const options = {
+      ...(opts.icc === false && { 'com.docker.network.bridge.enable_icc': 'false' }),
+      ...(opts.bridgeName && { 'com.docker.network.bridge.name': opts.bridgeName }),
+    };
     await this.docker.createNetwork({
       Name: name,
       Driver: 'bridge',
       Internal: opts.internal,
-      ...(opts.icc === false && { Options: { 'com.docker.network.bridge.enable_icc': 'false' } }),
+      ...(Object.keys(options).length && { Options: options }),
+      ...(opts.subnet && {
+        IPAM: { Driver: 'default', Config: [{ Subnet: opts.subnet, Gateway: opts.gateway }] },
+      }),
     });
   }
 
