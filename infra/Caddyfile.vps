@@ -78,6 +78,25 @@ https://*.{$PREVIEW_DOMAIN} {
 	tls {
 		on_demand
 	}
+	# A Vite dev server sends its modules (~2.8 MB for a React app) uncompressed. The match is an
+	# allow-list rather than the default (which includes text/*), so text/event-stream is never
+	# encoded and an SSE preview keeps flushing event by event; a 101 upgrade carries no
+	# Content-Type, so HMR WebSockets never match either.
+	encode zstd gzip {
+		match {
+			header Content-Type application/javascript*
+			header Content-Type application/json*
+			header Content-Type application/manifest+json*
+			header Content-Type application/wasm*
+			header Content-Type application/xml*
+			header Content-Type image/svg+xml*
+			header Content-Type text/css*
+			header Content-Type text/html*
+			header Content-Type text/javascript*
+			header Content-Type text/plain*
+			header Content-Type text/xml*
+		}
+	}
 	reverse_proxy api:3200 {
 		flush_interval -1
 	}
