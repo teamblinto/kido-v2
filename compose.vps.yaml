@@ -12,8 +12,8 @@
 # through the gateway. A hardened deployment is the Ansible path (infra/ansible).
 #
 # Required in .env: APP_HOST, HOOKS_HOST, PREVIEW_DOMAIN, PREVIEW_SIGNING_KEY,
-# PREVIEW_SIGNING_KEY_ID, PREVIEW_PUBLIC_JWKS, AGENT_HOME_CLAUDE_VERSION, KEK_ENV_MASTER_KEY (how
-# to make them: infra/sandboxd/README.md).
+# PREVIEW_SIGNING_KEY_ID, PREVIEW_PUBLIC_JWKS, AGENT_HOME_CLAUDE_VERSION, KEK_ENV_MASTER_KEY,
+# BROKER_SHARED_SECRET (how to make them: infra/sandboxd/README.md).
 #
 # Images: FORGE_APP_IMAGE, FORGE_GATEWAY_IMAGE and FORGE_SANDBOXD_IMAGE name what runs. Unset, they
 # are the local names the base file's `build:` produces (`docker compose build`, a first bring-up
@@ -116,6 +116,9 @@ services:
     environment: &vps-app-env
       AGENT_HOME_CLAUDE_VERSION: ${AGENT_HOME_CLAUDE_VERSION:?pin an exact x.y.z in .env}
       AGENT_HOME_SERVER_URL: https://${APP_HOST:?}
+      # The plain broker's bearer (api <-> gateway on the shared loopback); its fallback is a
+      # well-known local value, so the overlay requires a generated one.
+      BROKER_SHARED_SECRET: ${BROKER_SHARED_SECRET:?generate once with openssl rand -hex 32}
       APP_URL: https://${APP_HOST:?}
       CORS_ORIGINS: https://${APP_HOST:?}
       DAYTONA_API_KEY_FILE: /run/secrets/sandboxd_api_key
@@ -178,6 +181,7 @@ services:
         restart: true
     environment:
       BROKER_HOST: 127.0.0.1
+      BROKER_SHARED_SECRET: ${BROKER_SHARED_SECRET:?}
       BROKER_TRANSPORT: plain
       DEPLOY_ENV: local
       PORT: 3200
