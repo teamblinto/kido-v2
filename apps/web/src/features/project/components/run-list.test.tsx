@@ -140,80 +140,24 @@ describe('RunList', () => {
   });
 });
 
-/** 034: a run `awaiting_input` is answered from its row (`POST …/runs/:runId/input`). */
-describe('RunList · answering a waiting run', () => {
-  const EDITOR = ['project:agent.run', 'project:read'];
-  const waiting: RunResponse = {
-    ...aRun(NEWEST, 'Add a filter to the rota board', '2026-09-22T10:00:00.000Z'),
-    status: 'awaiting_input',
-  };
-
-  function renderList(permissions: readonly string[]): void {
-    renderScreen(
-      <RunList onSelect={vi.fn()} orgId={ORG} permissions={permissions} projectId={PROJECT} />,
-    );
-  }
-
-  it('sends the answer and re-reads the list', async () => {
-    const user = userEvent.setup();
-    const bodies: unknown[] = [];
-    let current = waiting;
-
-    server.use(
-      http.get(RUNS, () => HttpResponse.json({ nextCursor: null, runs: [current] })),
-      http.post(`${RUNS}/:runId/input`, async ({ params, request }) => {
-        expect(params.runId).toBe(NEWEST);
-        bodies.push(await request.json());
-        current = { ...waiting, status: 'queued' };
-
-        return new HttpResponse(null, { status: 202 });
-      }),
-    );
-    renderList(EDITOR);
-
-    await user.type(await screen.findByLabelText('Answer the run'), '  Use the blue one  ');
-    await user.click(screen.getByRole('button', { name: 'Send' }));
-
-    expect(bodies).toEqual([{ message: 'Use the blue one' }]);
-    expect(await screen.findByText('Queued')).toBeVisible();
-    expect(screen.queryByLabelText('Answer the run')).not.toBeInTheDocument();
-  });
-
-  it('shows the refusal when the run has already moved on', async () => {
-    const user = userEvent.setup();
-
-    server.use(
-      http.get(RUNS, () => HttpResponse.json({ nextCursor: null, runs: [waiting] })),
-      http.post(`${RUNS}/:runId/input`, () =>
-        HttpResponse.json(
-          {
-            detail: 'The run is running.',
-            instance: `/api/v1/orgs/${ORG}/projects/${PROJECT}/runs/${NEWEST}/input`,
-            requestId: '01JD0000000000000000000000',
-            status: 409,
-            title: 'Conflict',
-            type: 'https://forge.dev/problems/conflict',
-          },
-          { headers: { 'content-type': 'application/problem+json' }, status: 409 },
-        ),
-      ),
-    );
-    renderList(EDITOR);
-
-    await user.type(await screen.findByLabelText('Answer the run'), 'Yes');
-    await user.click(screen.getByRole('button', { name: 'Send' }));
-
-    expect(await screen.findByRole('alert')).toHaveTextContent(
-      'That conflicts with something that already exists.',
-    );
-  });
-
-  it('offers no answer without project:agent.run', async () => {
+/** Spec 043: a run `awaiting_input` is answered from the chat composer once it is on screen. */
+describe('RunList · a waiting run', () => {
+  it('lists it as waiting, with no answer box of its own', async () => {
+    const waiting: RunResponse = {
+      ...aRun(NEWEST, 'Add a filter to the rota board', '2026-09-22T10:00:00.000Z'),
+      status: 'awaiting_input',
+    };
     server.use(http.get(RUNS, () => HttpResponse.json({ nextCursor: null, runs: [waiting] })));
-    renderList(['project:read']);
+    renderScreen(
+      <RunList
+        onSelect={vi.fn()}
+        orgId={ORG}
+        permissions={['project:agent.run', 'project:read']}
+        projectId={PROJECT}
+      />,
+    );
 
-    await screen.findByText('Waiting for you');
-
+    expect(await screen.findByText('Waiting for you')).toBeVisible();
     expect(screen.queryByLabelText('Answer the run')).not.toBeInTheDocument();
   });
 });

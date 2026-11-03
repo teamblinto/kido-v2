@@ -1,13 +1,9 @@
 import type { RunLineResponse, RunResponse } from '@repo/contracts';
-import { useMutation, useQueryClient } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
 
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
 import { useNow } from '@/hooks/use-now';
-import { messageFor } from '@/lib/api/problem';
 import { cn } from '@/lib/utils';
-import { answerRun, cancelRun } from '../api';
+import { cancelRun } from '../api';
 import { useRunLine } from '../hooks/use-run-line';
 import { useRunList } from '../hooks/use-run-list';
 import { statusToPhase } from '../lib/run-phase';
@@ -23,8 +19,7 @@ interface RunListProps {
   onSelect: (runId: string) => void;
   readonly orgId: string | undefined;
   /**
-   * What the caller holds on this project; `project:agent.run` offers cancel on waiting runs and an
-   * answer to a run waiting for input.
+   * What the caller holds on this project; `project:agent.run` offers cancel on waiting runs.
    */
   readonly permissions?: readonly string[] | undefined;
   readonly projectId: string | undefined;
@@ -63,75 +58,18 @@ function describeAge(iso: string, now: number): string {
 }
 
 /**
- * The answer box under a run that is `awaiting_input` (`POST …/runs/:runId/input`). The wire does
- * not carry the question the agent asked, so the row's prompt excerpt above is the context.
+ * A run, as a way back into it. A run waiting for input is answered from the chat composer once it
+ * is on screen (spec 043), so the row carries no answer box of its own.
  */
-function AnswerForm({
-  orgId,
-  projectId,
-  runId,
-}: {
-  orgId: string;
-  projectId: string;
-  runId: string;
-}): React.JSX.Element {
-  const [message, setMessage] = useState('');
-  const queryClient = useQueryClient();
-  const answer = useMutation({
-    mutationFn: () => answerRun(orgId, projectId, runId, { message }),
-    onSuccess: async () => {
-      setMessage('');
-      // The run leaves `awaiting_input`: the list, the line and the run's own read are all stale.
-      await Promise.all([
-        queryClient.invalidateQueries({ queryKey: ['runs', orgId, projectId] }),
-        queryClient.invalidateQueries({ queryKey: ['run', orgId, projectId, runId] }),
-      ]);
-    },
-  });
-
-  return (
-    <form
-      className="flex flex-col gap-1.5 px-3 pb-2.5"
-      onSubmit={(event) => {
-        event.preventDefault();
-        answer.mutate();
-      }}
-    >
-      <span className="flex items-center gap-2">
-        <Input
-          aria-label="Answer the run"
-          placeholder="Your answer"
-          value={message}
-          onChange={(event) => {
-            setMessage(event.target.value);
-          }}
-        />
-        <Button type="submit" size="sm" disabled={answer.isPending || message.trim() === ''}>
-          Send
-        </Button>
-      </span>
-      {answer.isError ? (
-        <p role="alert" className="text-caption text-danger">
-          {messageFor(answer.error, 'The answer could not be sent.')}
-        </p>
-      ) : null}
-    </form>
-  );
-}
-
 function RunRow({
   isSelected,
-  mayAnswer,
   now,
   onSelect,
-  orgId,
   run,
 }: {
   isSelected: boolean;
-  mayAnswer: boolean;
   now: number;
   onSelect: (runId: string) => void;
-  orgId: string | undefined;
   run: RunResponse;
 }): React.JSX.Element {
   const phase = statusToPhase(run.status);
@@ -162,9 +100,6 @@ function RunRow({
           {run.promptExcerpt === '' ? 'No prompt' : run.promptExcerpt}
         </span>
       </button>
-      {mayAnswer && phase === 'waiting-for-you' && orgId !== undefined ? (
-        <AnswerForm orgId={orgId} projectId={run.projectId} runId={run.id} />
-      ) : null}
     </li>
   );
 }
@@ -298,10 +233,8 @@ export function RunList({
           <RunRow
             key={run.id}
             isSelected={run.id === selectedRunId}
-            mayAnswer={mayRun}
             now={now}
             onSelect={onSelect}
-            orgId={orgId}
             run={run}
           />
         ))}

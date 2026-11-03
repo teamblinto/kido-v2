@@ -41,13 +41,8 @@ function Harness({
     <ChatPanel
       connection="closed"
       isRunning={false}
-      isStopping={false}
       items={initial.map((event) => ({ event, id: String(event.seq) }))}
       onRetry={vi.fn()}
-      onStop={vi.fn()}
-      onSubmit={vi.fn()}
-      placeholder="Ask"
-      projectId={PROJECT}
       run={run}
       source="live"
     />

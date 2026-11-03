@@ -32,6 +32,13 @@ const GRAMMARS: Record<string, { language: unknown; name: string }> = {
   tsx: { language: typescript, name: 'typescript' },
   yaml: { language: yaml, name: 'yaml' },
   yml: { language: yaml, name: 'yaml' },
+  // Fence info strings in chat Markdown name the language rather than an extension (spec 043).
+  javascript: { language: javascript, name: 'javascript' },
+  markdown: { language: markdown, name: 'markdown' },
+  python: { language: python, name: 'python' },
+  shell: { language: shell, name: 'bash' },
+  typescript: { language: typescript, name: 'typescript' },
+  xml: { language: xml, name: 'xml' },
 };
 
 for (const { language, name } of Object.values(GRAMMARS)) {

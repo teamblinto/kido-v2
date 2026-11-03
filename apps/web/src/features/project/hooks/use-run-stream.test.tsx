@@ -143,6 +143,35 @@ describe('useRunStream', () => {
     unmount();
   });
 
+  it('does not tell a subscriber about the events a fresh connection replays (spec 043)', async () => {
+    // The run record already counts seq 1–2; the stream replays them before seq 3 arrives. Only
+    // seq 3 is news — a replayed checkpoint reloading the preview was the double load on open.
+    server.use(
+      ...handlers(() => sse([frame(patch(1)), frame(patch(2)), frame(patch(3))]), { lastSeq: 2 }),
+    );
+
+    const seen: RunEvent[] = [];
+
+    const { result, unmount } = renderHook(
+      () =>
+        useRunStream({
+          onEvent: (event) => seen.push(event),
+          orgId: ORG,
+          projectId: PROJECT,
+          runId: RUN,
+        }),
+      { wrapper: queryWrapper() },
+    );
+
+    await waitFor(() => {
+      expect(result.current.items).toHaveLength(3);
+    });
+
+    // The transcript still holds all three; only the subscriber is spared the replay.
+    expect(seen.map(({ seq }) => seq)).toEqual([3]);
+    unmount();
+  });
+
   it('parses every frame through streamEventSchema and fails on one the union does not describe', async () => {
     // The boundary FR-004 puts here: a frame the contract cannot describe is a failure, not a
     // partial render. The well-formed events around it still arrive — one bad frame must not

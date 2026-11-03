@@ -5,10 +5,12 @@ import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
 import { describe, expect, it, vi } from 'vitest';
 
+import { useModelChoice } from '@/features/workspace/hooks/use-model-choice';
 import { messageFor } from '@/lib/api/problem';
 import { renderScreen } from '@/test/render';
 import { API, server } from '@/test/server';
 import { createRun } from '../api';
+import { ChatComposer } from './chat-composer';
 import { ChatPanel } from './chat-panel';
 import { RunList } from './run-list';
 
@@ -141,19 +143,24 @@ describe('RunList · the run line (031)', () => {
       const start = useMutation({
         mutationFn: (prompt: string) => createRun(ORG, PROJECT, { prompt }),
       });
+      const modelState = useModelChoice({ orgId: ORG });
 
       return (
         <ChatPanel
+          composer={
+            <ChatComposer
+              isRunning={false}
+              isStopping={false}
+              modelState={modelState}
+              onStop={vi.fn()}
+              onSubmit={(prompt) => start.mutateAsync(prompt)}
+              placeholder="Ask for a change to this project"
+            />
+          }
           connection="idle"
           isRunning={false}
-          isStopping={false}
           items={[]}
           onRetry={vi.fn()}
-          onStop={vi.fn()}
-          onSubmit={(prompt) => {
-            start.mutate(prompt);
-          }}
-          placeholder="Ask for a change to this project"
           refusal={start.error === null ? undefined : messageFor(start.error)}
           run={undefined}
           source="live"

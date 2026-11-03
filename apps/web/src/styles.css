@@ -314,3 +314,135 @@
 .hljs-strong {
   font-weight: 600;
 }
+
+/* chat (043) */
+
+/*
+ * The assistant's Markdown (react-markdown + remark-gfm). Prose spacing for the
+ * narrow chat column; code and tables scroll inside themselves rather than
+ * widening the panel.
+ */
+.chat-markdown {
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.chat-markdown > * + * {
+  margin-top: 0.625rem;
+}
+
+.chat-markdown :is(h1, h2, h3, h4) {
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.chat-markdown :is(h1, h2) {
+  font-size: 1.0625rem;
+}
+
+.chat-markdown :is(ul, ol) {
+  padding-left: 1.25rem;
+}
+
+.chat-markdown ul {
+  list-style: disc;
+}
+
+.chat-markdown ol {
+  list-style: decimal;
+}
+
+.chat-markdown li + li {
+  margin-top: 0.25rem;
+}
+
+.chat-markdown a {
+  color: var(--color-brand-text);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.chat-markdown :not(pre) > code {
+  background: var(--color-muted);
+  border-radius: 0.3125rem;
+  font-family: var(--font-mono);
+  font-size: 0.875em;
+  padding: 0.1em 0.35em;
+}
+
+.chat-markdown pre {
+  background: var(--color-subtle);
+  border: 1px solid var(--color-line-subtle);
+  border-radius: 0.625rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+  overflow-x: auto;
+  overflow-wrap: normal;
+  padding: 0.625rem 0.75rem;
+}
+
+.chat-markdown blockquote {
+  border-left: 2px solid var(--color-line);
+  color: var(--color-subdued);
+  padding-left: 0.75rem;
+}
+
+.chat-markdown table {
+  border-collapse: collapse;
+  display: block;
+  font-size: 0.8125rem;
+  overflow-x: auto;
+  overflow-wrap: normal;
+}
+
+.chat-markdown :is(th, td) {
+  border-bottom: 1px solid var(--color-line-subtle);
+  padding: 0.35rem 0.6rem;
+  text-align: start;
+  vertical-align: top;
+}
+
+.chat-markdown th {
+  font-weight: 600;
+}
+
+@keyframes chat-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+/* A running tool's label breathes: still readable at its faintest. */
+@keyframes chat-shimmer {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/*
+ * Motion, only when it is welcome. Each new streamed block fades in once:
+ * @starting-style applies only on insertion and the rule is gated on
+ * data-streaming, so opening a finished conversation never replays it. A row
+ * entering a live conversation rises a few pixels; a running tool's label
+ * shimmers. Reduced motion gets none of it (and the global rule above zeroes
+ * anything else).
+ */
+@media (prefers-reduced-motion: no-preference) {
+  .chat-markdown[data-streaming] > * {
+    transition: opacity 500ms ease-out;
+
+    @starting-style {
+      opacity: 0;
+    }
+  }
+
+  .chat-enter {
+    animation: chat-enter 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+
+  .chat-shimmer {
+    animation: chat-shimmer 1.6s ease-in-out infinite;
+  }
+}

@@ -65,7 +65,8 @@ interface ProjectTopbarProps {
   orgId: string | undefined;
   /** The caller's own permissions on this project; `project:deploy` gates the deploy actions. */
   permissions: readonly string[];
-  phase: RunPhase;
+  /** The run's phase; absent while no run exists, so the bar claims none. */
+  phase?: RunPhase | undefined;
   /** Who else has this project open (spec 031, US3). */
   presence?: PresenceResponse;
   /** Where the run said its preview is. Absent until it has said (FR-028). */
@@ -250,7 +251,7 @@ export function ProjectTopbar({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <RunStatusChip phase={phase} className="max-sm:hidden" />
+        {phase === undefined ? null : <RunStatusChip phase={phase} className="max-sm:hidden" />}
 
         <span className="flex-1" />
 

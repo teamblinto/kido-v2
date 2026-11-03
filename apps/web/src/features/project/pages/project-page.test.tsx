@@ -4,14 +4,15 @@ import { HttpResponse, http } from 'msw';
 import { Navigate } from 'react-router-dom';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { type RunEvent, type RunResponse, subscriptionListSchema } from '@repo/contracts';
+import type { RunEvent, RunResponse } from '@repo/contracts';
 import { waitFor } from '@testing-library/react';
 
 import { createQueryClient } from '@/app/query-client';
 import { RequireAuth } from '@/features/auth/session/route-guards';
+import type { ModelChoice } from '@/features/workspace/lib/model-choice';
 import { routes } from '@/lib/routes';
 import { problemResponse, renderScreen } from '@/test/render';
-import { API, server } from '@/test/server';
+import { API, server, subscriptionHandler } from '@/test/server';
 import { frame, sse } from '@/test/sse';
 import { ProjectPage } from './project-page';
 
@@ -20,6 +21,8 @@ const PROJECT_ID = '8f14e45f-ceea-4b73-a5f1-0d1a4e2f9c11';
 const RUN_ID = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
 
 const RUNS = `${API}/orgs/${ORG_ID}/projects/${PROJECT_ID}/runs`;
+
+const HAIKU: ModelChoice = { model: 'claude-haiku-4-5', source: 'catalogue' };
 
 const aRun: RunResponse = {
   cacheReadTokens: 0,
@@ -176,7 +179,7 @@ function renderPage(run?: string): void {
  * Arrives the way the workspace composer sends somebody here: a fresh project, with the prompt
  * and the model pick in navigation state (spec 007 R7, spec 011 US6).
  */
-function renderFromWorkspace(handoff: { model?: string; prompt: string }): void {
+function renderFromWorkspace(handoff: { choice?: ModelChoice; prompt: string }): void {
   renderScreen(<Navigate replace state={handoff} to={`/projects/${PROJECT_ID}`} />, {
     path: '/',
     routes: { '/projects/:projectId': <ProjectPage /> },
@@ -193,6 +196,8 @@ function stageTab(name: RegExp): HTMLElement {
 
 describe('ProjectPage', () => {
   beforeEach(() => {
+    // The model picker remembers its choice per project (spec 043); every test starts unpicked.
+    window.localStorage.removeItem(`baios.model.${PROJECT_ID}`);
     // The topbar reads the project name from the API; everything else on this screen is still
     // mock data, which is spec 002's stated scope boundary.
     server.use(
@@ -255,6 +260,7 @@ describe('ProjectPage', () => {
   // What you type is your own words and is shown at once; everything after it comes from the run.
   it('adds what you type to the transcript', async () => {
     const user = userEvent.setup();
+    server.use(...runHandlers(() => sse([])));
     renderPage();
 
     await user.type(screen.getByLabelText(/ask baios for a change/i), 'Add holiday cover{Enter}');
@@ -415,7 +421,12 @@ describe('ProjectPage', () => {
       server.use(
         ...runHandlers(live.response),
         http.get(`${API}/orgs/:orgId/projects/:projectId/preview`, () =>
-          HttpResponse.json({ port: 3000, url: 'https://a.preview.test', visibility: 'public' }),
+          HttpResponse.json({
+            port: 3000,
+            stage: 'ready',
+            url: 'https://a.preview.test',
+            visibility: 'public',
+          }),
         ),
       );
 
@@ -436,6 +447,47 @@ describe('ProjectPage', () => {
         }),
       );
 
+      await waitFor(() => expect(document.querySelector('iframe')).not.toBe(before));
+    });
+
+    it('loads the preview once on open: a checkpoint the stream replays reloads nothing', async () => {
+      // The run already counts its checkpoint (lastSeq 1). A fresh connection replays it, and
+      // only a checkpoint newer than the connection is a reason to reload (spec 043).
+      const live = liveStream();
+
+      server.use(
+        http.get(`${RUNS}/${RUN_ID}`, () => HttpResponse.json({ ...aRun, lastSeq: 1 })),
+        http.get(`${RUNS}/${RUN_ID}/stream`, () => live.response()),
+        http.get(`${API}/orgs/:orgId/projects/:projectId/preview`, () =>
+          HttpResponse.json({
+            port: 3000,
+            stage: 'ready',
+            url: 'https://a.preview.test',
+            visibility: 'public',
+          }),
+        ),
+      );
+
+      renderPage(RUN_ID);
+      const user = userEvent.setup();
+      await user.click(stageTab(/Preview/));
+      await waitFor(() => expect(document.querySelector('iframe')).not.toBeNull());
+      const before = document.querySelector('iframe');
+      const checkpoint = (seq: number, label: string): string =>
+        frame({
+          at: '2026-08-18T10:00:00.000Z',
+          data: { checkpointId: `c${String(seq)}`, label },
+          run: RUN_ID,
+          seq,
+          type: 'checkpoint',
+        });
+
+      live.send(checkpoint(1, 'the replayed one'));
+      const log = screen.getByRole('log', { name: 'Conversation' });
+      expect(await within(log).findByText('the replayed one')).toBeVisible();
+      expect(document.querySelector('iframe')).toBe(before);
+
+      live.send(checkpoint(2, 'a new one'));
       await waitFor(() => expect(document.querySelector('iframe')).not.toBe(before));
     });
 
@@ -507,22 +559,19 @@ describe('ProjectPage', () => {
       });
     });
 
-    it('shows the model the run reports and offers no model choice', async () => {
+    it('shows the model the run reports under the conversation', async () => {
       const user = userEvent.setup();
 
       server.use(...runHandlers(() => sse([])));
       renderPage();
       await ask(user, 'go');
 
-      expect(await screen.findByText('claude-sonnet-5')).toBeVisible();
+      const log = screen.getByRole('log', { name: 'Conversation' });
 
-      // FR-018, FR-020: a label, never a picker, while BAIOS pays. Only the person's own plan
-      // (spec 041) offers a model, and it is not chosen here.
-      expect(screen.queryByRole('combobox', { name: 'Model' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: /model/i })).not.toBeInTheDocument();
+      expect(await within(log).findByText('claude-sonnet-5')).toBeVisible();
     });
 
-    it('sends only the prompt when starting a run', async () => {
+    it("sends the catalogue's default model with the trimmed prompt when nothing was picked", async () => {
       const user = userEvent.setup();
       let body: unknown;
 
@@ -536,34 +585,29 @@ describe('ProjectPage', () => {
       );
 
       renderPage();
+      await screen.findByRole('button', { name: /Sonnet 5.*change model/ });
       await ask(user, '  add a swap button  ');
 
-      // FR-019 from the screen's side: the trimmed prompt and nothing else — no model, no options.
-      // The console has no picker; a model is only ever sent when the workspace's rode in.
+      // Spec 043: the picker is the payment choice; with no subscription connected that is the
+      // organisation key the catalogue defaults to.
       await waitFor(() => {
-        expect(body).toEqual({ prompt: 'add a swap button' });
+        expect(body).toEqual({ model: 'claude-sonnet-5', prompt: 'add a swap button' });
       });
     });
 
-    it('sends the subscription and model chosen under the composer (spec 041)', async () => {
+    it('sends the subscription and the model picked from it (spec 041, 043)', async () => {
       const user = userEvent.setup();
       let body: unknown;
 
       server.use(
-        http.get(`${API}/me/subscriptions`, () =>
-          HttpResponse.json(
-            subscriptionListSchema.parse({
-              claude: {
-                message: null,
-                plan: 'Max',
-                provider: 'claude',
-                signIn: null,
-                state: 'connected',
-                updatedAt: '2026-11-03T10:00:00.000Z',
-              },
-            }),
-          ),
-        ),
+        subscriptionHandler({
+          models: [
+            { description: null, id: 'opus', label: 'Opus' },
+            { description: null, id: 'sonnet', label: 'Sonnet' },
+          ],
+          plan: 'Max',
+          state: 'connected',
+        }),
         ...runHandlers(
           () => sse([]),
           (sent) => {
@@ -573,28 +617,24 @@ describe('ProjectPage', () => {
       );
 
       renderPage();
-      const payWith = await screen.findByLabelText('Pay with');
-      await waitFor(() => {
-        expect(screen.getByRole('option', { name: 'My Claude subscription' })).toBeEnabled();
-      });
-      await user.selectOptions(payWith, 'My Claude subscription');
-      await user.selectOptions(screen.getByLabelText('Model'), 'Opus');
+      await user.click(await screen.findByRole('button', { name: /Opus.*change model/ }));
+      await user.click(await screen.findByRole('option', { name: 'Sonnet' }));
       await ask(user, 'add a swap button');
 
       await waitFor(() => {
         expect(body).toEqual({
-          model: 'opus',
+          model: 'sonnet',
           prompt: 'add a swap button',
           subscription: { provider: 'claude' },
         });
       });
-      window.localStorage.removeItem(`baios.pay-with.${PROJECT_ID}`);
+      // Remembered for this project.
+      expect(window.localStorage.getItem(`baios.model.${PROJECT_ID}`)).toBe(
+        JSON.stringify({ model: 'sonnet', source: 'subscription' }),
+      );
     });
 
-    it('sends the model that rode in from the workspace on the first run', async () => {
-      // Spec 011 US6: the workspace composer's prompt and pick arrive in navigation state, and the
-      // first run is started from them without asking twice. The next run, typed here, carries
-      // no model — the console has no picker (012 FR-018, FR-019).
+    it('applies a model switch to the next message, mid-conversation', async () => {
       const user = userEvent.setup();
       const bodies: unknown[] = [];
 
@@ -607,7 +647,165 @@ describe('ProjectPage', () => {
         ),
       );
 
-      renderFromWorkspace({ model: 'claude-haiku-4-5', prompt: 'A rota board' });
+      renderPage();
+      await screen.findByRole('button', { name: /Sonnet 5.*change model/ });
+      await ask(user, 'first');
+      await waitFor(() => {
+        expect(bodies).toHaveLength(1);
+      });
+
+      await user.click(screen.getByRole('button', { name: /Sonnet 5.*change model/ }));
+      await user.click(await screen.findByRole('option', { name: 'Claude Opus 5' }));
+      await ask(user, 'second');
+
+      await waitFor(() => {
+        expect(bodies).toEqual([
+          { model: 'claude-sonnet-5', prompt: 'first' },
+          { model: 'claude-opus-5', prompt: 'second' },
+        ]);
+      });
+    });
+
+    it('answers a run that waits for input instead of starting another', async () => {
+      const user = userEvent.setup();
+      const stream = liveStream();
+      const answers: unknown[] = [];
+      let created = 0;
+
+      server.use(
+        http.get(`${RUNS}/${RUN_ID}`, () =>
+          HttpResponse.json({ ...aRun, lastSeq: 1, status: 'awaiting_input' }),
+        ),
+        http.get(`${RUNS}/${RUN_ID}/stream`, () => stream.response()),
+        http.post(RUNS, () => {
+          created += 1;
+
+          return HttpResponse.json(aRun);
+        }),
+        http.post(`${RUNS}/${RUN_ID}/input`, async ({ request }) => {
+          answers.push(await request.json());
+
+          return new HttpResponse(null, { status: 202 });
+        }),
+      );
+
+      renderPage(RUN_ID);
+      await screen.findByRole('button', { name: /Sonnet 5.*change model/ });
+      await user.type(await screen.findByLabelText('Answer the run'), 'Use the blue one{Enter}');
+
+      await waitFor(() => {
+        expect(answers).toEqual([{ message: 'Use the blue one', model: 'claude-sonnet-5' }]);
+      });
+      expect(created).toBe(0);
+      expect(
+        within(screen.getByRole('log', { name: 'Conversation' })).getByText('Use the blue one'),
+      ).toBeVisible();
+    });
+
+    it('keeps the prompt and claims no queued run when the run request is refused', async () => {
+      const user = userEvent.setup();
+
+      server.use(http.post(RUNS, () => problemResponse('rate-limited', 429)));
+      renderPage();
+      await ask(user, 'add a swap button');
+
+      expect(
+        await screen.findByText('Too many attempts. Please wait a moment and try again.'),
+      ).toBeVisible();
+      // The words come back to the box, and no bubble or phase pretends a run exists.
+      expect(screen.getByLabelText(/ask baios for a change/i)).toHaveValue('add a swap button');
+      expect(
+        within(screen.getByRole('log', { name: 'Conversation' })).queryByText('add a swap button'),
+      ).not.toBeInTheDocument();
+      expect(within(screen.getByRole('banner')).queryByText('Queued')).not.toBeInTheDocument();
+    });
+
+    it('offers to connect instead of sending when nothing can pay for a run (spec 043)', async () => {
+      // `onUnhandledRequest: 'error'` is the assertion that nothing was sent: no run handler.
+      const user = userEvent.setup();
+
+      server.use(
+        http.get(`${API}/orgs/:orgId/models`, () =>
+          HttpResponse.json({ default: null, models: [] }),
+        ),
+      );
+      renderPage();
+
+      expect(
+        await screen.findByRole('link', { name: 'Connect your Claude subscription' }),
+      ).toHaveAttribute('href', '/settings/account#claude-subscription');
+      await ask(user, 'go');
+
+      expect(screen.getByRole('button', { name: 'Send' })).toBeDisabled();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('shows the connect path, not an error, when the API says nothing can pay', async () => {
+      const user = userEvent.setup();
+
+      server.use(http.post(RUNS, () => problemResponse('subscription-not-connected', 409)));
+      renderPage();
+      await screen.findByRole('button', { name: /Sonnet 5.*change model/ });
+      await ask(user, 'go');
+
+      expect(
+        await screen.findByRole('link', { name: 'Connect your Claude subscription' }),
+      ).toBeVisible();
+      expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+    });
+
+    it('retries a failed run with its prompt, as a new run', async () => {
+      const user = userEvent.setup();
+      const bodies: unknown[] = [];
+
+      server.use(
+        ...runHandlers(
+          () =>
+            sse([
+              frame({
+                at: '2026-08-18T10:00:00.000Z',
+                data: { from: 'running', reason: 'The model refused.', to: 'failed' },
+                run: RUN_ID,
+                seq: 1,
+                type: 'state',
+              }),
+            ]),
+          (sent) => {
+            bodies.push(sent);
+          },
+        ),
+      );
+
+      renderPage();
+      await screen.findByRole('button', { name: /Sonnet 5.*change model/ });
+      await ask(user, 'add a swap button');
+      await user.click(await screen.findByRole('button', { name: 'Retry' }));
+
+      await waitFor(() => {
+        expect(bodies).toEqual([
+          { model: 'claude-sonnet-5', prompt: 'add a swap button' },
+          { model: 'claude-sonnet-5', prompt: 'add a swap button' },
+        ]);
+      });
+    });
+
+    it('sends the model that rode in from the workspace on the first run, and keeps it', async () => {
+      // Spec 011 US6: the workspace composer's prompt and pick arrive in navigation state, and the
+      // first run is started from them without asking twice. The pick is the project's from then
+      // on, so the next run, typed here, carries it too (spec 043).
+      const user = userEvent.setup();
+      const bodies: unknown[] = [];
+
+      server.use(
+        ...runHandlers(
+          () => sse([]),
+          (sent) => {
+            bodies.push(sent);
+          },
+        ),
+      );
+
+      renderFromWorkspace({ choice: HAIKU, prompt: 'A rota board' });
 
       const log = screen.getByRole('log', { name: 'Conversation' });
 
@@ -621,7 +819,7 @@ describe('ProjectPage', () => {
       await waitFor(() => {
         expect(bodies).toEqual([
           { model: 'claude-haiku-4-5', prompt: 'A rota board' },
-          { prompt: 'add holiday cover' },
+          { model: 'claude-haiku-4-5', prompt: 'add holiday cover' },
         ]);
       });
     });
@@ -631,7 +829,7 @@ describe('ProjectPage', () => {
       // will run on is what the screen says.
       server.use(...runHandlers(() => sse([])));
 
-      renderFromWorkspace({ model: 'claude-haiku-4-5', prompt: 'A rota board' });
+      renderFromWorkspace({ choice: HAIKU, prompt: 'A rota board' });
 
       expect(await screen.findByText('claude-haiku-4-5')).toBeVisible();
       expect(screen.queryByText('claude-sonnet-5')).not.toBeInTheDocument();
@@ -737,8 +935,12 @@ describe('ProjectPage', () => {
 
       const log = screen.getByRole('log', { name: 'Conversation' });
 
-      expect(await within(log).findByText(/src\/rota\.ts/)).toBeVisible();
-      expect(await within(log).findByText(/src\/swap\.ts/)).toBeVisible();
+      // Two file changes in a row are one work group, summarised until opened (spec 043).
+      await userEvent
+        .setup()
+        .click(await within(log).findByRole('button', { name: /Edited 2 files/ }));
+      expect(within(log).getByText(/src\/rota\.ts/)).toBeVisible();
+      expect(within(log).getByText(/src\/swap\.ts/)).toBeVisible();
       expect(screen.queryByRole('button', { name: /stop/i })).not.toBeInTheDocument();
     });
 

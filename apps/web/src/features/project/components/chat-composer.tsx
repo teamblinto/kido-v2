@@ -1,19 +1,22 @@
-import { ArrowUpIcon, PaperclipIcon, SquareIcon } from 'lucide-react';
+import { PaperclipIcon } from 'lucide-react';
 import { useId, useState } from 'react';
 
-import { useSubscriptions } from '@/features/settings/subscription/subscription-api';
-import { cn } from '@/lib/utils';
 import {
-  type SubscriptionRunRequest,
-  readPayWith,
-  toRunRequest,
-  writePayWith,
-} from '../lib/pay-with';
-import { PayWithPicker } from './pay-with-picker';
+  CONNECT_TO_SEND,
+  ComposerPrimaryAction,
+  ConnectToPay,
+} from '@/features/workspace/components/composer-parts';
+import { ModelPicker } from '@/features/workspace/components/model-picker';
+import type { ModelChoiceState } from '@/features/workspace/hooks/use-model-choice';
+import { cn } from '@/lib/utils';
 
 interface ChatComposerProps {
-  /** While a run is going the send button becomes Stop, as in the design. */
+  /** The run on screen waits for an answer: what is sent answers it rather than starting one. */
+  isAnswering?: boolean;
+  /** While a run is going the send button becomes Stop. */
   isRunning: boolean;
+  /** A message is on its way: Send waits rather than sending it twice. */
+  isSending?: boolean;
   /**
    * Whether a stop has been asked for and the run has not yet stopped.
    *
@@ -21,86 +24,73 @@ interface ChatComposerProps {
    * records the request and answers at once, and the run ends when it ends (FR-012, SC-005).
    */
   isStopping: boolean;
-  /**
-   * The model the run reports, shown as a label.
-   *
-   * Deliberately not a picker (FR-018, FR-020): the API chooses the model and reports which one
-   * it used, so offering a choice here would be offering something nothing can honour. Absent
-   * until a run exists to report one.
-   */
-  model?: string;
+  /** The model picker: what the next message runs on, and so who pays (spec 043). */
+  modelState: ModelChoiceState;
+  /** Nothing can pay for a run: the connect path shows instead of sending. */
+  needsConnection?: boolean;
   onStop: () => void;
-  /** `target` is set when the run is paid with the person's own Claude plan (spec 041). */
-  onSubmit: (prompt: string, target?: SubscriptionRunRequest) => void;
+  /** Resolves once the message was accepted; a refusal hands the text back to the box. */
+  onSubmit: (prompt: string) => Promise<unknown>;
   placeholder: string;
-  /** The project the "Pay with" choice is remembered for. */
-  projectId?: string;
 }
 
-/** The box at the foot of the chat: queue another instruction, or stop this one. */
+/** The box at the foot of the chat: send the next message, answer a waiting run, or stop one. */
 export function ChatComposer({
+  isAnswering = false,
   isRunning,
+  isSending = false,
   isStopping,
-  model,
+  modelState,
+  needsConnection = false,
   onStop,
   onSubmit,
   placeholder,
-  projectId,
 }: ChatComposerProps): React.JSX.Element {
   const id = useId();
   const [prompt, setPrompt] = useState('');
-  const [choice, setChoice] = useState(() => readPayWith(projectId));
-  const subscriptions = useSubscriptions();
-  const state = subscriptions.data?.claude.state;
-  const unavailable =
-    state === 'connected'
-      ? undefined
-      : state === undefined && !subscriptions.isError
-        ? 'Checking your Claude subscription…'
-        : 'Connect your Claude subscription in Settings to pay with your own plan.';
-  const request = toRunRequest(choice);
-
-  // A remembered plan that is no longer connected says why under the picker; sending would only
-  // be refused.
-  const canSubmit =
-    prompt.trim().length > 0 && (request === undefined || unavailable === undefined);
+  const hasPrompt = prompt.trim().length > 0;
+  const disabledReason = needsConnection
+    ? CONNECT_TO_SEND
+    : isSending
+      ? 'Sending…'
+      : hasPrompt
+        ? undefined
+        : 'Type a message first';
 
   function submit(): void {
-    if (!canSubmit) {
+    if (disabledReason !== undefined) {
       return;
     }
 
-    if (request === undefined) onSubmit(prompt.trim());
-    else onSubmit(prompt.trim(), request);
+    const text = prompt.trim();
     setPrompt('');
+    // A refused message is not lost: it comes back, unless something new was typed meanwhile.
+    onSubmit(text).catch(() => {
+      setPrompt((current) => (current === '' ? text : current));
+    });
   }
 
   return (
     <div className="shrink-0 px-3.5 pt-3 pb-3.5">
+      {needsConnection ? <ConnectToPay className="mb-2.5" /> : null}
       <form
         onSubmit={(event) => {
           event.preventDefault();
           submit();
         }}
-        className="bg-raised border-line flex flex-col gap-[11px] rounded-xl border pt-3 pr-2.5 pb-2.5 pl-[13px]"
+        className={cn(
+          'bg-raised border-line flex flex-col gap-[11px] rounded-xl border pt-3 pr-2.5 pb-2.5 pl-[13px]',
+          'focus-within:border-brand-border transition-colors',
+        )}
       >
-        <PayWithPicker
-          choice={choice}
-          onChange={(next) => {
-            setChoice(next);
-            writePayWith(projectId, next);
-          }}
-          unavailable={unavailable}
-        />
-
         <label htmlFor={id} className="sr-only">
-          Ask BAIOS for a change to this project
+          {isAnswering ? 'Answer the run' : 'Ask BAIOS for a change to this project'}
         </label>
         <textarea
           id={id}
           rows={1}
           value={prompt}
-          placeholder={placeholder}
+          placeholder={isAnswering ? 'Answer the question above' : placeholder}
           className={cn(
             'text-body-sm text-foreground placeholder:text-faint field-sizing-content',
             'max-h-40 w-full resize-none bg-transparent outline-none',
@@ -109,14 +99,14 @@ export function ChatComposer({
             setPrompt(event.target.value);
           }}
           onKeyDown={(event) => {
-            if (event.key === 'Enter' && !event.shiftKey) {
+            if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) {
               event.preventDefault();
               submit();
             }
           }}
         />
 
-        <div className="flex items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2">
           <button
             type="button"
             className="text-faint hover:text-subdued rounded-sm transition-colors"
@@ -125,42 +115,18 @@ export function ChatComposer({
             <span className="sr-only">Attach a file</span>
           </button>
 
-          {model === undefined ? null : (
-            <span className="text-label-xs text-faint font-medium">{model}</span>
-          )}
+          <ModelPicker state={modelState} className="max-w-[200px]" />
 
           <span className="flex-1" />
 
-          {isRunning ? (
-            <button
-              type="button"
-              onClick={onStop}
-              // Asked for already: the control says so and stops taking the request again. It is
-              // not hidden — the run is still going, and a control that vanished would read as
-              // the run having ended.
-              disabled={isStopping}
-              className={cn(
-                'bg-danger-soft text-danger text-label-sm hover:bg-danger-soft/70 flex items-center',
-                'gap-1.5 rounded-md px-[11px] py-[7px] font-medium transition-colors',
-                'disabled:hover:bg-danger-soft disabled:opacity-60',
-              )}
-            >
-              <SquareIcon className="size-3 fill-current" aria-hidden="true" />
-              {isStopping ? 'Stopping…' : 'Stop'}
-            </button>
-          ) : (
-            <button
-              type="submit"
-              disabled={!canSubmit}
-              className={cn(
-                'bg-primary text-primary-foreground hover:bg-primary/90 flex size-7 shrink-0',
-                'items-center justify-center rounded-full transition-opacity disabled:opacity-35',
-              )}
-            >
-              <ArrowUpIcon className="size-3.5" aria-hidden="true" />
-              <span className="sr-only">Send</span>
-            </button>
-          )}
+          <ComposerPrimaryAction
+            disabledReason={disabledReason}
+            // A waiting run is answered, so it offers Send rather than Stop.
+            isRunning={isRunning && !isAnswering}
+            isStopping={isStopping}
+            label={isAnswering ? 'Send answer' : 'Send'}
+            onStop={onStop}
+          />
         </div>
       </form>
     </div>

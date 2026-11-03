@@ -219,3 +219,29 @@ export function items(state: TranscriptState): TranscriptItem[] {
 
   return rendered;
 }
+
+/**
+ * Consecutive `token` items as one growing assistant message (spec 043): the first token's id, so
+ * the message keeps its place and its key while it streams, and the texts joined in order.
+ */
+export function joinTokens(rendered: readonly TranscriptItem[]): TranscriptItem[] {
+  const joined: TranscriptItem[] = [];
+
+  for (const item of rendered) {
+    const previous = joined.at(-1);
+
+    if (item.event.type === 'token' && previous?.event.type === 'token') {
+      joined[joined.length - 1] = {
+        event: {
+          ...previous.event,
+          data: { text: previous.event.data.text + item.event.data.text },
+        },
+        id: previous.id,
+      };
+    } else {
+      joined.push(item);
+    }
+  }
+
+  return joined;
+}

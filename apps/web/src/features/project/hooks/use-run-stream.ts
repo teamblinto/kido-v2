@@ -1,4 +1,5 @@
 import {
+  DURABLE_RUN_EVENT_TYPES,
   type RunEvent,
   STREAM_EVENT_TYPES,
   type StreamEvent,
@@ -23,7 +24,9 @@ import {
 
 interface UseRunStreamOptions {
   /**
-   * Told about every event the transcript accepts, in order, after the reducer has applied it.
+   * Told about every event the transcript accepts that is new since the connection opened, in
+   * order, after the reducer has applied it. A replayed durable event — `seq` at or below the run
+   * record's `lastSeq` when the stream connected — reaches the transcript but not this.
    *
    * Additive only (FR-025): a subscriber is a second reader of the one stream, never a second
    * writer of the transcript, so nothing it does can change what is on screen. Held in a ref so a
@@ -48,6 +51,8 @@ interface UseRunStreamOptions {
  * times it has ever dropped.
  */
 const RETRY_LIMIT = 3;
+
+const DURABLE_TYPES = new Set<string>(DURABLE_RUN_EVENT_TYPES);
 
 export interface RunStream {
   readonly connection: Connection;
@@ -219,6 +224,13 @@ export function useRunStream({ onEvent, orgId, projectId, runId }: UseRunStreamO
     }
   }, [runRecord]);
 
+  // The run record's `lastSeq`, read by the stream effect when it connects without reopening it.
+  const knownSeq = useRef(0);
+
+  useEffect(() => {
+    knownSeq.current = transcript.run?.lastSeq ?? 0;
+  });
+
   const status = transcript.run?.status;
   const isFinished = status !== undefined && isTerminal(status);
   const isKnown = status !== undefined;
@@ -253,6 +265,13 @@ export function useRunStream({ onEvent, orgId, projectId, runId }: UseRunStreamO
 
       return;
     }
+
+    // A fresh connection replays the run from seq 1. What the run record already counted is not
+    // news, so the subscriber hears only durable events newer than that — a replayed checkpoint
+    // reloading the preview was the second preview load on every page open (spec 043).
+    const knownThrough = knownSeq.current;
+    const isNews = (event: RunEvent): boolean =>
+      !DURABLE_TYPES.has(event.type) || event.seq > knownThrough;
 
     const source = new EventSource(runStreamUrl(orgId, projectId, runId));
 
@@ -308,9 +327,9 @@ export function useRunStream({ onEvent, orgId, projectId, runId }: UseRunStreamO
       // the events they are.
       if (parsed.type === 'stream.reset') {
         for (const event of parsed.data.events) {
-          subscriber.current?.(event);
+          if (isNews(event)) subscriber.current?.(event);
         }
-      } else {
+      } else if (isNews(parsed)) {
         subscriber.current?.(parsed);
       }
 
