@@ -9,6 +9,7 @@ import { RouteCache } from './route-cache.ts';
 import { createDomainVerifier, createRouteVerifier, createSiteVerifier } from './route-verify.ts';
 import { createManifestCache, createS3ArtifactStore } from './site-serve.ts';
 import { createTlsAsk } from './tls-ask.ts';
+import { createWatchdog, httpProbe } from './watchdog.ts';
 
 const env = validateEnvironment(process.env);
 
@@ -114,6 +115,23 @@ const ask =
           () => res.writeHead(403).end(),
         );
       }).listen(askPort);
+
+// The shared-namespace watchdog (watchdog.ts): 3 × 10 s with no answer, after a 60 s start period
+// (the api's own healthcheck allows it about as long to boot), means the api left this namespace.
+const watchdogUrl = env.GATEWAY_WATCHDOG_URL;
+if (watchdogUrl !== undefined) {
+  const watchdog = createWatchdog({
+    failures: 3,
+    now: Date.now,
+    onDead: () => {
+      console.error(`gateway: ${watchdogUrl} unreachable; exiting to rejoin the api's namespace`);
+      process.exit(1);
+    },
+    probe: httpProbe(watchdogUrl, 5_000),
+    startPeriodMs: 60_000,
+  });
+  setInterval(() => void watchdog.tick(), 10_000).unref();
+}
 
 // Graceful close: stop accepting, drop idle keep-alives, let in-flight exchanges finish, and
 // give up after a bounded wait so a stuck socket cannot pin the process.

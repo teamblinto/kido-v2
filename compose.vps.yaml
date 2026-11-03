@@ -173,9 +173,13 @@ services:
   # sandboxd's control port), and a gateway compromise is a compromise of that namespace.
   #
   # When the api container is recreated or restarts, the gateway is left in the old, dead
-  # namespace: `restart: true` re-creates it on compose-driven api restarts, and the healthcheck
-  # (the api's health on the shared loopback) turns it unhealthy otherwise; then
-  # `docker compose up -d gateway`. kido-deploy does this on every deploy (`activate`).
+  # namespace. `restart: true` restarts it on compose-driven api restarts; kido-deploy recreates it
+  # on every deploy (`activate`); any other api restart (a crash, `docker restart`) is caught by
+  # GATEWAY_WATCHDOG_URL: 30 s with no answer from the api on the shared loopback (after a 60 s
+  # start period) and the gateway exits 1, so `restart: unless-stopped` starts it again, which
+  # joins the api's current namespace (a `container:` mode is resolved at each start). Docker
+  # tries that start once: if the api is not running at that moment (crash-looping), the gateway
+  # stays exited until `docker compose up -d gateway` or the next deploy.
   gateway:
     build:
       context: .
@@ -190,6 +194,8 @@ services:
       BROKER_SHARED_SECRET: ${BROKER_SHARED_SECRET:?}
       BROKER_TRANSPORT: plain
       DEPLOY_ENV: local
+      # The same probe as the healthcheck below, which only reports (apps/gateway/src/watchdog.ts).
+      GATEWAY_WATCHDOG_URL: http://127.0.0.1:3000/api/v1/health
       PORT: 3200
       PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:?}
       PREVIEW_PUBLIC_JWKS: ${PREVIEW_PUBLIC_JWKS:?}

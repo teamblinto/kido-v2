@@ -74,6 +74,11 @@ export const environmentSchema = z
     // How long a label may keep answering `202` before the "could not be woken" page (spec 017
     // FR-032; §14 budgets 8 s for a resume, so 90 s is generous).
     GATEWAY_WAKE_BUDGET_MS: z.coerce.number().int().positive().default(90_000),
+    // Only for a gateway in another container's network namespace (compose.vps.yaml): a URL on
+    // that container's loopback. When it stops answering at all, the namespace is the dead one a
+    // restarted api left behind, and the gateway exits so Docker restarts it into the live one
+    // (watchdog.ts). Unset: no watchdog.
+    GATEWAY_WATCHDOG_URL: z.url().optional(),
     PORT: z.coerce.number().int().min(1).max(65_535).default(3200),
     // Previews are served at <label>-<port>.<PREVIEW_DOMAIN> (spec 017 R3).
     PREVIEW_DOMAIN: z.string().trim().toLowerCase().min(1).default('forge-preview.localhost'),

@@ -101,7 +101,10 @@ are not production-hardened, and the real deployment path is `infra/ansible`:
 - the gateway uses the plain broker over a shared network namespace, not mTLS. It therefore sits
   in the api's network namespace: a gateway compromise reaches everything the api can (the stores,
   the broker, sandboxd's control port). If the api container is recreated or restarts, the gateway is
-  left in the dead namespace and turns unhealthy: `docker compose up -d gateway`;
+  left in the dead namespace: kido-deploy recreates it on every deploy, and otherwise its watchdog
+  (`GATEWAY_WATCHDOG_URL`) exits after about 30 s without an answer from the api, so Docker restarts
+  it into the api's live namespace. Docker makes that start once: if the api is not running at that
+  moment (crash-looping), run `docker compose up -d gateway` once it is;
 - no object store is configured unless you add `OBJECT_STORE_*`, so features that need one
   (repository mirrors, deployed sites, some checkpoint artifacts) are unavailable;
 - there are no backups and no replication.
