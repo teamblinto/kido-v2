@@ -74,6 +74,8 @@ const flag = (name) => {
 if (process.env.FAKE_CLAUDE_ARGV_FILE) {
   writeFileSync(process.env.FAKE_CLAUDE_ARGV_FILE, JSON.stringify(args));
 }
+if (process.env.FAKE_CLAUDE_PID_FILE)
+  writeFileSync(process.env.FAKE_CLAUDE_PID_FILE, String(process.pid));
 if (process.env.FAKE_CLAUDE_INFO_FILE) {
   const env = Object.fromEntries(
     Object.entries(process.env).filter(([key]) => /^(CLAUDE_CODE_|MCP_)/.test(key)),
@@ -90,6 +92,8 @@ const preApproved = (name) => allowed.some((rule) => rule === name || name.start
 const sessionId = flag('--resume') ?? '11111111-2222-4333-8444-555555555555';
 const out = (message) => process.stdout.write(`${JSON.stringify(message)}\n`);
 let lastWasError = false;
+// Cumulative across turns, and a resumed session starts from what it had spent, as the CLI's does.
+let totalCost = Number(process.env.FAKE_CLAUDE_SAVED_COST ?? 0);
 let slowTimer = null;
 // One turn at a time; user lines that arrive mid-turn are queued and run together as one turn.
 let busy = false;
@@ -116,6 +120,7 @@ const result = (extra = {}) => {
     result: 'ok',
     session_id: sessionId,
     subtype: 'success',
+    total_cost_usd: (totalCost += 0.0125),
     type: 'result',
     usage: {
       cache_creation_input_tokens: 10,
@@ -252,8 +257,57 @@ async function onPrompt(text) {
   result();
 }
 
+// The models-and-limits probe's two control requests, shaped after Claude Code 2.1.317's answers.
+const DETAILS = {
+  get_usage: {
+    rate_limits: {
+      five_hour: { resets_at: '2026-11-03T17:50:00.540171+00:00', utilization: 59 },
+      seven_day: { resets_at: '2026-11-08T08:00:00.081509+00:00', utilization: 131 },
+      seven_day_opus: null,
+      seven_day_sonnet: null,
+      iguana_necktie: { resets_at: '2026-11-05T07:59:00+00:00', utilization: 100 },
+    },
+    rate_limits_available: true,
+    subscription_type: 'max',
+  },
+  initialize: {
+    account: { email: 'someone@example.com' },
+    commands: [],
+    models: [
+      {
+        description: 'Opus 5.5 · Best for everyday, complex tasks',
+        displayName: 'Default (recommended)',
+        value: 'default',
+      },
+      {
+        description: 'For complex work and everyday tasks',
+        displayName: 'Opus 5.5',
+        value: 'opus',
+      },
+      { displayName: 'Sonnet 5.5', value: 'sonnet' },
+      { displayName: 'Bad', value: '--dangerously-skip-permissions' },
+    ],
+  },
+};
+
 createInterface({ input: process.stdin }).on('line', (line) => {
   const message = JSON.parse(line);
+  if (process.env.FAKE_CLAUDE_STDIN_LOG) {
+    appendFileSync(
+      process.env.FAKE_CLAUDE_STDIN_LOG,
+      `${message.type} ${message.request?.subtype ?? ''}\n`,
+    );
+  }
+  const subtype = message.type === 'control_request' ? message.request.subtype : undefined;
+  if (subtype in DETAILS) {
+    const mode = process.env.FAKE_CLAUDE_DETAILS;
+    if (mode === 'hang') return;
+    const response =
+      mode === 'error'
+        ? { error: 'not supported', request_id: message.request_id, subtype: 'error' }
+        : { request_id: message.request_id, response: DETAILS[subtype], subtype: 'success' };
+    return out({ response, type: 'control_response' });
+  }
   if (message.type === 'user') {
     const text = String(message.message.content);
     if (!busy) startTurn(text);

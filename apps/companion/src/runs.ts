@@ -121,6 +121,23 @@ export function recordSession(dir: string, key: string, id: string): void {
   });
 }
 
+const costFile = (dir: string, sessionId: string) => join(dir, `cost-${sha256(sessionId)}.json`);
+
+/** A session's running cost (micro-USD) when its last run ended; 0 when unknown. */
+export function sessionCost(dir: string, sessionId: string): number {
+  try {
+    const micros: unknown = JSON.parse(readFileSync(costFile(dir, sessionId), 'utf8'));
+    return typeof micros === 'number' && Number.isSafeInteger(micros) && micros >= 0 ? micros : 0;
+  } catch {
+    return 0;
+  }
+}
+
+export function recordSessionCost(dir: string, sessionId: string, micros: number): void {
+  mkdirSync(dir, { mode: 0o700, recursive: true });
+  writeFileSync(costFile(dir, sessionId), JSON.stringify(micros), { mode: 0o600 });
+}
+
 type RunStart = Extract<CompanionCommand, { type: 'run.start' }>;
 
 const turnKey = (runId: string, turn: number) => `${runId}:${String(turn)}`;
@@ -135,6 +152,8 @@ interface ActiveRun {
 export interface RunManagerDeps {
   /** Runs at once; a further `run.start` is refused rather than queued. */
   maxConcurrentRuns: number;
+  /** A CLI run ended: its plan's limits have moved, so the status report is refreshed. */
+  onRunEnd?: () => void;
   policy: () => CompanionPolicy | null;
   providers: ProviderRegistry;
   /** `sessionsDir()` unless given. */
@@ -232,6 +251,7 @@ export class RunManager {
       })
       .finally(() => {
         if (this.active.get(runId) === run) this.active.delete(runId);
+        if (run.handle) this.deps.onRunEnd?.();
       });
   }
 
@@ -294,15 +314,18 @@ export class RunManager {
       model: command.model,
       prompt: command.prompt,
       resume,
+      sessionCostMicros: resume === null ? 0 : sessionCost(sessions, resume),
       toolset: command.toolset,
     });
     run.handle = handle;
     if (run.interrupted) handle.interrupt();
 
     let ended = false;
+    let sessionId = resume;
     try {
       for await (const event of handle.events) {
         if (event.type === 'session') {
+          sessionId = event.data.providerSessionId;
           try {
             recordSession(sessions, conversationKey, event.data.providerSessionId);
           } catch (error) {
@@ -320,6 +343,15 @@ export class RunManager {
       }
     } finally {
       await handle.dispose();
+      const cost = handle.sessionCostMicros;
+      if (sessionId !== null && cost !== undefined) {
+        try {
+          recordSessionCost(sessions, sessionId, cost);
+        } catch (error) {
+          // Only the next resumed run's cost is overstated (it carries this run's again).
+          log.warn(`Run ${runId}: could not record its session cost: ${String(error)}`);
+        }
+      }
     }
     if (!ended) this.fail(runId, turn, 'crash', `${name} stopped without reporting an outcome.`);
   }

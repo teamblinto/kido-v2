@@ -195,7 +195,7 @@ export class Supervisor {
   private async sendStatus(): Promise<void> {
     const { api, providers } = this.deps;
     try {
-      const statuses = await Promise.all(LOCAL_AGENT_PROVIDERS.map((id) => providers.probe(id)));
+      const statuses = await Promise.all(LOCAL_AGENT_PROVIDERS.map((id) => providers.report(id)));
       const report = companionStatusReportSchema.parse({
         companionVersion: COMPANION_VERSION,
         providers: statuses.map((status) => ({

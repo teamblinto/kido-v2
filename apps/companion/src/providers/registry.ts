@@ -7,7 +7,12 @@ import {
 import { scrub } from '../log.ts';
 import { redactPaths, truncate } from '../util.ts';
 import { createClaudeAdapter } from './claude/index.ts';
-import type { AdapterContext, ProviderAdapter, ProviderProbe } from './types.ts';
+import type {
+  AdapterContext,
+  ProviderAdapter,
+  ProviderProbe,
+  SubscriptionDetails,
+} from './types.ts';
 
 const redactHome = redactPaths(Infinity);
 
@@ -22,6 +27,7 @@ export class ProviderRegistry {
   readonly adapters: Record<LocalAgentProvider, ProviderAdapter>;
   private readonly cache = new Map<LocalAgentProvider, { at: number; status: ProbedStatus }>();
   private readonly inFlight = new Map<LocalAgentProvider, Promise<ProbedStatus>>();
+  private readonly detailing = new Map<LocalAgentProvider, Promise<SubscriptionDetails | null>>();
 
   constructor(
     selfScript: string,
@@ -43,6 +49,36 @@ export class ProviderRegistry {
       this.inFlight.set(provider, running);
     }
     return running;
+  }
+
+  /**
+   * A fresh probe and, when the CLI is signed in, its own models and limits. A details probe that
+   * fails leaves them out (the server keeps the last ones it heard); it never fails the report.
+   * One details probe per provider at a time: overlapping callers share it.
+   */
+  async report(provider: LocalAgentProvider): Promise<ProbedStatus> {
+    const status = await this.probe(provider);
+    const adapter = this.adapters[provider];
+    if (status.auth.status !== 'authenticated' || !adapter.details) return status;
+    let running = this.detailing.get(provider);
+    if (!running) {
+      running = adapter
+        .details()
+        .catch(() => null)
+        .finally(() => this.detailing.delete(provider));
+      this.detailing.set(provider, running);
+    }
+    const details = await running;
+    if (!details) return status;
+    return {
+      ...status,
+      auth: {
+        ...status.auth,
+        plan: status.auth.plan ?? (status.auth.method === 'subscription' ? details.plan : null),
+      },
+      models: details.models,
+      ...(details.usage ? { usage: details.usage } : {}),
+    };
   }
 
   private async probeNow(provider: LocalAgentProvider): Promise<ProbedStatus> {

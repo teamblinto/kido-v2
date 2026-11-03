@@ -3,6 +3,7 @@ import type {
   CompanionToolDefinition,
   LocalAgentProvider,
   LocalAgentProviderStatus,
+  SubscriptionUsage,
 } from '@repo/contracts';
 
 /** The one interface a CLI implements (spec 040 § 7). Transport code only sees this. */
@@ -18,6 +19,13 @@ export type ProviderProbe = Pick<
   'auth' | 'installed' | 'message' | 'models' | 'version'
 >;
 
+/** What the signed-in CLI says its plan offers: models, limits, and the plan's name if it gives one. */
+export interface SubscriptionDetails {
+  models: ProviderProbe['models'];
+  plan: string | null;
+  usage: SubscriptionUsage | null;
+}
+
 export interface StartRunOptions {
   /** The CLI's cwd: an empty private directory, the same for every turn of a conversation. */
   cwd: string;
@@ -25,6 +33,11 @@ export interface StartRunOptions {
   prompt: string;
   /** Provider session id to continue. */
   resume: string | null;
+  /**
+   * The resumed session's running cost (micro-USD) as its last run ended: the CLI's
+   * `total_cost_usd` carries a resumed session's earlier turns, so only the rise is this run's.
+   */
+  sessionCostMicros?: number;
   /**
    * The CLI's own file and shell tools are off and only these BAIOS tools exist, each call
    * relayed as a `tool.call` event (spec 041 sandbox tool mode).
@@ -41,6 +54,8 @@ export interface ToolCallResult {
 export interface RunHandle {
   /** Normalized events, ending with exactly one `terminal`, then the iterator completes. */
   events: AsyncIterable<RunEventBody>;
+  /** The session's running cost (micro-USD) as of the CLI's last result, if it stated one. */
+  readonly sessionCostMicros?: number;
   input(text: string): void;
   interrupt(): void;
   /** Answers a pending `tool.call`; an unknown or settled `callId` is ignored. */
@@ -51,7 +66,10 @@ export interface RunHandle {
 
 export interface ProviderAdapter {
   readonly id: LocalAgentProvider;
+  /** Fast (version and sign-in only), as every run start re-checks it; `models` is left empty. */
   probe(): Promise<ProviderProbe>;
+  /** The slower ask for the plan's models and limits, for status reports; null when unanswered. */
+  details?(): Promise<SubscriptionDetails | null>;
   startRun(options: StartRunOptions): RunHandle;
 }
 

@@ -49,6 +49,7 @@ export function createService(options: ServiceOptions): Service {
   );
   const runs: RunManager = new RunManager({
     maxConcurrentRuns: options.maxConcurrentRuns ?? 2,
+    onRunEnd: () => void supervisor.refreshStatus(),
     policy: (): CompanionPolicy | null => supervisor.policy,
     providers,
     sessionsDir: options.sessionsDir,

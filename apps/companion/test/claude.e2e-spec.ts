@@ -8,7 +8,9 @@ import {
   MAX_PENDING_TOOL_CALLS,
   sandboxModeArgs,
 } from '../src/providers/claude/index.ts';
+import { claudeDetails } from '../src/providers/claude/subscription.ts';
 import type { RunEventBody, StartRunOptions } from '../src/providers/types.ts';
+import { resolveBinary } from '../src/process.ts';
 import {
   collect,
   FAKE_CLAUDE,
@@ -47,6 +49,16 @@ function run(prompt: string, extra: Partial<StartRunOptions> = {}) {
   return { cwd, handle };
 }
 
+/** Signal 0 only asks whether the process exists. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 const ofType = <T extends RunEventBody['type']>(events: RunEventBody[], type: T) =>
   events.filter((event): event is Extract<RunEventBody, { type: T }> => event.type === type);
 
@@ -57,6 +69,10 @@ afterEach(() => {
   delete process.env.FAKE_CLAUDE_ARGV_FILE;
   delete process.env.FAKE_CLAUDE_IGNORE_INTERRUPT;
   delete process.env.FAKE_CLAUDE_ABSORB_INPUT;
+  delete process.env.FAKE_CLAUDE_DETAILS;
+  delete process.env.FAKE_CLAUDE_PID_FILE;
+  delete process.env.FAKE_CLAUDE_SAVED_COST;
+  delete process.env.FAKE_CLAUDE_STDIN_LOG;
 });
 
 describe('Claude adapter', () => {
@@ -77,6 +93,73 @@ describe('Claude adapter', () => {
     expect(signedOut.message).toContain('Sign in to Claude from BAIOS');
   });
 
+  it('asks the signed-in CLI for its own models and limits with a run’s safe flags, never a prompt', async () => {
+    const argvFile = join(tempDir(), 'argv.json');
+    const stdinLog = join(tempDir(), 'stdin.log');
+    process.env.FAKE_CLAUDE_ARGV_FILE = argvFile;
+    process.env.FAKE_CLAUDE_STDIN_LOG = stdinLog;
+    const details = await adapter.details?.();
+    expect(details).toEqual({
+      models: [
+        {
+          description: 'Opus 5.5 · Best for everyday, complex tasks',
+          id: 'default',
+          label: 'Default (recommended)',
+        },
+        { description: 'For complex work and everyday tasks', id: 'opus', label: 'Opus 5.5' },
+        { description: null, id: 'sonnet', label: 'Sonnet 5.5' },
+      ],
+      plan: 'Max',
+      usage: {
+        checkedAt: expect.any(String) as string,
+        windows: [
+          { kind: 'session', resetsAt: '2026-11-03T17:50:00.540Z', utilization: 59 },
+          { kind: 'weekly', resetsAt: '2026-11-08T08:00:00.081Z', utilization: 100 },
+        ],
+      },
+    });
+    expect(JSON.stringify(details)).not.toContain('someone@example.com');
+    const argv = JSON.parse(readFileSync(argvFile, 'utf8')) as string[];
+    expect(argv).toEqual(expect.arrayContaining([...sandboxModeArgs(), '--strict-mcp-config']));
+    expect(argv.join(' ')).not.toMatch(/bypass|dangerously|--mcp-config/i);
+    expect(readFileSync(stdinLog, 'utf8').trim().split('\n')).toEqual([
+      'control_request initialize',
+      'control_request get_usage',
+    ]);
+    // probe() stays fast (every run start re-checks it): it never asks for the models.
+    expect((await adapter.probe()).models).toEqual([]);
+  });
+
+  it('kills a details probe the CLI never answers at its timeout, and answers nothing', async () => {
+    const binary = resolveBinary('claude', FAKE_CLAUDE);
+    if (!binary) throw new Error('no fake');
+    const pidFile = join(tempDir(), 'pid');
+    process.env.FAKE_CLAUDE_DETAILS = 'hang';
+    process.env.FAKE_CLAUDE_PID_FILE = pidFile;
+    const started = Date.now();
+    const details = await claudeDetails(binary, { args: ['-p'], env: process.env, timeoutMs: 500 });
+    expect(details).toBeNull();
+    expect(Date.now() - started).toBeLessThan(5_000);
+    const pid = Number(readFileSync(pidFile, 'utf8'));
+    await waitFor(() => !alive(pid), 5_000);
+
+    // Refused requests end it at once rather than at the timeout.
+    process.env.FAKE_CLAUDE_DETAILS = 'error';
+    const refusedAt = Date.now();
+    expect(
+      await claudeDetails(binary, { args: ['-p'], env: process.env, timeoutMs: 10_000 }),
+    ).toBeNull();
+    expect(Date.now() - refusedAt).toBeLessThan(5_000);
+  });
+
+  it('charges a resumed session only for its own rise in the CLI’s running total', async () => {
+    process.env.FAKE_CLAUDE_SAVED_COST = '0.5';
+    const { handle } = run('say hello', { resume: 'sess-9', sessionCostMicros: 500_000 });
+    const events = await collect(handle);
+    expect(ofType(events, 'usage')[0]?.data.costMicros).toBe(12_500);
+    expect(handle.sessionCostMicros).toBe(512_500);
+  });
+
   it('reports not installed when the binary is missing', async () => {
     const missing = createClaudeAdapter({
       binary: join(tempDir(), 'nope.exe'),
@@ -93,7 +176,7 @@ describe('Claude adapter', () => {
     expect(events[0]).toEqual({ data: { providerSessionId: 'sess-9' }, type: 'session' });
     expect(textOf(events)).toBe('Hello');
     expect(ofType(events, 'usage')).toEqual([
-      { data: { inputTokens: 34, outputTokens: 7 }, type: 'usage' },
+      { data: { costMicros: 12_500, inputTokens: 34, outputTokens: 7 }, type: 'usage' },
     ]);
     expect(terminalOf(events)).toEqual({ status: 'completed' });
 
@@ -186,7 +269,8 @@ describe('Claude adapter', () => {
       }
     });
     expect(textOf(events)).toBe('firstHello');
-    expect(ofType(events, 'usage')).toHaveLength(2);
+    // The CLI's total is cumulative across turns: each turn is charged only its own rise.
+    expect(ofType(events, 'usage').map((event) => event.data.costMicros)).toEqual([12_500, 12_500]);
     expect(terminalOf(events)).toEqual({ status: 'completed' });
   });
 

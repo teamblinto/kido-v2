@@ -36,6 +36,7 @@ import {
   type ToolCallResult,
 } from '../types.ts';
 import { TOOLSET_FILE_ENV } from './mcp-tools.ts';
+import { claudeDetails, planLabel } from './subscription.ts';
 import {
   openToolBridge,
   TOOL_ENDPOINT_ENV,
@@ -55,10 +56,13 @@ const DEFAULT_TOOL_CALL_TIMEOUT_MS = 180_000;
 const MCP_TIMEOUT_MS = 600_000;
 /** Sandbox tool calls one run may have waiting on BAIOS at once. */
 export const MAX_PENDING_TOOL_CALLS = 8;
-const MODELS = [
-  { id: 'sonnet', label: 'Sonnet' },
-  { id: 'opus', label: 'Opus' },
-  { id: 'fable', label: 'Fable' },
+const STREAM_JSON_ARGS = [
+  '-p',
+  '--input-format',
+  'stream-json',
+  '--output-format',
+  'stream-json',
+  '--verbose',
 ];
 type TerminalData = Extract<RunEventBody, { type: 'terminal' }>['data'];
 
@@ -102,13 +106,12 @@ export function claudeAuth(status: unknown): ProviderProbe['auth'] {
   if (status.loggedIn === false || method === 'none') {
     return { method: null, plan: null, status: 'unauthenticated' };
   }
-  const plan = str(status.subscriptionType);
   switch (method) {
     case 'claude.ai':
     case 'oauth_token':
       return {
         method: 'subscription',
-        plan: plan ? truncate(plan.charAt(0).toUpperCase() + plan.slice(1), 100) : null,
+        plan: planLabel(str(status.subscriptionType)),
         status: 'authenticated',
       };
     case 'api_key':
@@ -123,6 +126,22 @@ export function claudeAuth(status: unknown): ProviderProbe['auth'] {
         status: status.loggedIn === true ? 'authenticated' : 'unknown',
       };
   }
+}
+
+/** A result's `total_cost_usd` in micro-USD, if it is a usable number. */
+export function costMicrosOf(usd: unknown): number | undefined {
+  return typeof usd === 'number' && Number.isFinite(usd) && usd >= 0
+    ? Math.round(usd * 1_000_000)
+    : undefined;
+}
+
+/**
+ * This turn's cost from the CLI's running session total (cumulative across turns, and across a
+ * resume): the rise since `previous`. A total below it means the CLI started counting afresh
+ * (no saved total, a crash's zeroed result), so all of it is new.
+ */
+export function costRise(total: number, previous: number): number {
+  return total >= previous ? total - previous : total;
 }
 
 function parseJson(text: string): unknown {
@@ -163,6 +182,7 @@ class ClaudeRun implements RunHandle {
   private readonly redact: <T>(value: T) => T;
   /** The same rewriting without the length cut, for streamed text. */
   private readonly redactFull: <T>(value: T) => T;
+  sessionCostMicros: number | undefined;
   private sessionId: string | null = null;
   private settleTimer: NodeJS.Timeout | null = null;
   private readonly stderr = new StderrTail();
@@ -174,6 +194,7 @@ class ClaudeRun implements RunHandle {
   constructor(ctx: AdapterContext, options: StartRunOptions) {
     this.ctx = ctx;
     this.options = options;
+    this.sessionCostMicros = options.sessionCostMicros;
     this.redact = redactPaths();
     this.redactFull = redactPaths(Infinity);
     this.launch().catch((error: unknown) =>
@@ -225,8 +246,7 @@ class ClaudeRun implements RunHandle {
     // Interrupted (maybe already disposed) while setting up: nothing else will clean these up.
     if (this.finished) return this.cleanup();
 
-    const args = ['-p', '--input-format', 'stream-json', '--output-format', 'stream-json'];
-    args.push('--verbose', '--include-partial-messages');
+    const args = [...STREAM_JSON_ARGS, '--include-partial-messages'];
     // `--flag=value` keeps each value bound to its flag (`--resume` takes an *optional* value).
     if (model) args.push(`--model=${model}`);
     if (resume) args.push(`--resume=${resume}`);
@@ -364,8 +384,14 @@ class ClaudeRun implements RunHandle {
   private onResult(message: Record<string, unknown>): void {
     const usage = isRecord(message.usage) ? message.usage : {};
     const count = (key: string) => (typeof usage[key] === 'number' ? usage[key] : 0);
+    const total = costMicrosOf(message.total_cost_usd);
+    const costMicros =
+      total === undefined ? undefined : costRise(total, this.sessionCostMicros ?? 0);
+    // A zeroed total (a crash or start-up error result) says nothing about the session's spend.
+    if (total !== undefined && total > 0) this.sessionCostMicros = total;
     this.emit({
       data: {
+        ...(costMicros === undefined ? {} : { costMicros }),
         inputTokens:
           count('input_tokens') +
           count('cache_creation_input_tokens') +
@@ -584,7 +610,17 @@ export function createClaudeAdapter(ctx: AdapterContext): ProviderAdapter {
           : auth.status === 'unknown'
             ? 'Could not read the sign-in state from `claude auth status`.'
             : null;
-      return { auth, installed: true, message, models: MODELS, version };
+      // The models are the CLI's own list, asked by `details()` for a status report.
+      return { auth, installed: true, message, models: [], version };
+    },
+    details() {
+      const binary = resolveBinary('claude', ctx.binary);
+      if (!binary) return Promise.resolve(null);
+      // A run's flags and environment, no MCP servers, and no prompt is ever written.
+      return claudeDetails(binary, {
+        args: [...STREAM_JSON_ARGS, '--strict-mcp-config', ...sandboxModeArgs()],
+        env: { ...process.env, ...SANDBOX_ENV },
+      });
     },
     startRun: (options) => new ClaudeRun(ctx, options),
   };

@@ -12,6 +12,7 @@ import {
   policyVerdict,
   recordSession,
   RunManager,
+  sessionCost,
   sandboxCwd,
   sandboxRoot,
   SESSIONS_KEPT,
@@ -90,8 +91,10 @@ function setup(probe: Partial<ProbedStatus['auth']> = {}, installed = true, maxC
     probe: () => Promise.resolve(status),
   } as unknown as ProviderRegistry;
   const sessions = join(tempDir(), 'sessions');
+  let ended = 0;
   const manager = new RunManager({
     maxConcurrentRuns,
+    onRunEnd: () => (ended += 1),
     policy: () => POLICY,
     providers,
     sessionsDir: sessions,
@@ -114,7 +117,8 @@ function setup(probe: Partial<ProbedStatus['auth']> = {}, installed = true, maxC
     await waitFor(() => pushed.some((event) => event.type === 'terminal'));
     return pushed.find((event) => event.type === 'terminal')?.data;
   };
-  return { manager, providers, pushed, sessions, start, started, terminal, turns };
+  const runEnds = () => ended;
+  return { manager, providers, pushed, runEnds, sessions, start, started, terminal, turns };
 }
 
 describe('RunManager', () => {
@@ -210,6 +214,60 @@ describe('ProviderRegistry.probe', () => {
   });
 });
 
+describe('ProviderRegistry.report', () => {
+  const signedIn = {
+    auth: { method: 'subscription' as const, plan: null, status: 'authenticated' as const },
+    installed: true,
+    message: null,
+    models: [],
+    version: '2.1.317',
+  };
+  const usage = {
+    checkedAt: '2026-11-03T12:00:00.000Z',
+    windows: [{ kind: 'session' as const, resetsAt: null, utilization: 59 }],
+  };
+  const models = [{ description: null, id: 'opus', label: 'Opus 5.5' }];
+
+  it('adds the CLI’s own models and limits, its plan when auth status gave none, one probe at a time', async () => {
+    const registry = new ProviderRegistry('self.js');
+    let asked = 0;
+    registry.adapters.claude.probe = () => Promise.resolve(signedIn);
+    registry.adapters.claude.details = async () => {
+      asked += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { models, plan: 'Max', usage };
+    };
+    const [first, second] = await Promise.all([
+      registry.report('claude'),
+      registry.report('claude'),
+    ]);
+    expect(asked).toBe(1);
+    expect(second).toEqual(first);
+    expect(first).toMatchObject({ auth: { plan: 'Max' }, models, usage });
+  });
+
+  it('leaves models and limits out when the probe fails, and never asks a signed-out CLI', async () => {
+    const registry = new ProviderRegistry('self.js');
+    let asked = 0;
+    registry.adapters.claude.probe = () => Promise.resolve(signedIn);
+    registry.adapters.claude.details = () => {
+      asked += 1;
+      return Promise.reject(new Error('boom'));
+    };
+    const failed = await registry.report('claude');
+    expect(failed).toMatchObject({ auth: { status: 'authenticated' }, models: [] });
+    expect(failed).not.toHaveProperty('usage');
+
+    registry.adapters.claude.probe = () =>
+      Promise.resolve({
+        ...signedIn,
+        auth: { method: null, plan: null, status: 'unauthenticated' as const },
+      });
+    expect((await registry.report('claude')).models).toEqual([]);
+    expect(asked).toBe(1);
+  });
+});
+
 describe('sandbox runs', () => {
   it('runs in a stable empty cwd per conversation, and routes tool.result by run and turn', async () => {
     const { manager, providers, pushed, start, started } = setup();
@@ -280,5 +338,30 @@ describe('sandbox runs', () => {
     expect(kept).toHaveLength(SESSIONS_KEPT);
     expect(kept.at(-1)).toBe(`s-${SESSIONS_KEPT + 4}`);
     expect(kept).not.toContain('s-4');
+  });
+
+  it('hands a resumed run its session’s cost so far, records the new total, and refreshes the status after each CLI run', async () => {
+    const { providers, runEnds, sessions, start, started } = setup();
+    providers.adapters.claude.startRun = (options: StartRunOptions): RunHandle => {
+      started.push(options);
+      return {
+        ...completedHandle({ data: { providerSessionId: 'sess-c' }, type: 'session' }),
+        sessionCostMicros: (options.sessionCostMicros ?? 0) + 12_500,
+      };
+    };
+    start();
+    await waitFor(() => runEnds() === 1);
+    expect(sessionCost(sessions, 'sess-c')).toBe(12_500);
+    start({ resume: { providerSessionId: 'sess-c' }, turn: 2 });
+    await waitFor(() => runEnds() === 2);
+    expect(started.map((options) => options.sessionCostMicros)).toEqual([0, 12_500]);
+    expect(sessionCost(sessions, 'sess-c')).toBe(25_000);
+    expect(sessionCost(sessions, 'sess-unknown')).toBe(0);
+
+    // A run refused before any CLI started moves no limit: no extra report.
+    const signedOut = setup({ method: null, status: 'unauthenticated' });
+    signedOut.start();
+    await signedOut.terminal();
+    expect(signedOut.runEnds()).toBe(0);
   });
 });
