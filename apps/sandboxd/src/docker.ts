@@ -3,20 +3,18 @@ import { PassThrough } from 'node:stream';
 
 import Docker from 'dockerode';
 
+import { log } from './log.ts';
+
 export type ContainerStatus =
-  | 'created'
-  | 'running'
-  | 'paused'
-  | 'restarting'
-  | 'removing'
-  | 'exited'
-  | 'dead';
+  'created' | 'running' | 'paused' | 'restarting' | 'removing' | 'exited' | 'dead';
 
 export interface ContainerSpec {
   name: string;
   image: string;
   labels: Record<string, string>;
   env: string[];
+  /** Main process uid:gid, so it never depends on the image USER. */
+  user?: string;
   hostConfig: object;
   network: 'sbx-agent' | 'sbx-proj';
 }
@@ -33,8 +31,7 @@ export interface ExecOpts {
 }
 
 export type ExecOutcome =
-  | { timedOut: false; exitCode: number; output: Buffer; truncated: boolean }
-  | { timedOut: true };
+  { timedOut: false; exitCode: number; output: Buffer; truncated: boolean } | { timedOut: true };
 
 export interface DockerEvent {
   action: string;
@@ -55,7 +52,7 @@ export interface DockerPort {
   removeImage(ref: string): Promise<'removed' | 'missing' | 'in-use'>;
   exec(cid: string, opts: ExecOpts): Promise<ExecOutcome>;
   execDetached(cid: string, opts: Omit<ExecOpts, 'stdin' | 'timeoutMs'>): Promise<void>;
-  ensureNetwork(name: string, opts: { internal: boolean }): Promise<void>;
+  ensureNetwork(name: string, opts: { internal: boolean; icc?: boolean }): Promise<void>;
   events(onEvent: (e: DockerEvent) => void): () => void;
   ping(): Promise<boolean>;
 }
@@ -76,7 +73,10 @@ async function tolerate<T>(fn: () => Promise<T>, map: Record<number, T>): Promis
 
 export class DockerodePort implements DockerPort {
   // No socketPath: dockerode honours DOCKER_HOST and the platform default.
-  private readonly docker = new Docker();
+  private readonly docker: Docker;
+  constructor(docker: Docker = new Docker()) {
+    this.docker = docker;
+  }
 
   async create(spec: ContainerSpec): Promise<string> {
     const c = await this.docker.createContainer({
@@ -84,6 +84,7 @@ export class DockerodePort implements DockerPort {
       Image: spec.image,
       Labels: spec.labels,
       Env: spec.env,
+      User: spec.user ?? '1000:1000',
       HostConfig: { ...spec.hostConfig, NetworkMode: spec.network },
     });
     return c.id;
@@ -191,23 +192,34 @@ export class DockerodePort implements DockerPort {
 
     if (outcome === 'timeout') {
       stream.destroy();
-      await this.runQuiet(
+      // The pid file may not exist yet if the timeout beat the wrapper; retry ~1s.
+      const code = await this.runQuiet(
         cid,
-        ['sh', '-c', `kill -KILL -$(cat ${pidFile}) 2>/dev/null; rm -f ${pidFile}`],
+        [
+          'sh',
+          '-c',
+          `i=0; while [ $i -lt 10 ]; do if [ -s ${pidFile} ]; then kill -KILL -$(cat ${pidFile}); rm -f ${pidFile}; exit 0; fi; i=$((i+1)); sleep 0.1; done; exit 1`,
+        ],
         user,
       );
+      if (code !== 0) {
+        log('warn', 'exec timeout kill found no process group', { cid, pidFile, code });
+      }
       return { timedOut: true };
     }
     const { ExitCode } = await exec.inspect();
     return { timedOut: false, exitCode: ExitCode ?? -1, output: Buffer.concat(chunks), truncated };
   }
 
-  private async runQuiet(cid: string, cmd: string[], user: string): Promise<void> {
+  private async runQuiet(cid: string, cmd: string[], user: string): Promise<number | null> {
     const e = await this.docker.getContainer(cid).exec({ Cmd: cmd, User: user });
     (await e.start({ hijack: true })).resume();
-    for (let i = 0; i < 50 && (await e.inspect()).Running; i++) {
+    for (let i = 0; i < 60; i++) {
+      const st = await e.inspect();
+      if (!st.Running) return st.ExitCode;
       await new Promise((r) => setTimeout(r, 50));
     }
+    return null;
   }
 
   async execDetached(cid: string, opts: Omit<ExecOpts, 'stdin' | 'timeoutMs'>): Promise<void> {
@@ -220,19 +232,40 @@ export class DockerodePort implements DockerPort {
     await exec.start({ Detach: true });
   }
 
-  async ensureNetwork(name: string, opts: { internal: boolean }): Promise<void> {
-    const found = await this.docker.listNetworks({ filters: { name: [name] } });
-    if (found.some((n) => n.Name === name)) return;
-    await this.docker.createNetwork({ Name: name, Driver: 'bridge', Internal: opts.internal });
+  async ensureNetwork(name: string, opts: { internal: boolean; icc?: boolean }): Promise<void> {
+    // The name filter is a substring match, so require an exact name.
+    const found = (await this.docker.listNetworks({ filters: { name: [name] } })).find(
+      (n) => n.Name === name,
+    );
+    if (found) {
+      const icc = found.Options?.['com.docker.network.bridge.enable_icc'] !== 'false';
+      if (!!found.Internal !== opts.internal || (opts.icc !== undefined && icc !== opts.icc)) {
+        throw new Error(
+          `network ${name} exists with internal=${!!found.Internal} icc=${icc}, expected internal=${opts.internal}` +
+            (opts.icc === undefined ? '' : ` icc=${opts.icc}`),
+        );
+      }
+      return;
+    }
+    await this.docker.createNetwork({
+      Name: name,
+      Driver: 'bridge',
+      Internal: opts.internal,
+      ...(opts.icc === false && { Options: { 'com.docker.network.bridge.enable_icc': 'false' } }),
+    });
   }
 
   events(onEvent: (e: DockerEvent) => void): () => void {
     let stopped = false;
     let current: { destroy(): void } | undefined;
-    const retry = (): void => {
-      if (!stopped) setTimeout(() => void connect(), 1000).unref();
-    };
     const connect = async (): Promise<void> => {
+      // One retry per connection: both 'error' and 'close' fire on a dead stream.
+      let retried = false;
+      const retry = (): void => {
+        if (retried || stopped) return;
+        retried = true;
+        setTimeout(() => void connect(), 1000).unref();
+      };
       try {
         const s = await this.docker.getEvents({
           filters: { type: ['container'], label: ['sandboxd.owner=1'] },
@@ -245,11 +278,15 @@ export class DockerodePort implements DockerPort {
           const lines = buf.split('\n');
           buf = lines.pop() ?? '';
           for (const line of lines.filter(Boolean)) {
-            const ev = JSON.parse(line) as {
-              Action: string;
-              Actor: { ID: string; Attributes?: Record<string, string> };
-            };
-            onEvent({ action: ev.Action, cid: ev.Actor.ID, labels: ev.Actor.Attributes ?? {} });
+            try {
+              const ev = JSON.parse(line) as {
+                Action: string;
+                Actor: { ID: string; Attributes?: Record<string, string> };
+              };
+              onEvent({ action: ev.Action, cid: ev.Actor.ID, labels: ev.Actor.Attributes ?? {} });
+            } catch {
+              log('warn', 'skipping malformed docker event', { line: line.slice(0, 200) });
+            }
           }
         });
         s.on('close', retry);

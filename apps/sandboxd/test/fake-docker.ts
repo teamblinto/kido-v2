@@ -16,7 +16,7 @@ export class FakeDocker implements DockerPort {
   calls: { method: string; args: unknown[] }[] = [];
   containers = new Map<string, { spec: ContainerSpec; status: ContainerStatus }>();
   images = new Set<string>();
-  networks = new Map<string, { internal: boolean }>();
+  networks = new Map<string, { internal: boolean; icc?: boolean }>();
   execHandler: ExecHandler = () => ({
     timedOut: false,
     exitCode: 0,
@@ -85,8 +85,12 @@ export class FakeDocker implements DockerPort {
     this.rec('execDetached', cid, opts);
     return Promise.resolve();
   }
-  ensureNetwork(name: string, opts: { internal: boolean }) {
+  ensureNetwork(name: string, opts: { internal: boolean; icc?: boolean }) {
     this.rec('ensureNetwork', name, opts);
+    const have = this.networks.get(name);
+    if (have && have.internal !== opts.internal) {
+      return Promise.reject(new Error(`network ${name} exists with internal=${have.internal}`));
+    }
     this.networks.set(name, opts);
     return Promise.resolve();
   }

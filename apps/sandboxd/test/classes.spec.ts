@@ -67,8 +67,11 @@ describe('containerSpec', () => {
     expect(hc(s)).toMatchObject({
       Memory: 2147483648,
       MemorySwap: 2147483648,
+      NanoCpus: 2e9,
+      PidsLimit: 1024,
       StorageOpt: { size: '10G' },
     });
+    expect(s.network).toBe('sbx-proj');
   });
 
   it.each(['project', 'agent', 'build'] as const)('%s hardening, StorageOpt gated', (cls) => {
@@ -80,9 +83,11 @@ describe('containerSpec', () => {
         SecurityOpt: ['no-new-privileges'],
         Privileged: false,
         Init: true,
+        Ulimits: [{ Name: 'nofile', Soft: 4096, Hard: 4096 }],
       });
       expect(h).not.toHaveProperty('Binds');
     }
+    expect(containerSpec(cfg(true), 'x', 'img', cls, {}, []).user).toBe('1000:1000');
     expect(on).toHaveProperty('StorageOpt');
     expect(off).not.toHaveProperty('StorageOpt');
   });

@@ -45,6 +45,12 @@ describe.skipIf(!up)('DockerodePort', () => {
     if (!r.timedOut) expect(r.output.toString().trim()).toBe('1000');
   });
 
+  it('main process runs as uid 1000', async () => {
+    const r = await run(['ps', '-o', 'uid=', '-p', '1']);
+    expect(r.timedOut).toBe(false);
+    if (!r.timedOut) expect(r.output.toString().trim()).toBe('1000');
+  });
+
   it('round-trips 200 KiB binary stdin', async () => {
     const data = randomBytes(200 * 1024);
     const r = await run(['cat'], { stdin: data });
