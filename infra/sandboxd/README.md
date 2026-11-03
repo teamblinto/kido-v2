@@ -140,9 +140,8 @@ are not production-hardened, and the real deployment path is `infra/ansible`:
 - `SANDBOXD_DNS`, `SANDBOXD_MAX_RUNNING`, `SANDBOXD_MIN_MEM_AVAILABLE_MB` (optional): the
   sandbox resolvers and admission limits; compose passes them through with the defaults
   `1.1.1.1,9.9.9.9`, `22`, `1024`.
-- `ANTHROPIC_API_KEY` only if you use the platform-key path (a platform credential in the model
-  catalogue): add it to the `api` and `worker` environment in a third compose file listed in
-  `COMPOSE_FILE`. Subscription (BYOS) linking needs none.
+- No model key: platform credits are retired (spec 043). Runs are paid by the person's connected
+  subscription or the organisation's own API key (Settings → Provider keys).
 
 Staging mesh: [`infra/ansible/sandboxd.yml`](../ansible/sandboxd.yml) replaces the old `daytona`
 host. It runs host-setup.sh and the container with `SANDBOXD_LISTEN` set to the host's WireGuard

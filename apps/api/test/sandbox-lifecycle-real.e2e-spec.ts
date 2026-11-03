@@ -41,6 +41,7 @@ import { TemplatePublisher } from '../src/modules/sandbox/template-publisher';
 import { unsafe } from './support/csrf-client';
 import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
 import { ScriptedProvider } from './support/scripted-provider';
+import { seedProviderKey } from './support/seed-provider-key';
 import { dropFakeVersions } from './support/template-versions';
 import {
   createTwoTenantWorld,
@@ -66,7 +67,6 @@ vi.hoisted(() => {
   process.env.ARGON2_TIME_COST = '1';
   process.env.THROTTLE_LIMIT = '100000';
   process.env.SANDBOX_OWNER = `forge-014-walk-${String(process.pid)}`;
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-sandbox-lifecycle-real-e2e';
 });
 
 const configured = Boolean(process.env.DAYTONA_API_URL && process.env.DAYTONA_API_KEY);
@@ -275,6 +275,8 @@ describe('Sandbox lifecycle against a real Daytona (e2e)', () => {
           }),
         ).toMatchObject({ current: true, state: 'ready' });
         world = await createTwoTenantWorld(app);
+        // Platform credits are retired: the organisation pays for its runs with its own key.
+        await seedProviderKey(app, world.alpha);
       }, PUBLISH_TIMEOUT_MS);
 
       afterAll(async () => {

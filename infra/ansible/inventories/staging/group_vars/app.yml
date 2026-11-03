@@ -90,7 +90,7 @@ forge_app_sandboxd_env:
   DAYTONA_API_URL: 'http://sandboxd-1.{{ forge_internal_domain }}:3986'
   DAYTONA_API_KEY_FILE: /run/secrets/sandboxd_api_key
 
-# Only the worker may hold the model key (spec 013 R10). Merged into the worker's environment in
-# app.yml and nowhere else.
-forge_app_worker_env:
-  ANTHROPIC_API_KEY: '{{ vault_anthropic_api_key }}'
+# Worker-only environment (spec 013 R10), merged into the worker's environment in app.yml and
+# nowhere else. Empty since platform credits were retired (spec 043): runs are paid by a person's
+# subscription or the organisation's own key, so no process holds a platform model key.
+forge_app_worker_env: {}

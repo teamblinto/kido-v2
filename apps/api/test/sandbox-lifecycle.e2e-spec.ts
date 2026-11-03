@@ -57,6 +57,7 @@ import { fakeGit } from './support/fake-git';
 import { dropFakeVersions, publishFakeVersion } from './support/template-versions';
 import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
 import { ScriptedProvider } from './support/scripted-provider';
+import { seedProviderKey } from './support/seed-provider-key';
 import {
   createTwoTenantWorld,
   destroyTwoTenantWorld,
@@ -81,7 +82,6 @@ const FAKE = vi.hoisted(() => {
   const port = 20_000 + Math.floor(Math.random() * 20_000);
   process.env.DAYTONA_API_URL = `http://127.0.0.1:${port}/api`;
   process.env.DAYTONA_API_KEY = 'dtn_fake_key';
-  process.env.ANTHROPIC_API_KEY = 'sk-ant-fake-sandbox-lifecycle-e2e';
 
   return { port };
 });
@@ -368,6 +368,8 @@ describe('Sandbox lifecycle (e2e)', () => {
         // Spec 015 (R8): the pool's source is the template's current version, not a dial.
         await publishFakeVersion(db, TEMPLATE, SNAPSHOT);
         world = await createTwoTenantWorld(app);
+        // Platform credits are retired: the organisation pays for its runs with its own key.
+        await seedProviderKey(app, world.alpha);
       }, LOCKED_BOOT_TIMEOUT_MS);
 
       beforeEach(() => {
