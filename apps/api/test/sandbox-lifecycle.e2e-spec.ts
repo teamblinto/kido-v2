@@ -304,23 +304,6 @@ describe('Sandbox lifecycle (e2e)', () => {
         return rows.map((row) => row.payload as { op: string });
       }
 
-      /** The sandbox.ops job id of a sandbox's latest `op` event: target, op and event id. */
-      async function opJobId(sandboxId: string, op: string): Promise<string> {
-        const rows = await db
-          .select({ id: schema.outbox.id, payload: schema.outbox.payload })
-          .from(schema.outbox)
-          .where(
-            and(
-              eq(schema.outbox.type, 'sandbox.op.requested'),
-              eq(schema.outbox.aggregateId, sandboxId),
-            ),
-          )
-          .orderBy(asc(schema.outbox.seq));
-        const last = rows.filter((row) => (row.payload as { op: string }).op === op).at(-1);
-
-        return `${sandboxId}.${op}.${last?.id ?? 'none'}`;
-      }
-
       const creates = () =>
         fake.requests.filter((r) => r.method === 'POST' && r.path === '/api/sandbox');
 
@@ -1088,6 +1071,38 @@ describe('Sandbox lifecycle (e2e)', () => {
           return { daytonaId, projectId, row: (await sandboxRow(projectId))! };
         }
 
+        /** Spec 043: the first cycle's completed job must not swallow the second's. */
+        it(
+          'hibernates the same sandbox again on its next idle cycle, after the first completed',
+          async () => {
+            const { daytonaId, projectId } = await activeProject('Twice over');
+            const stops = () => fake.requests.filter((r) => r.path.endsWith('/stop')).length;
+            const before = stops();
+
+            for (const cycle of [1, 2]) {
+              await backdate(projectId, {
+                hibernatedAt: null,
+                state: 'idle',
+                stateEnteredAt: ago(61 * MINUTE),
+              });
+              fake.sandboxes.get(daytonaId)!.state = 'started';
+              expect(await sweep.sweep()).toMatchObject({ hibernating: 1 });
+              await until(`cycle ${String(cycle)}'s stop`, async () =>
+                Promise.resolve(fake.sandboxes.get(daytonaId)!.state === 'stopping'),
+              );
+              fake.settle(daytonaId);
+              await until(
+                `cycle ${String(cycle)} to hibernate`,
+                async () => (await sandboxRow(projectId))?.state === 'hibernated',
+              );
+            }
+
+            expect(stops() - before).toBe(2);
+            expect(await sandboxRow(projectId)).toMatchObject({ transition: null });
+          },
+          RUN_TIMEOUT_MS,
+        );
+
         /** SC-010, quickstart row US5 · SC-010 (FR-010, FR-011). */
         it(
           'the same hibernate op twice stops once; a stale-epoch resume settles nothing',
@@ -1096,8 +1111,9 @@ describe('Sandbox lifecycle (e2e)', () => {
             await backdate(projectId, { state: 'idle', stateEnteredAt: ago(61 * MINUTE) });
             expect(await sweep.sweep()).toMatchObject({ hibernating: 1 });
             const row = (await sandboxRow(projectId))!;
-            // The same op again, before the first has run: one job id, one `stop`.
-            await appendOp(row.id, { op: 'hibernate' });
+            // The same op again, for the same transition, before the first has run: one job id,
+            // one `stop`.
+            await appendOp(row.id, { op: 'hibernate', since: row.transitionSince!.toISOString() });
             expect((await opsFor(row.id)).map((op) => op.op)).toEqual(['hibernate', 'hibernate']);
             await until('the fake to be asked to stop', async () =>
               Promise.resolve(fake.sandboxes.get(daytonaId)!.state === 'stopping'),
@@ -1139,8 +1155,7 @@ describe('Sandbox lifecycle (e2e)', () => {
             await until(
               'the stale resume job to complete',
               async () =>
-                (await (await opsQueue().getJob(await opJobId(row.id, 'resume')))?.getState()) ===
-                'completed',
+                (await (await opsQueue().getJob(`${row.id}.resume`))?.getState()) === 'completed',
             );
 
             expect(fake.requests.filter((r) => r.path.endsWith('/start'))).toEqual([]);
@@ -1309,13 +1324,13 @@ describe('Sandbox lifecycle (e2e)', () => {
               await until(
                 'the resume job to be dead-lettered',
                 async () => {
-                  letter = (await opsDlq().getJob(await opJobId(row.id, 'resume')))?.data;
+                  letter = (await opsDlq().getJob(`${row.id}.resume`))?.data;
                   return letter !== undefined;
                 },
                 RUN_TIMEOUT_MS * 2,
               );
               expect(letter).toMatchObject({
-                jobId: await opJobId(row.id, 'resume'),
+                jobId: `${row.id}.resume`,
                 payload: {
                   payload: { op: 'resume', orgId: world.alpha.orgId, sandboxId: row.id },
                   type: 'sandbox.op.requested',
@@ -1343,7 +1358,7 @@ describe('Sandbox lifecycle (e2e)', () => {
               });
               expect(failed.failureReason).toMatch(/^daytona:upstream: /);
               expect((await opsFor(row.id)).map((op) => op.op)).toEqual(['resume']);
-              expect(await opsQueue().getJob(await opJobId(row.id, 'resume'))).toBeUndefined();
+              expect(await opsQueue().getJob(`${row.id}.resume`)).toBeUndefined();
             } finally {
               settings.backoffStrategy = strategy;
               Object.assign(SANDBOX, { runWaitMs: RUN_TIMEOUT_MS });

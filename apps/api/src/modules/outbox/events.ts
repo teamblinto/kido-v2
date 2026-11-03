@@ -228,6 +228,8 @@ export const EVENTS = {
       orgId: z.uuid().optional(), // present for a project row, absent for a pool row
       poolId: z.uuid().optional(),
       sandboxId: z.uuid().optional(), // exactly one of poolId / sandboxId
+      /** The row's `transition_since` the request was made for: one job per transition cycle (043). */
+      since: z.iso.datetime().optional(),
     }),
   },
   'site.offline': {

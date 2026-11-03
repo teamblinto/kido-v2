@@ -287,7 +287,7 @@ describe('SandboxOpsConsumer', () => {
         await suiteLock?.release();
       });
 
-      it('is the sandbox.ops consumer on the events profile, 16 wide, 5 attempts, one job per event', () => {
+      it('is the sandbox.ops consumer on the events profile, 16 wide, 5 attempts, one job per target and op', () => {
         expect(consumer).toMatchObject({
           attempts: 5,
           concurrency: 16,
@@ -295,19 +295,21 @@ describe('SandboxOpsConsumer', () => {
           queue: 'sandbox.ops',
           types: ['sandbox.op.requested'],
         });
-        const created = envelope({ op: 'create', orgId, sandboxId: projectId });
-        expect(consumer.jobId(created)).toBe(`${projectId}.create.${created.eventId}`);
-        const pooled = envelope({ op: 'create', poolId: userId });
-        expect(consumer.jobId(pooled)).toBe(`${userId}.create.${pooled.eventId}`);
+        expect(consumer.jobId(envelope({ op: 'create', orgId, sandboxId: projectId }))).toBe(
+          `${projectId}.create`,
+        );
+        expect(consumer.jobId(envelope({ op: 'create', poolId: userId }))).toBe(`${userId}.create`);
       });
 
-      it('gives the second hibernate of a sandbox its own job, and a republished event the same one (spec 043)', () => {
-        const first = envelope({ op: 'hibernate', orgId, sandboxId: projectId });
-        const second = envelope({ op: 'hibernate', orgId, sandboxId: projectId });
+      it('is one job per transition cycle: the same cycle collapses, the next is new (spec 043)', () => {
+        const first = '2026-11-03T16:10:29.257Z';
+        const at = (since: string) =>
+          consumer.jobId(envelope({ op: 'hibernate', orgId, sandboxId: projectId, since }));
 
-        expect(consumer.jobId(second)).not.toBe(consumer.jobId(first));
-        expect(consumer.jobId({ ...first })).toBe(consumer.jobId(first));
-        expect(consumer.jobId(first)).not.toContain(':');
+        expect(at(first)).toBe(`${projectId}.hibernate.${String(Date.parse(first))}`);
+        expect(at(first)).toBe(at(first));
+        expect(at('2026-11-03T19:36:04.374Z')).not.toBe(at(first));
+        expect(at(first)).not.toContain(':');
       });
 
       describe('create', () => {

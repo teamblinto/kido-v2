@@ -183,7 +183,13 @@ describe('SandboxSweep', () => {
       expect(await opsFor(id)).toEqual([
         {
           orgId: world.beta.orgId,
-          payload: { op: 'hibernate', orgId: world.beta.orgId, sandboxId: id },
+          // The cycle is the transition it set: a later cycle is a new job (spec 043).
+          payload: {
+            op: 'hibernate',
+            orgId: world.beta.orgId,
+            sandboxId: id,
+            since: after.transitionSince!.toISOString(),
+          },
         },
       ]);
       expect(await row(world.alpha, young)).toMatchObject({ state: 'idle', transition: null });

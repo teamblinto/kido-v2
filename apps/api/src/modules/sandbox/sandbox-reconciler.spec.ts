@@ -401,7 +401,13 @@ describe('SandboxReconciler', () => {
         await reconciler.reconcile();
 
         expect(await opsFor(stale.id)).toEqual([
-          { op: 'resume', orgId: alpha.orgId, sandboxId: stale.id },
+          // The refreshed clock is the cycle, so the retry is a new job (spec 043).
+          {
+            op: 'resume',
+            orgId: alpha.orgId,
+            sandboxId: stale.id,
+            since: clock.now().toISOString(),
+          },
         ]);
         expect(await readRow(alpha, stale.id)).toMatchObject({
           transition: 'resuming',

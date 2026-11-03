@@ -128,7 +128,12 @@ export class SandboxReconciler {
             await this.outbox.append(tx, {
               aggregateId: row.id,
               orgId,
-              payload: { op: OP_OF[row.transition], orgId, sandboxId: row.id },
+              payload: {
+                op: OP_OF[row.transition],
+                orgId,
+                sandboxId: row.id,
+                since: now.toISOString(),
+              },
               type: 'sandbox.op.requested',
             });
             report.requeued++;

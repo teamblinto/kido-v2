@@ -81,7 +81,7 @@ export class SandboxSweep {
           await this.outbox.append(tx, {
             aggregateId: id,
             orgId,
-            payload: { op: 'hibernate', orgId, sandboxId: id },
+            payload: { op: 'hibernate', orgId, sandboxId: id, since: now.toISOString() },
             type: 'sandbox.op.requested',
           });
         }
