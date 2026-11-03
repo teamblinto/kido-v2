@@ -8,6 +8,10 @@ import { log } from './log.ts';
 
 const script = join(dirname(fileURLToPath(import.meta.url)), '../../../infra/sandboxd/firewall.sh');
 
+// The control bridge compose creates (compose.yaml `sbx-ctl`); sandboxes are never attached.
+const CTL_BRIDGE = 'sbx-ctl0';
+const CTL_GATEWAY = '172.30.2.1';
+
 const NETWORKS: [string, NetworkOpts][] = [
   [
     'sbx-agent',
@@ -44,7 +48,9 @@ export function firewallMode(
 }
 
 /** Single source of truth for firewall.sh: the same constants the networks are created from. */
-export function firewallEnv(cfg: Pick<Config, 'egressListen'>): Record<string, string> {
+export function firewallEnv(
+  cfg: Pick<Config, 'egressListen' | 'listen' | 'previewListen'>,
+): Record<string, string> {
   const [agent, proj] = [NETWORKS[0]![1], NETWORKS[1]![1]];
   return {
     SBX_EGRESS_PORT: String(cfg.egressListen.port),
@@ -56,12 +62,16 @@ export function firewallEnv(cfg: Pick<Config, 'egressListen'>): Record<string, s
     SBX_PROJ_NET: proj.subnet!,
     SBX_AGENT_IF: agent.bridgeName!,
     SBX_PROJ_IF: proj.bridgeName!,
+    SBX_CTL_IF: CTL_BRIDGE,
+    // Only when the control/preview listeners sit on the local sbx-ctl bridge gateway. On the
+    // staging mesh they listen on a WireGuard address and callers are remote: no INPUT pin.
+    SBX_CTL_IP: cfg.listen.host === CTL_GATEWAY ? CTL_GATEWAY : '',
   };
 }
 
 type Run = (sub: 'apply' | 'check') => Promise<boolean>;
 
-export function realRunner(cfg: Pick<Config, 'egressListen'>): Run {
+export function realRunner(cfg: Pick<Config, 'egressListen' | 'listen' | 'previewListen'>): Run {
   return (sub) =>
     new Promise((resolve) => {
       execFile(
@@ -77,7 +87,9 @@ export function realRunner(cfg: Pick<Config, 'egressListen'>): Run {
     });
 }
 
-export async function applyFirewall(cfg: Pick<Config, 'egressListen'>): Promise<void> {
+export async function applyFirewall(
+  cfg: Pick<Config, 'egressListen' | 'listen' | 'previewListen'>,
+): Promise<void> {
   if (!(await realRunner(cfg)('apply'))) throw new Error('firewall.sh apply failed');
 }
 

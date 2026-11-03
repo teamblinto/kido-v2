@@ -40,7 +40,12 @@ describe('ensureNetworks', () => {
 
 describe('firewallEnv', () => {
   it('derives port and gateway from the egress listen address', () => {
-    expect(firewallEnv({ egressListen: { host: '172.30.0.9', port: 4000 } })).toMatchObject({
+    const cfg = {
+      egressListen: { host: '172.30.0.9', port: 4000 },
+      listen: { host: '172.30.2.1', port: 3986 },
+      previewListen: { host: '172.30.2.1', port: 3987 },
+    };
+    expect(firewallEnv(cfg)).toMatchObject({
       SBX_EGRESS_PORT: '4000',
       SBX_AGENT_GW: '172.30.0.9',
       SBX_SNAPSHOT: '/tmp/sbx-firewall.snapshot',
@@ -49,7 +54,18 @@ describe('firewallEnv', () => {
       SBX_PROJ_NET: '172.30.1.0/24',
       SBX_AGENT_IF: 'sbx-agent0',
       SBX_PROJ_IF: 'sbx-proj0',
+      SBX_CTL_IF: 'sbx-ctl0',
+      SBX_CTL_IP: '172.30.2.1',
     });
+  });
+
+  it('pins nothing for the control listener when it is not the local bridge gateway', () => {
+    const env = firewallEnv({
+      egressListen: { host: '172.30.0.1', port: 3988 },
+      listen: { host: '10.99.0.5', port: 3986 },
+      previewListen: { host: '10.99.0.5', port: 3987 },
+    });
+    expect(env.SBX_CTL_IP).toBe('');
   });
 });
 

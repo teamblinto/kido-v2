@@ -64,7 +64,14 @@ const retryTimers = new Set<NodeJS.Timeout>();
 /** Listen; on any error log it, and if not yet listening (bridge late, port busy) retry in 5 s. */
 function listen(srv: Server, name: string, hp: { host: string; port: number }): Server {
   srv.on('error', (e: NodeJS.ErrnoException) => {
-    log('error', `${name} server error`, { code: e.code, message: e.message, ...hp });
+    log('error', `${name} server error`, {
+      code: e.code,
+      message: e.message,
+      ...(e.code === 'EADDRNOTAVAIL' && {
+        hint: 'that address is not on this host yet: compose creates the sbx-ctl bridge (172.30.2.1) when the stack comes up; retrying',
+      }),
+      ...hp,
+    });
     if (!srv.listening && !closing) {
       const t = setTimeout(() => {
         retryTimers.delete(t);

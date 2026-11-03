@@ -31,6 +31,7 @@ describe('containerSpec', () => {
       MemorySwap: 805306368,
       PidsLimit: 128,
       NanoCpus: 5e8,
+      OomScoreAdj: 500,
     });
     expect(s.network).toBe('sbx-agent');
     expect(s.env).toEqual(

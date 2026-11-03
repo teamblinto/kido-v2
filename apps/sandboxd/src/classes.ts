@@ -48,6 +48,8 @@ export function containerSpec(
       CapDrop: ['ALL'],
       SecurityOpt: ['no-new-privileges'],
       Privileged: false,
+      // Design §12: under memory pressure the kernel kills a sandbox before the platform.
+      OomScoreAdj: 500,
     },
   };
 }

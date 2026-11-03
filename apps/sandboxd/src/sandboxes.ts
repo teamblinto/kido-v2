@@ -51,19 +51,23 @@ function toLabels(v: unknown): Record<string, string> {
 /** Host readers behind GET /capacity, injectable so the numbers can be asserted. */
 export interface SysReaders {
   memAvailable: () => number;
-  statfs: () => Promise<{ bsize: number; blocks: number; bavail: number }>;
+  statfs: () => Promise<{ bsize: number; blocks: number; bfree: number; bavail: number }>;
 }
 
-const defaultSys: SysReaders = {
-  memAvailable: procMemAvailable,
-  statfs: () => statfs(process.env.SANDBOXD_DOCKER_ROOT ?? '/var/lib/docker'),
-};
+function usedPct(fs: { blocks: number; bfree: number; bavail: number }): number {
+  const used = fs.blocks - fs.bfree;
+  return used + fs.bavail === 0 ? 0 : Math.round((used / (used + fs.bavail)) * 100);
+}
 
 export function registerSandboxRoutes(
   api: ReturnType<typeof router>,
   d: { cfg: Config; store: Store; docker: DockerPort; admission: Admission; sys?: SysReaders },
 ): void {
-  const { cfg, store, docker, admission, sys = defaultSys } = d;
+  const { cfg, store, docker, admission } = d;
+  const sys: SysReaders = d.sys ?? {
+    memAvailable: procMemAvailable,
+    statfs: () => statfs(cfg.dockerRoot),
+  };
 
   const row = (id: string): SandboxRow => {
     const r = store.get(id);
@@ -192,7 +196,8 @@ export function registerSandboxRoutes(
       maxRunning: cfg.maxRunning,
       memAvailableBytes: sys.memAvailable(),
       diskFreeBytes: fs.bavail * fs.bsize,
-      diskUsedPct: Math.round((1 - fs.bavail / fs.blocks) * 100),
+      // df's definition: used / (used + available to unprivileged users); 0 on an empty fs.
+      diskUsedPct: usedPct(fs),
     });
   });
 

@@ -40,7 +40,7 @@ beforeEach(async () => {
     admission: new Admission({ cfg, store, docker, memAvailable: () => Infinity }),
     sys: {
       memAvailable: () => 123,
-      statfs: () => Promise.resolve({ bsize: 10, blocks: 100, bavail: 30 }),
+      statfs: () => Promise.resolve({ bsize: 10, blocks: 100, bfree: 40, bavail: 30 }),
     },
   });
   server = createServer(api.handle);
@@ -226,7 +226,7 @@ describe('sandbox control plane', () => {
       maxRunning: 22,
       memAvailableBytes: 123,
       diskFreeBytes: 300,
-      diskUsedPct: 70,
+      diskUsedPct: 67,
     });
   });
 });

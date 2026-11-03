@@ -106,11 +106,13 @@ describe('loadConfig', () => {
       SANDBOXD_DATA_DIR: dir(),
       SANDBOXD_IMAGE_ALLOW: 'a, b',
       SANDBOXD_STORAGE_QUOTA: '1',
+      SANDBOXD_DOCKER_ROOT: '/var/lib/docker-sbx',
       SANDBOXD_PUBLIC_URL: 'http://sbx:1',
     });
     expect(c).toMatchObject({
       imageAllow: ['a', 'b'],
       storageQuota: true,
+      dockerRoot: '/var/lib/docker-sbx',
       publicUrl: 'http://sbx:1',
     });
   });

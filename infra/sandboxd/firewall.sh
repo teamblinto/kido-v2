@@ -14,6 +14,10 @@ SBX_ALL=${SBX_ALL:-172.30.0.0/23}
 SBX_AGENT_IF=${SBX_AGENT_IF:-sbx-agent0}
 SBX_PROJ_IF=${SBX_PROJ_IF:-sbx-proj0}
 SBX_AGENT_GW=${SBX_AGENT_GW:-172.30.0.1}
+# Control/preview listen IP and the bridge that owns it; empty IP = no INPUT pin (staging mesh:
+# sandboxd listens on a WireGuard address and its callers are remote).
+SBX_CTL_IP=${SBX_CTL_IP:-}
+SBX_CTL_IF=${SBX_CTL_IF:-sbx-ctl0}
 SBX_EGRESS_PORT=${SBX_EGRESS_PORT:-3988}
 SBX_HOST_ALLOW_TCP=${SBX_HOST_ALLOW_TCP:-443} # sbx-proj -> host (Caddy: callback/API), comma list
 SNAP=${SBX_SNAPSHOT:-/tmp/sbx-firewall.snapshot}
@@ -52,6 +56,18 @@ pins() {
   $f ipt4 DOCKER-USER 1 -s "$SBX_ALL" -j SBX-FWD || return 1
   $f ipt4 DOCKER-USER 2 -d "$SBX_ALL" -j SBX-FWD || return 1
   $f ipt4 INPUT 1 -s "$SBX_ALL" -j SBX-IN || return 1
+  # Weak-host model: a packet for a local address is accepted from ANY interface, so a listener
+  # bound to a bridge gateway is reachable from outside unless INPUT says otherwise. Local clients
+  # (host processes, host-network containers) arrive on lo; everything else must come in on the
+  # bridge that owns the address. Pinned after the SBX-IN jump, which sandboxes never leave.
+  local p=2
+  if [ -n "$SBX_CTL_IP" ]; then
+    $f ipt4 INPUT $p -d "$SBX_CTL_IP/32" -i lo -j ACCEPT || return 1
+    $f ipt4 INPUT $((p + 1)) -d "$SBX_CTL_IP/32" ! -i "$SBX_CTL_IF" -j DROP || return 1
+    p=$((p + 2))
+  fi
+  $f ipt4 INPUT $p -d "$SBX_AGENT_GW/32" -i lo -j ACCEPT || return 1
+  $f ipt4 INPUT $((p + 1)) -d "$SBX_AGENT_GW/32" ! -i "$SBX_AGENT_IF" -j DROP || return 1
   have6 || return 0
   for i in "$SBX_AGENT_IF" "$SBX_PROJ_IF"; do
     $f ipt6 INPUT "$n" -i "$i" -j DROP || return 1
@@ -78,6 +94,12 @@ rules() {
 -A SBX-FWD -d $SBX_PROJ_NET -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
 -A SBX-FWD -d $SBX_PROJ_NET -j DROP
 EOF
+  # Single host: a project sandbox calling the host's public IP on 443 is DNAT'd by Docker to the
+  # edge container (default-address-pools, 10.x), which the 10/8 deny below would drop. Accept
+  # exactly the connections that were DNAT'd from an allowed host port, before the denies.
+  for n in ${SBX_HOST_ALLOW_TCP//,/ }; do
+    echo "-A SBX-FWD -s $SBX_PROJ_NET -p tcp -m conntrack --ctstate DNAT --ctorigdstport $n -j ACCEPT"
+  done
   for n in $DENY; do echo "-A SBX-FWD -s $SBX_PROJ_NET -d $n -j DROP"; done
   cat <<EOF
 -A SBX-FWD -s $SBX_PROJ_NET -p tcp -m multiport --dports 25,465,587 -j DROP

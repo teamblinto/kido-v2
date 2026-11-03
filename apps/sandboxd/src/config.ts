@@ -18,6 +18,8 @@ export interface Config {
   previewSecret: Buffer;
   egressListen: HostPort;
   dataDir: string;
+  /** Docker data root, only statfs'd by GET /capacity. */
+  dockerRoot: string;
   runtimeProject: string;
   maxRunning: number;
   minMemAvailableBytes: number;
@@ -101,6 +103,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
     previewSecret,
     egressListen: hostPort(env.SANDBOXD_EGRESS_LISTEN ?? '172.30.0.1:3988'),
     dataDir,
+    dockerRoot: env.SANDBOXD_DOCKER_ROOT ?? '/var/lib/docker',
     runtimeProject: env.SANDBOXD_RUNTIME_PROJECT ?? 'runsc',
     maxRunning: Number(env.SANDBOXD_MAX_RUNNING ?? 22),
     minMemAvailableBytes: Number(env.SANDBOXD_MIN_MEM_AVAILABLE_MB ?? 1024) * 1024 * 1024,
