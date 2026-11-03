@@ -423,15 +423,24 @@ export function ProjectPage(): React.JSX.Element {
 
   // This run's messages in place; one still on its way to the screen (no run yet, or a run the
   // address has not caught up with) at the foot of whatever is shown.
-  const shownTurns = useMemo(
-    () =>
-      turns
-        .filter(
-          (turn) => turn.runId === undefined || turn.runId === runId || turn.runId === awaitedRunId,
-        )
-        .map((turn) => (turn.runId === runId ? turn : { ...turn, at: Number.POSITIVE_INFINITY })),
-    [awaitedRunId, runId, turns],
-  );
+  const shownTurns = useMemo(() => {
+    const shown = turns
+      .filter(
+        (turn) => turn.runId === undefined || turn.runId === runId || turn.runId === awaitedRunId,
+      )
+      .map((turn) => (turn.runId === runId ? turn : { ...turn, at: Number.POSITIVE_INFINITY }));
+    // A run opened from the list or after a reload: its opening message is the record's excerpt,
+    // the only copy this screen has, so the conversation still starts with what was asked.
+    const opening =
+      run !== undefined &&
+      run.id === runId &&
+      run.promptExcerpt !== '' &&
+      !shown.some((turn) => turn.runId === runId && turn.at === 0)
+        ? [{ at: 0, id: `prompt-${run.id}`, runId: run.id, text: run.promptExcerpt }]
+        : [];
+
+    return [...opening, ...shown];
+  }, [awaitedRunId, run, runId, turns]);
   // A failed or cancelled run is sent again as a new run on the current model — when this screen
   // holds its whole prompt; the run record carries only an excerpt.
   const retryPrompt = turns.find((turn) => turn.runId === runId && turn.at === 0)?.text;

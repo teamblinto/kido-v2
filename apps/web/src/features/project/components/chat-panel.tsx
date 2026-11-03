@@ -1,4 +1,4 @@
-import type { RunEvent, RunResponse } from '@repo/contracts';
+import { type RunEvent, type RunResponse, SUBSCRIPTION_PROVIDERS } from '@repo/contracts';
 import {
   ArrowDownIcon,
   BookmarkIcon,
@@ -129,7 +129,7 @@ export function ChatPanel({
           <div className="flex flex-col items-start gap-2 empty:hidden">
             {run === undefined ? null : (
               <p className="text-caption text-faint">
-                {[worked, run.model].filter((part) => part !== undefined).join(' · ')}
+                {[worked, modelLabel(run.model)].filter((part) => part !== undefined).join(' · ')}
               </p>
             )}
             {canRetry ? (
@@ -295,4 +295,9 @@ function Notice({ event }: { readonly event: RunEvent }): React.JSX.Element | nu
       return null;
     }
   }
+}
+
+/** A subscription run with no model chosen records its provider's name: the CLI's own default. */
+function modelLabel(model: string): string {
+  return (SUBSCRIPTION_PROVIDERS as readonly string[]).includes(model) ? 'Default model' : model;
 }

@@ -270,6 +270,15 @@ describe('ProjectPage', () => {
     expect(within(log).getByText('Add holiday cover')).toBeVisible();
   });
 
+  it('opens a run from its address with what was asked as its first message (spec 043)', async () => {
+    server.use(...runHandlers(() => sse([])));
+    renderPage(RUN_ID);
+
+    const log = screen.getByRole('log', { name: 'Conversation' });
+
+    expect(await within(log).findByText('ship it')).toBeVisible();
+  });
+
   it("opens the Code stage on the project's real files, never a sample tree", async () => {
     // 012 FR-028 deferred this pane because reading a project's files needed an endpoint that
     // spec could not add; 022 adds it, so the stage lists the working tree — and still nothing

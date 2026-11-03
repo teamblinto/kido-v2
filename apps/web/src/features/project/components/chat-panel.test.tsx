@@ -198,6 +198,21 @@ describe('ChatPanel — the conversation (spec 043)', () => {
     expect(screen.getByText('exit 1')).toBeVisible();
   });
 
+  it("names a subscription run with no model chosen as the CLI's default, not its provider", () => {
+    renderScreen(
+      <ChatPanel
+        connection="closed"
+        isRunning={false}
+        items={[]}
+        onRetry={vi.fn()}
+        run={{ ...aRun, model: 'claude' }}
+        source="live"
+      />,
+    );
+
+    expect(screen.getByText('Worked for 1m 20s · Default model')).toBeVisible();
+  });
+
   it('says how long a finished run worked and offers to retry a failed one', async () => {
     const user = userEvent.setup();
     const onRetryRun = vi.fn();
