@@ -66,8 +66,9 @@ export function registerPreviewRoutes(
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new HttpError(400, 'invalid port');
     }
-    if (!Number.isInteger(ttl) || ttl < 60 || ttl > 86400) {
-      throw new HttpError(400, 'expiresInSeconds must be 60-86400');
+    // The api's route broker asks for 30 s (ROUTE_TTL_SECONDS): a route never outlives its token.
+    if (!Number.isInteger(ttl) || ttl < 1 || ttl > 86400) {
+      throw new HttpError(400, 'expiresInSeconds must be 1-86400');
     }
     const id = params.id!;
     if (!d.store.get(id)) throw new HttpError(404, 'sandbox not found');

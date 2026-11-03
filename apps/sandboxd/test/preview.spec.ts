@@ -137,10 +137,14 @@ describe('signed-preview-url route', () => {
       port: 3000,
     });
   });
+  it("accepts the api route broker's 30 s TTL (ROUTE_TTL_SECONDS)", async () => {
+    expect((await fetch(url('?expiresInSeconds=30'), { headers: auth })).status).toBe(200);
+    expect((await fetch(url('?expiresInSeconds=1'), { headers: auth })).status).toBe(200);
+  });
   it('validates port and expiry, auth, and sandbox', async () => {
     expect((await fetch(url('', 'sA', '0'), { headers: auth })).status).toBe(400);
     expect((await fetch(url('', 'sA', '65536'), { headers: auth })).status).toBe(400);
-    expect((await fetch(url('?expiresInSeconds=59'), { headers: auth })).status).toBe(400);
+    expect((await fetch(url('?expiresInSeconds=0'), { headers: auth })).status).toBe(400);
     expect((await fetch(url('?expiresInSeconds=86401'), { headers: auth })).status).toBe(400);
     expect((await fetch(url())).status).toBe(401);
     expect((await fetch(url('', 'nope'), { headers: auth })).status).toBe(404);
