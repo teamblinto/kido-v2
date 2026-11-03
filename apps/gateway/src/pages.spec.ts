@@ -64,9 +64,9 @@ describe('page templates', () => {
     expect(REFUSED_PAGE.status).toBe(404);
   });
 
-  it('NOT_SERVING_PAGE is a 503 with no Retry-After', () => {
+  it('NOT_SERVING_PAGE is a 503 with Retry-After: 3', () => {
     expect(NOT_SERVING_PAGE.status).toBe(503);
-    expect(NOT_SERVING_PAGE.headers?.['Retry-After']).toBeUndefined();
+    expect(NOT_SERVING_PAGE.headers).toEqual({ 'Retry-After': '3' });
   });
 
   it('WAKING_PAGE is a 202 with Retry-After: 2 (contract § 4, research R12)', () => {
@@ -74,9 +74,11 @@ describe('page templates', () => {
     expect(WAKING_PAGE.headers).toEqual({ 'Retry-After': '2' });
   });
 
-  it('only WAKING_PAGE reloads itself; the terminal and refusal pages do not', () => {
+  it('the waking and not-serving pages reload themselves into the app; the terminal and refusal pages do not', () => {
     expect(WAKING_PAGE.body).toContain('<meta http-equiv="refresh" content="2">');
-    for (const page of [REFUSED_PAGE, NOT_SERVING_PAGE, COULD_NOT_WAKE_PAGE]) {
+    // A wake settles before the relaunched dev server binds: the frame passes through here.
+    expect(NOT_SERVING_PAGE.body).toContain('<meta http-equiv="refresh" content="3">');
+    for (const page of [REFUSED_PAGE, COULD_NOT_WAKE_PAGE]) {
       expect(page.body).not.toContain('http-equiv="refresh"');
     }
   });

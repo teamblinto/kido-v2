@@ -30,8 +30,21 @@ function htmlPage(
 /** Unknown label, no sandbox, not entitled, undeclared port, or an unverifiable route: one body. */
 export const REFUSED_PAGE: Page = htmlPage(404, 'Not found', 'Nothing is here.');
 
-/** Route valid, sandbox ready, but the upstream refused the connection (research R12). */
-export const NOT_SERVING_PAGE: Page = htmlPage(503, 'Not serving', 'Nothing is serving yet.');
+/**
+ * Route valid, sandbox ready, but the upstream refused the connection (research R12). This is also
+ * the page a wake lands on: once the resume settles the route resolves, but the dev server the
+ * resume relaunched has not bound its port yet. Without a refresh the frame would stop here
+ * although the app is seconds away, so it reloads itself like WAKING_PAGE, unbounded but slower
+ * (one cached route plus one refused dial per open tab every 3 s): it ends when the dev server
+ * answers, and a dev server that has failed is retried by its supervisor anyway.
+ */
+export const NOT_SERVING_PAGE: Page = htmlPage(
+  503,
+  'Not serving',
+  'Nothing is serving yet. This page will retry shortly.',
+  { 'Retry-After': '3' },
+  '<meta http-equiv="refresh" content="3">',
+);
 
 /**
  * `because: 'resuming'` (T041/T042): rendered immediately, before any retry. A browser ignores
