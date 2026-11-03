@@ -9,6 +9,8 @@ import { HttpError, type router, sendJson } from './http.ts';
 import type { SandboxRow, Store } from './store.ts';
 
 const SNAP_NAME = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
+// forge/ images by prefix; anything else must be listed in SANDBOXD_IMAGE_ALLOW.
+const FORGE_IMAGE = /^forge\/[a-z0-9][a-z0-9._/-]*(:[A-Za-z0-9._-]+)?$/;
 const snapRef = (name: string) => `forge-snap/${name}:latest`;
 
 async function readJson(req: IncomingMessage): Promise<Record<string, unknown>> {
@@ -59,7 +61,9 @@ export function registerSandboxRoutes(
   async function dto(r: SandboxRow) {
     const c = r.containerId ? await docker.inspect(r.containerId) : null;
     let state = 'starting';
-    if (c && r.desired !== 'queued') {
+    if (r.desired === 'queued' && admission.hasFailed(r.id)) {
+      state = 'error';
+    } else if (c && r.desired !== 'queued') {
       const s = c.status;
       if (s === 'running') state = 'started';
       else if (s === 'removing') state = 'destroying';
@@ -89,7 +93,7 @@ export function registerSandboxRoutes(
     let image: string;
     if (SNAP_NAME.test(snapshot) && (await docker.imageExists(snapRef(snapshot)))) {
       image = snapRef(snapshot);
-    } else if (cfg.imageAllow.includes(snapshot)) {
+    } else if ((FORGE_IMAGE.test(snapshot) && !snapshot.includes('..')) || cfg.imageAllow.includes(snapshot)) {
       image = snapshot;
     } else {
       throw new HttpError(400, `Snapshot ${snapshot} not found`);
@@ -98,7 +102,8 @@ export function registerSandboxRoutes(
     const cls = classOf(labels);
     const containerId = await docker.create(containerSpec(cfg, id, image, cls, labels, []));
     const now = new Date().toISOString();
-    store.insert({
+    try {
+      store.insert({
       id,
       containerId,
       image,
@@ -109,8 +114,12 @@ export function registerSandboxRoutes(
       networkBlockAll: false,
       createdAt: now,
       queuedAt: now,
-    });
-    admission.request(id);
+      });
+    } catch (err) {
+      await docker.remove(containerId); // no orphan container for a row that never landed
+      throw err;
+    }
+    await admission.request(id);
     await admission.tick();
     sendJson(res, 200, await dto(row(id)));
   });
@@ -121,7 +130,7 @@ export function registerSandboxRoutes(
 
   api.route('POST', '/sandbox/:id/start', async (_req, res, p) => {
     row(p.id!);
-    admission.request(p.id!);
+    await admission.request(p.id!);
     await admission.tick();
     empty(res);
   });
@@ -130,6 +139,7 @@ export function registerSandboxRoutes(
     const r = row(p.id!);
     admission.cancel(r.id);
     store.setState(r.id, 'stopped');
+    store.removeSessionsFor(r.id);
     if (r.containerId) await docker.stop(r.containerId, 10);
     await admission.tick();
     empty(res);

@@ -56,7 +56,7 @@ const status = (id: string) => docker.containers.get(store.get(id)!.containerId!
 describe('admission', () => {
   it('holds the third request until one dies', async () => {
     const ids = [await add(), await add(), await add()];
-    ids.forEach((i) => adm.request(i));
+    for (const i of ids) await adm.request(i);
     await adm.tick();
     expect(ids.map(status)).toEqual(['running', 'running', 'created']);
     expect(adm.size()).toBe(1);
@@ -69,7 +69,7 @@ describe('admission', () => {
 
   it('a die event triggers a tick', async () => {
     const ids = [await add(), await add(), await add()];
-    ids.forEach((i) => adm.request(i));
+    for (const i of ids) await adm.request(i);
     await adm.tick();
     const off = watchEvents(docker, adm);
     docker.containers.get(store.get(ids[1]!)!.containerId!)!.status = 'exited';
@@ -81,7 +81,7 @@ describe('admission', () => {
 
   it('starts nothing while memory is below the floor', async () => {
     const id = await add();
-    adm.request(id);
+    await adm.request(id);
     mem = 50;
     await adm.tick();
     expect(status(id)).toBe('created');
@@ -90,9 +90,65 @@ describe('admission', () => {
     expect(status(id)).toBe('running');
   });
 
+  it('retries a failed start 3 times, then marks it failed', async () => {
+    const id = await add();
+    let calls = 0;
+    docker.start = () => {
+      calls++;
+      return Promise.reject(new Error('boom'));
+    };
+    await adm.request(id);
+    await adm.tick();
+    expect(calls).toBe(3);
+    expect(adm.hasFailed(id)).toBe(true);
+    expect(adm.size()).toBe(0);
+    docker.start = FakeDocker.prototype.start.bind(docker);
+    await adm.request(id);
+    expect(adm.hasFailed(id)).toBe(false);
+    await adm.tick();
+    expect(status(id)).toBe('running');
+  });
+
+  it('a running container is marked started, not queued, and counted by docker status', async () => {
+    const ids = [await add('stopped'), await add('stopped'), await add()];
+    docker.containers.get(store.get(ids[0]!)!.containerId!)!.status = 'running';
+    docker.containers.get(store.get(ids[1]!)!.containerId!)!.status = 'running';
+    await adm.request(ids[0]!);
+    expect(store.get(ids[0]!)!.desired).toBe('started');
+    expect(adm.size()).toBe(0);
+    await adm.request(ids[2]!);
+    await adm.tick(); // two running by docker status = maxRunning
+    expect(status(ids[2]!)).toBe('created');
+  });
+
+  it('a stop landing during start leaves the container stopped', async () => {
+    const id = await add();
+    await adm.request(id);
+    const realStart = docker.start.bind(docker);
+    docker.start = async (cid: string) => {
+      await realStart(cid);
+      store.setState(id, 'stopped'); // /stop arrives while start is in flight
+    };
+    await adm.tick();
+    expect(status(id)).toBe('exited');
+  });
+
+  it('a delete landing during start removes the container', async () => {
+    const id = await add();
+    await adm.request(id);
+    const cid = store.get(id)!.containerId!;
+    const realStart = docker.start.bind(docker);
+    docker.start = async (c: string) => {
+      await realStart(c);
+      store.remove(id);
+    };
+    await adm.tick();
+    expect(docker.containers.has(cid)).toBe(false);
+  });
+
   it('cancel drops a queued sandbox', async () => {
     const id = await add();
-    adm.request(id);
+    await adm.request(id);
     adm.cancel(id);
     await adm.tick();
     expect(status(id)).toBe('created');

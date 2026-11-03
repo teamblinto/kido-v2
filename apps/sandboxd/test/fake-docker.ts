@@ -16,6 +16,8 @@ export class FakeDocker implements DockerPort {
   calls: { method: string; args: unknown[] }[] = [];
   containers = new Map<string, { spec: ContainerSpec; status: ContainerStatus }>();
   images = new Set<string>();
+  /** Images removeImage refuses with 'in-use', as docker does for a image with a container. */
+  imagesInUse = new Set<string>();
   networks = new Map<string, { internal: boolean; icc?: boolean }>();
   execHandler: ExecHandler = () => ({
     timedOut: false,
@@ -75,6 +77,7 @@ export class FakeDocker implements DockerPort {
   }
   removeImage(ref: string) {
     this.rec('removeImage', ref);
+    if (this.imagesInUse.has(ref)) return Promise.resolve('in-use' as const);
     return Promise.resolve(this.images.delete(ref) ? ('removed' as const) : ('missing' as const));
   }
   async exec(cid: string, opts: ExecOpts) {

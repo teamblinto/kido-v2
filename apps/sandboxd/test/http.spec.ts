@@ -53,6 +53,34 @@ describe('http', () => {
   it('400 on malformed percent-encoding', async () => {
     expect((await get('/sandbox/%E0%A4%A/x', 'Bearer key')).status).toBe(400);
   });
+  it('logs one request line with only the whitelisted fields', async () => {
+    const out = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    let lines: string[];
+    try {
+      await fetch(`${base}/sandbox/abc/x?q=secretquery`, {
+        headers: {
+          authorization: 'Bearer key',
+          'x-forge-operation-id': 'op-1',
+          'x-forge-lease-epoch': '7',
+        },
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      lines = out.mock.calls.map((c) => String(c[0])).filter((l) => l.includes('"request"'));
+    } finally {
+      out.mockRestore();
+    }
+    expect(lines).toHaveLength(1);
+    const rec = JSON.parse(lines[0]!) as Record<string, unknown>;
+    expect(rec).toMatchObject({
+      op: 'GET /sandbox/:id/x',
+      status: 200,
+      sandboxId: 'abc',
+      operationId: 'op-1',
+      leaseEpoch: '7',
+    });
+    expect(typeof rec.durationMs).toBe('number');
+    expect(lines[0]).not.toMatch(/Bearer|key"|secretquery/);
+  });
   it('404 on unknown route', async () => {
     expect((await get('/nope')).status).toBe(404);
   });

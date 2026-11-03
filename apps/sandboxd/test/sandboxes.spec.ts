@@ -95,6 +95,50 @@ describe('sandbox control plane', () => {
     expect([...docker.containers.values()][0]!.spec.image).toBe('forge-snap/mine:latest');
   });
 
+  it('image allow-list: forge/ prefix and exact entries only', async () => {
+    const post = (snapshot: string) => call('POST', '/sandbox', { snapshot, labels: {} });
+    expect((await post('forge/sandbox-base:1')).status).toBe(200);
+    expect((await post('forge/other/img')).status).toBe(200);
+    for (const bad of [
+      'docker.io/library/alpine',
+      'forge/../x',
+      'forge/a/../x',
+      'forge/Upper',
+      'forge/has space',
+      'alpine',
+    ]) {
+      expect([bad, (await post(bad)).status]).toEqual([bad, 400]);
+    }
+  });
+
+  it('removes the container when the row cannot be inserted', async () => {
+    vi.spyOn(store, 'insert').mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
+    const res = await call('POST', '/sandbox', { snapshot: 'forge/sandbox-base:1', labels: {} });
+    expect(res.status).toBe(500);
+    expect(docker.containers.size).toBe(0);
+  });
+
+  it('start on a running sandbox at capacity stays started', async () => {
+    const { dto } = await create();
+    const id = dto.id as string;
+    cfg.maxRunning = 1;
+    try {
+      expect((await call('POST', `/sandbox/${id}/start`)).status).toBe(200);
+      const got = (await (await call('GET', `/sandbox/${id}`)).json()) as { state: string };
+      expect(got.state).toBe('started');
+    } finally {
+      cfg.maxRunning = 22;
+    }
+  });
+
+  it('reports error once start has failed for good', async () => {
+    docker.start = () => Promise.reject(new Error('boom'));
+    const { dto } = await create();
+    expect(dto.state).toBe('error');
+  });
+
   it('401 without bearer', async () => {
     expect((await fetch(`${base}/sandbox`)).status).toBe(401);
   });
@@ -138,8 +182,9 @@ describe('sandbox control plane', () => {
     const got = await call('GET', '/snapshots/x');
     expect(await got.json()).toEqual({ name: 'x', state: 'active', errorReason: null });
     expect((await call('GET', '/snapshots/none')).status).toBe(404);
-    vi.spyOn(docker, 'removeImage').mockResolvedValueOnce('in-use' as never);
+    docker.imagesInUse.add('forge-snap/x:latest');
     expect((await call('DELETE', '/snapshots/x')).status).toBe(409);
+    docker.imagesInUse.clear();
     expect((await call('DELETE', '/snapshots/x')).status).toBe(200);
     expect((await call('DELETE', '/snapshots/x')).status).toBe(404);
   });

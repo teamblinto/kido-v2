@@ -5,6 +5,7 @@ import type { DockerPort } from './docker.ts';
 import { log } from './log.ts';
 import type { Store } from './store.ts';
 
+const MAX_START_ATTEMPTS = 3;
 let warned = false;
 
 /** Bytes of MemAvailable; treated as plentiful where /proc/meminfo is unreadable (non-Linux dev). */
@@ -25,6 +26,9 @@ export function procMemAvailable(): number {
 export class Admission {
   private queue: string[] = [];
   private chain: Promise<void> = Promise.resolve();
+  // shortcut: failure state lives in memory; a restart retries via recover().
+  private readonly attempts = new Map<string, number>();
+  private readonly failed = new Set<string>();
 
   private readonly deps: {
     cfg: Pick<Config, 'maxRunning' | 'minMemAvailableBytes'>;
@@ -37,10 +41,24 @@ export class Admission {
     this.deps = deps;
   }
 
-  /** Mark the sandbox queued and append it; the next `tick` starts it when capacity allows. */
-  request(id: string): void {
-    this.deps.store.setState(id, 'queued');
+  /** Queue the sandbox for the next `tick`; one already running just becomes `started`. */
+  async request(id: string): Promise<void> {
+    const { store, docker } = this.deps;
+    this.failed.delete(id);
+    this.attempts.delete(id);
+    const cid = store.get(id)?.containerId;
+    const c = cid ? await docker.inspect(cid) : null;
+    if (c?.status === 'running' || c?.status === 'restarting') {
+      store.setState(id, 'started');
+      return;
+    }
+    store.setState(id, 'queued');
     if (!this.queue.includes(id)) this.queue.push(id);
+  }
+
+  /** True once starting it failed MAX_START_ATTEMPTS times; cleared by the next `request`. */
+  hasFailed(id: string): boolean {
+    return this.failed.has(id);
   }
 
   cancel(id: string): void {
@@ -57,7 +75,7 @@ export class Admission {
     for (const r of store.all()) {
       if (r.desired === 'stopped' || r.containerId === null) continue;
       const c = await docker.inspect(r.containerId);
-      if (c && c.status !== 'running') this.request(r.id);
+      if (c && c.status !== 'running') await this.request(r.id);
     }
   }
 
@@ -77,7 +95,7 @@ export class Admission {
     const { store, docker } = this.deps;
     let n = 0;
     for (const r of store.all()) {
-      if (r.desired !== 'started' || r.containerId === null) continue;
+      if (r.containerId === null) continue;
       const c = await docker.inspect(r.containerId);
       if (c && (c.status === 'running' || c.status === 'restarting')) n++;
     }
@@ -95,13 +113,27 @@ export class Admission {
       if (row?.containerId == null || row.desired !== 'queued') continue;
       try {
         await docker.start(row.containerId);
-        store.setState(id, 'started');
-        running++;
       } catch (err) {
+        const n = (this.attempts.get(id) ?? 0) + 1;
+        this.attempts.set(id, n);
+        if (n < MAX_START_ATTEMPTS) this.queue.push(id);
+        else this.failed.add(id);
         log('error', 'sandbox start failed', {
           'sandboxd.id': id,
+          attempt: n,
           err: err instanceof Error ? err.message : String(err),
         });
+        continue;
+      }
+      // A stop or delete may have landed while the start was in flight.
+      const now = store.get(id);
+      if (now?.desired === 'queued' || now?.desired === 'started') {
+        store.setState(id, 'started');
+        running++;
+      } else if (now) {
+        await docker.stop(row.containerId, 10);
+      } else {
+        await docker.remove(row.containerId);
       }
     }
   }

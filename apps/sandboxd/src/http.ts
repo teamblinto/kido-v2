@@ -43,13 +43,19 @@ export function router(apiKey: string) {
     names: string[];
     handler: Handler;
     auth: boolean;
+    pattern: string;
   }[] = [];
 
-  async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  async function dispatch(
+    req: IncomingMessage,
+    res: ServerResponse,
+    ctx: { op?: string; id?: string },
+  ): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://sandboxd');
     for (const r of routes) {
       const m = r.method === req.method ? r.re.exec(url.pathname) : null;
       if (!m) continue;
+      ctx.op = `${r.method} ${r.pattern}`;
       if (r.auth) requireBearer(req, apiKey);
       let params: Record<string, string>;
       try {
@@ -57,6 +63,7 @@ export function router(apiKey: string) {
       } catch {
         throw new HttpError(400, 'malformed path');
       }
+      ctx.id = params.id;
       await r.handler(req, res, params, url);
       return;
     }
@@ -84,11 +91,29 @@ export function router(apiKey: string) {
         re: new RegExp(`^${src}$`),
         names,
         handler,
+        pattern,
         auth: opts.auth !== false,
       });
     },
     handle(this: void, req: IncomingMessage, res: ServerResponse): void {
-      dispatch(req, res).catch((err: unknown) => {
+      const ctx: { op?: string; id?: string } = {};
+      const t0 = performance.now();
+      const header = (n: string) => {
+        const v = req.headers[n];
+        return Array.isArray(v) ? v[0] : v;
+      };
+      // One line per request; only these fields, never headers or bodies wholesale.
+      res.once('close', () => {
+        log('info', 'request', {
+          op: ctx.op ?? `${req.method ?? '?'} (unmatched)`,
+          status: res.statusCode,
+          durationMs: Math.round(performance.now() - t0),
+          sandboxId: ctx.id,
+          operationId: header('x-forge-operation-id'),
+          leaseEpoch: header('x-forge-lease-epoch'),
+        });
+      });
+      dispatch(req, res, ctx).catch((err: unknown) => {
         if (res.headersSent) {
           res.destroy();
         } else if (err instanceof HttpError) {
