@@ -1,6 +1,12 @@
 import { mkdtempSync } from 'node:fs';
 import { createServer as httpServer, request, type Server } from 'node:http';
-import { connect, createServer, type AddressInfo, type Server as NetServer } from 'node:net';
+import {
+  connect,
+  createServer,
+  type AddressInfo,
+  type Server as NetServer,
+  type Socket,
+} from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -34,10 +40,20 @@ describe('isPrivateAddress', () => {
     ['fdff::1', true],
     ['fe80::1', true],
     ['febf::1', true],
-    ['fec0::1', false],
+    ['fec0::1', true],
     ['::ffff:10.0.0.1', true],
     ['::ffff:7f00:1', true],
-    ['::ffff:8.8.8.8', false],
+    ['::ffff:8.8.8.8', true],
+    ['::8.8.8.8', true],
+    ['::808:808', true],
+    ['64:ff9b::808:808', true],
+    ['64:ff9b:1::1', true],
+    ['2002:808:808::1', true],
+    ['2001::1', true],
+    ['2001:db8::1', true],
+    ['ff02::1', true],
+    ['3fff::1', true],
+    ['2001:4860:4860::8888', false],
     ['2606:4700::1111', false],
     ['not-an-ip', true],
   ])('%s -> %s', (ip, want) => {
@@ -187,6 +203,21 @@ describe('CONNECT', () => {
     current = row({ class: 'project' });
     expect((await doConnect('api.anthropic.com:443')).status).toBe(403);
   });
+  it('CONNECT to port 80 is allowed', async () => {
+    expect((await doConnect('api.anthropic.com:80')).status).toBe(200);
+    expect(dialed).toEqual([{ ip: '203.0.113.7', port: 80 }]);
+  });
+  it('requires a well-formed host:port', async () => {
+    expect((await doConnect('api.anthropic.com')).status).toBe(400);
+    expect((await doConnect('api.anthropic.com:443:1')).status).toBe(400);
+    expect((await doConnect('api.anthropic.com:x')).status).toBe(400);
+  });
+  it('parses bracketed IPv6 targets', async () => {
+    current = row({ networkAllow: ['2606:4700::1'] });
+    dns['2606:4700::1'] = ['2606:4700::1'];
+    expect((await doConnect('[2606:4700::1]:443')).status).toBe(200);
+    expect(dialed).toEqual([{ ip: '2606:4700::1', port: 443 }]);
+  });
   it('502 when DNS fails', async () => {
     current = row({ networkAllow: ['gone.example.com'] });
     expect((await doConnect('gone.example.com:443')).status).toBe(502);
@@ -249,6 +280,73 @@ describe('plain HTTP', () => {
   });
 });
 
+describe('failures inside the proxy', () => {
+  it('a throwing sandboxForIp does not crash and answers 502 / drops the tunnel', async () => {
+    proxy.close();
+    proxy = startEgressProxy(cfg, {
+      sandboxForIp: () => {
+        throw new Error('db gone');
+      },
+      resolve: () => Promise.resolve([]),
+    });
+    proxyPort = await listen(proxy);
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    const status = await new Promise<number>((ok) => {
+      const r = request(
+        { host: '127.0.0.1', port: proxyPort, path: 'http://api.anthropic.com/' },
+        (res) => {
+          ok(res.statusCode ?? 0);
+          res.resume();
+        },
+      );
+      r.on('error', () => ok(-1));
+      r.end();
+    });
+    expect(status).toBe(502);
+    const closed = await new Promise<boolean>((ok) => {
+      const s = connect(proxyPort, '127.0.0.1');
+      s.write('CONNECT api.anthropic.com:443 HTTP/1.1\r\n\r\n');
+      s.on('close', () => ok(true));
+      s.on('error', () => undefined);
+    });
+    expect(closed).toBe(true);
+    await new Promise((r) => setImmediate(r));
+    process.off('unhandledRejection', unhandled);
+    expect(unhandled).not.toHaveBeenCalled();
+  });
+
+  it('destroys the upstream when a plain-HTTP client aborts', async () => {
+    let upSock: Socket | undefined;
+    const hang = createServer((s) => {
+      upSock = s;
+      s.resume();
+      s.on('error', () => undefined);
+    });
+    const hp = await listen(hang);
+    proxy.close();
+    proxy = startEgressProxy(cfg, {
+      sandboxForIp: () => current,
+      resolve: () => Promise.resolve(['203.0.113.7']),
+      dial: () => connect(hp, '127.0.0.1'),
+    });
+    proxyPort = await listen(proxy);
+    const r = request({
+      host: '127.0.0.1',
+      port: proxyPort,
+      path: 'http://api.anthropic.com/slow',
+      headers: { host: 'api.anthropic.com' },
+    });
+    r.on('error', () => undefined);
+    r.end();
+    await vi.waitFor(() => expect(upSock).toBeDefined());
+    const closed = new Promise<void>((ok) => upSock?.on('close', () => ok()));
+    r.destroy();
+    await closed;
+    hang.close();
+  });
+});
+
 describe('ip map', () => {
   it('boots from inspect and follows start/die/destroy events', async () => {
     const store = new Store(mkdtempSync(join(tmpdir(), 'sbxd-')));
@@ -261,11 +359,51 @@ describe('ip map', () => {
     docker.emit({ action: 'die', cid: 'c1', labels: { 'sandboxd.id': 's1' } });
     expect(map.sandboxForIp('172.31.0.2')).toBeUndefined();
     docker.emit({ action: 'start', cid: 'c1', labels: { 'sandboxd.id': 's1' } });
-    await new Promise((r) => setTimeout(r, 10));
-    expect(map.sandboxForIp('172.31.0.2')?.id).toBe('s1');
+    await vi.waitFor(() => expect(map.sandboxForIp('172.31.0.2')?.id).toBe('s1'));
     docker.emit({ action: 'destroy', cid: 'c1', labels: { 'sandboxd.id': 's1' } });
     expect(map.sandboxForIp('172.31.0.2')).toBeUndefined();
     map.stop();
     store.close();
+  });
+
+  it('a late learn cannot resurrect a container that already died', async () => {
+    const store = new Store(mkdtempSync(join(tmpdir(), 'sbxd-')));
+    const docker = new FakeDocker();
+    docker.containers.set('c1', { spec: {} as never, status: 'running' });
+    store.insert(row());
+    const map = await createIpMap(store, docker);
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((ok) => (release = ok));
+    const orig = docker.inspect.bind(docker);
+    docker.inspect = async (cid: string) => {
+      await gate;
+      return orig(cid);
+    };
+    docker.emit({ action: 'start', cid: 'c1', labels: { 'sandboxd.id': 's1' } });
+    docker.emit({ action: 'die', cid: 'c1', labels: { 'sandboxd.id': 's1' } });
+    release();
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+    expect(map.sandboxForIp('172.31.0.2')).toBeUndefined();
+    map.stop();
+    store.close();
+  });
+
+  it('re-syncs periodically', async () => {
+    vi.useFakeTimers();
+    try {
+      const store = new Store(mkdtempSync(join(tmpdir(), 'sbxd-')));
+      const docker = new FakeDocker();
+      const map = await createIpMap(store, docker);
+      expect(map.sandboxForIp('172.31.0.2')).toBeUndefined();
+      docker.containers.set('c1', { spec: {} as never, status: 'running' });
+      store.insert(row());
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(map.sandboxForIp('172.31.0.2')?.id).toBe('s1');
+      map.stop();
+      store.close();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
