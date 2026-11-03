@@ -151,8 +151,9 @@ preview upstreams; spec 013 R10 is amended for this, design §8). sandboxd is no
 `infra/deploy.sh`'s `CREDENTIAL_FREE_SERVICES_PATTERN`: that pattern names services of the rendered
 app-pool stack (`compose.staging.yaml`) whose environment must carry no platform credential, and
 sandboxd is never in that stack (its own Ansible play, its own host); its environment holds no
-credential either (the key is a file), and deploy.sh is pinned byte-for-byte by `check-fr038.sh`. Release does not publish a sandboxd
-image yet; `forge_sandboxd_image` must be one built from `apps/sandboxd/Dockerfile`.
+credential either (the key is a file), and deploy.sh is pinned byte-for-byte by `check-fr038.sh`. Release
+publishes `ghcr.io/<owner>/forge-sandboxd` by digest (signed, like the other two images);
+`forge_sandboxd_image` can be that `repository@digest`.
 
 ## Agent-home egress
 
@@ -220,7 +221,100 @@ compose stack from a throwaway Node 24 container attached to the compose network
 dials that host and port), and read the key as gid 3986 (`docker exec -u 0:3986 ...`). Stop the
 stack's worker for `sandbox-lifecycle-real`: it competes for the same pool and queue.
 
+## Continuous deployment (kido.blinto.co)
+
+The production VPS runs the overlay as compose project `kido`, driven by
+[`deploy-vps.sh`](./deploy-vps.sh), installed as `/usr/local/bin/kido-deploy`:
+
+| Path                       | What                                                                                                                                                                                        |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/opt/kido/kido.env`       | Host config and every secret (`KEK_ENV_MASTER_KEY`, `BROKER_SHARED_SECRET`, `PREVIEW_SIGNING_KEY`...), root `0600`, generated once on the host. CI never sees or renders it.                |
+| `/opt/kido/releases/<id>/` | One per deploy: `compose.yaml`, `compose.vps.yaml`, `infra/`, `apps/web/dist/`, `release.env` (image refs only, no secrets). It is the compose project directory. The newest five are kept. |
+| `/opt/kido/current`        | Symlink to the live release; `previous` to the one before.                                                                                                                                  |
+| `/opt/kido/src/`           | A source tree for host builds (`git archive` of a commit).                                                                                                                                  |
+| `/etc/sandboxd/api_key`    | sandboxd's key (host-setup.sh).                                                                                                                                                             |
+
+A deploy (`kido-deploy deploy <id>`): optional GHCR login from stdin, pull, `docker logout`, the
+`migrate` one-shot, `up -d --no-build --remove-orphans`, every service healthy, sandboxd
+`/healthz` with `firewall: true`, then `https://APP_HOST/` and `/api/v1/health` through Caddy on
+127.0.0.1 (`curl --resolve`). If any of that fails it re-deploys the previous release (migrations
+already applied stay applied, so they must stay backward compatible for one release). Deploys
+take a lock, and the workflow's `concurrency` also serialises them. Each deploy recreates Caddy
+(its release directory is new) and, when its image changed, sandboxd, which drops live previews.
+
+`kido.env` holds `COMPOSE_FILE`, `APP_HOST=kido.blinto.co`,
+`HOOKS_HOST=hooks.preview.kido.blinto.co` (it must differ from `APP_HOST`; under the preview
+wildcard it needs no DNS record of its own, and Caddy's exact site wins over the wildcard one),
+`PREVIEW_DOMAIN=preview.kido.blinto.co`, `AGENT_HOME_CLAUDE_VERSION` and the secrets above, made
+as in the overlay section above plus `BROKER_SHARED_SECRET=$(openssl rand -hex 32)`.
+
+DNS: `kido.blinto.co` is Cloudflare-proxied (Caddy gets its certificate from Let's Encrypt over
+HTTP-01 through the proxy, so Cloudflare must pass `/.well-known/acme-challenge/` on port 80 to
+the origin). `*.preview.kido.blinto.co` must be a DNS-only (grey cloud) `A` record to the VPS:
+Cloudflare's universal certificate does not cover a second-level wildcard, and Caddy issues
+preview certificates on demand.
+
+Operator commands (as root on the VPS):
+
+    kido-deploy build /opt/kido/src [id]    # build the three images and the web app here, deploy them
+    kido-deploy rollback                    # re-deploy the previous release
+    kido-deploy deploy <id>                 # re-deploy any kept release (its images are still local)
+    d=/opt/kido/current; docker compose -p kido --project-directory $d --env-file /opt/kido/kido.env --env-file $d/release.env ps
+
+To deploy a commit by hand without CI:
+`git archive <commit> | ssh root@VPS 'rm -rf /opt/kido/src && mkdir /opt/kido/src && tar -x -C /opt/kido/src'`,
+then `kido-deploy build /opt/kido/src`.
+
+### Automatic deploys
+
+`release.yml`'s `deploy` job runs after the three images of a green `main` commit are published.
+It needs three repository secrets and skips with a notice while any is missing. The owner sets
+them up once:
+
+1. On your own machine, make a key used for nothing else (no passphrase: CI cannot type one):
+
+       ssh-keygen -t ed25519 -N '' -C kido-deploy@github-actions -f kido_deploy
+
+2. On the VPS, authorise it for exactly the deploy command by appending one line to
+   `/root/.ssh/authorized_keys`:
+
+       restrict,command="/usr/local/bin/kido-deploy" ssh-ed25519 AAAA...(the contents of kido_deploy.pub)
+
+   `restrict` turns off pty, port, agent and X11 forwarding; `command=` makes the key run only
+   `kido-deploy`, which reads `receive <id>` or `deploy <id> --registry-user <name>` from
+   `SSH_ORIGINAL_COMMAND` and refuses anything else. A `from="..."` pin is not practical for
+   GitHub-hosted runners (their addresses are many and change); add one if you move to a
+   self-hosted runner. Trade-offs: whoever holds this key can still deploy arbitrary compose
+   files, and the stack runs privileged containers, so the key is root-equivalent either way;
+   `command=` narrows it to deploys and keeps it off a shell. A dedicated non-root `deploy` user
+   in the `docker` group is no less powerful (the docker group is root-equivalent) and needs a
+   sudoers rule (`deploy ALL=(root) NOPASSWD: /usr/local/bin/kido-deploy`) with the key line
+   `restrict,command="sudo /usr/local/bin/kido-deploy $SSH_ORIGINAL_COMMAND" ssh-ed25519 ...`;
+   what it adds is a separate login and audit trail, not containment. Root with
+   `restrict,command=` is the simpler choice here.
+
+3. Pin the host key (compare the fingerprint with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`
+   run on the VPS), then set the secrets:
+
+       ssh-keyscan -t ed25519 62.84.187.212 > kido_known_hosts
+       ssh-keygen -lf kido_known_hosts
+       gh secret set VPS_SSH_KEY -R teamblinto/kido-v2 < kido_deploy
+       gh secret set VPS_KNOWN_HOSTS -R teamblinto/kido-v2 < kido_known_hosts
+       gh secret set VPS_HOST -R teamblinto/kido-v2 --body 62.84.187.212
+
+   Then delete the local private key `kido_deploy` (or keep it offline). `VPS_HOST` may be
+   `user@host`; the default user is `root`.
+
+The job builds the web app, sends a tarball of the release (compose files, `infra/`,
+`apps/web/dist`, and a `release.env` with the three `ghcr.io/...@sha256:` digests) to
+`kido-deploy receive`, then runs `kido-deploy deploy` with the job's own `GITHUB_TOKEN`
+(`packages: read`, valid only while the job runs) on stdin; the server logs in with
+`--password-stdin` and logs out right after the pull. To retry, re-run the `deploy` job from the
+Actions page; to undo, `kido-deploy rollback` on the server.
+
 ## Upgrade and rollback
+
+On the kido VPS use `kido-deploy` (above). Elsewhere:
 
 Upgrade: `git pull && docker compose up -d --build sandboxd`. Running sandboxes are plain Docker
 containers, so they survive a sandboxd restart (it re-adopts them from its sqlite file), but every

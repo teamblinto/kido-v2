@@ -6,8 +6,8 @@
 # The play prepares the host with `infra/sandboxd/host-setup.sh` (Docker CE, gVisor, XFS data
 # volume, swap, key file) and then runs the sandboxd container with the same settings the
 # `sandboxd` service has in compose.yaml. It is told what image to run by digest, like every
-# other play; nothing here builds one. NOTE: release.yml does not publish a sandboxd image yet, so
-# `forge_sandboxd_image` has to be one an operator built and pushed from apps/sandboxd/Dockerfile.
+# other play; nothing here builds one. release.yml publishes forge-sandboxd by digest; set
+# `forge_sandboxd_image` to that `ghcr.io/<owner>/forge-sandboxd@sha256:...`.
 #
 # The api key is generated on this host by host-setup.sh (/etc/sandboxd/api_key). The app pool
 # reads the same value as DAYTONA_API_KEY_FILE, so copy it across the mesh once, out of band;
