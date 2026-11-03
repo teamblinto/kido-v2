@@ -36,17 +36,27 @@ export function requireBearer(req: IncomingMessage, key: string): void {
   }
 }
 
-export function router() {
-  const routes: { method: string; re: RegExp; names: string[]; handler: Handler }[] = [];
+export function router(apiKey: string) {
+  const routes: {
+    method: string;
+    re: RegExp;
+    names: string[];
+    handler: Handler;
+    auth: boolean;
+  }[] = [];
 
   async function dispatch(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const url = new URL(req.url ?? '/', 'http://sandboxd');
     for (const r of routes) {
       const m = r.method === req.method ? r.re.exec(url.pathname) : null;
       if (!m) continue;
-      const params = Object.fromEntries(
-        r.names.map((n, i) => [n, decodeURIComponent(m[i + 1] ?? '')]),
-      );
+      if (r.auth) requireBearer(req, apiKey);
+      let params: Record<string, string>;
+      try {
+        params = Object.fromEntries(r.names.map((n, i) => [n, decodeURIComponent(m[i + 1] ?? '')]));
+      } catch {
+        throw new HttpError(400, 'malformed path');
+      }
       await r.handler(req, res, params, url);
       return;
     }
@@ -54,7 +64,14 @@ export function router() {
   }
 
   return {
-    route(this: void, method: string, pattern: string, handler: Handler): void {
+    /** Bearer-protected unless `{ auth: false }`: a forgotten option fails closed. */
+    route(
+      this: void,
+      method: string,
+      pattern: string,
+      handler: Handler,
+      opts: { auth?: boolean } = {},
+    ): void {
       const names: string[] = [];
       const src = pattern
         .replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -62,7 +79,13 @@ export function router() {
           names.push(n);
           return '([^/]+)';
         });
-      routes.push({ method, re: new RegExp(`^${src}$`), names, handler });
+      routes.push({
+        method,
+        re: new RegExp(`^${src}$`),
+        names,
+        handler,
+        auth: opts.auth !== false,
+      });
     },
     handle(this: void, req: IncomingMessage, res: ServerResponse): void {
       dispatch(req, res).catch((err: unknown) => {
