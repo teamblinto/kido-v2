@@ -124,7 +124,13 @@ export class SandboxOpsConsumer extends EventConsumer<
 
     // `.` as `mailJobId` does: BullMQ refuses a custom id containing `:`, and a refused `add`
     // fails the relay's whole tick — every row behind this one waits forever.
-    return `${sandboxId ?? poolId ?? 'none'}.${op}`;
+    //
+    // The event id is part of it, so a republish is still one job but the second hibernate (or
+    // resume) of the same sandbox is a new one. Target and op alone collided with the first
+    // cycle's completed job, kept for a day by JOB_RETENTION, so BullMQ dropped the add and the
+    // row sat in `hibernating` with every run refused (spec 043). Two live requests for one op
+    // never exist: the row's transition is claimed before each event is appended.
+    return `${sandboxId ?? poolId ?? 'none'}.${op}.${event.eventId}`;
   }
 
   async handle(event: OpEvent, tx: TenantTransaction): Promise<OpTarget | undefined> {

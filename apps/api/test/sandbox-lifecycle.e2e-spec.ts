@@ -304,6 +304,23 @@ describe('Sandbox lifecycle (e2e)', () => {
         return rows.map((row) => row.payload as { op: string });
       }
 
+      /** The sandbox.ops job id of a sandbox's latest `op` event: target, op and event id. */
+      async function opJobId(sandboxId: string, op: string): Promise<string> {
+        const rows = await db
+          .select({ id: schema.outbox.id, payload: schema.outbox.payload })
+          .from(schema.outbox)
+          .where(
+            and(
+              eq(schema.outbox.type, 'sandbox.op.requested'),
+              eq(schema.outbox.aggregateId, sandboxId),
+            ),
+          )
+          .orderBy(asc(schema.outbox.seq));
+        const last = rows.filter((row) => (row.payload as { op: string }).op === op).at(-1);
+
+        return `${sandboxId}.${op}.${last?.id ?? 'none'}`;
+      }
+
       const creates = () =>
         fake.requests.filter((r) => r.method === 'POST' && r.path === '/api/sandbox');
 
@@ -1122,7 +1139,8 @@ describe('Sandbox lifecycle (e2e)', () => {
             await until(
               'the stale resume job to complete',
               async () =>
-                (await (await opsQueue().getJob(`${row.id}.resume`))?.getState()) === 'completed',
+                (await (await opsQueue().getJob(await opJobId(row.id, 'resume')))?.getState()) ===
+                'completed',
             );
 
             expect(fake.requests.filter((r) => r.path.endsWith('/start'))).toEqual([]);
@@ -1291,13 +1309,13 @@ describe('Sandbox lifecycle (e2e)', () => {
               await until(
                 'the resume job to be dead-lettered',
                 async () => {
-                  letter = (await opsDlq().getJob(`${row.id}.resume`))?.data;
+                  letter = (await opsDlq().getJob(await opJobId(row.id, 'resume')))?.data;
                   return letter !== undefined;
                 },
                 RUN_TIMEOUT_MS * 2,
               );
               expect(letter).toMatchObject({
-                jobId: `${row.id}.resume`,
+                jobId: await opJobId(row.id, 'resume'),
                 payload: {
                   payload: { op: 'resume', orgId: world.alpha.orgId, sandboxId: row.id },
                   type: 'sandbox.op.requested',
@@ -1325,7 +1343,7 @@ describe('Sandbox lifecycle (e2e)', () => {
               });
               expect(failed.failureReason).toMatch(/^daytona:upstream: /);
               expect((await opsFor(row.id)).map((op) => op.op)).toEqual(['resume']);
-              expect(await opsQueue().getJob(`${row.id}.resume`)).toBeUndefined();
+              expect(await opsQueue().getJob(await opJobId(row.id, 'resume'))).toBeUndefined();
             } finally {
               settings.backoffStrategy = strategy;
               Object.assign(SANDBOX, { runWaitMs: RUN_TIMEOUT_MS });
