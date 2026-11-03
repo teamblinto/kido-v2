@@ -8,6 +8,7 @@ import { createPipeline } from './pipeline.ts';
 import { RouteCache } from './route-cache.ts';
 import { createDomainVerifier, createRouteVerifier, createSiteVerifier } from './route-verify.ts';
 import { createManifestCache, createS3ArtifactStore } from './site-serve.ts';
+import { createTlsAsk } from './tls-ask.ts';
 
 const env = validateEnvironment(process.env);
 
@@ -97,10 +98,28 @@ server.listen(env.PORT, () => {
   );
 });
 
+// Caddy's on-demand TLS `ask` (compose.vps.yaml): a separate port that is never proxied publicly.
+const allowed = createTlsAsk({
+  getRoute: (label, ctx) => broker.getRoute(label, ctx),
+  previewDomain: env.PREVIEW_DOMAIN,
+});
+const askPort = env.TLS_ASK_PORT;
+const ask =
+  askPort === undefined
+    ? undefined
+    : createServer((req, res) => {
+        const domain = new URL(req.url ?? '/', 'http://ask').searchParams.get('domain') ?? '';
+        allowed(domain).then(
+          (ok) => res.writeHead(ok ? 200 : 403).end(),
+          () => res.writeHead(403).end(),
+        );
+      }).listen(askPort);
+
 // Graceful close: stop accepting, drop idle keep-alives, let in-flight exchanges finish, and
 // give up after a bounded wait so a stuck socket cannot pin the process.
 for (const signal of ['SIGTERM', 'SIGINT'] as const) {
   process.once(signal, () => {
+    ask?.close();
     server.close(() => process.exit(0));
     server.closeIdleConnections();
     setTimeout(() => process.exit(1), 10_000).unref();

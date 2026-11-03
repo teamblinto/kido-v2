@@ -70,13 +70,17 @@ async function until(what: string, predicate: () => Promise<boolean>, ms = 120_0
   }
 }
 
-function get(host: string, path: string, via?: { headers: Record<string, string>; port: number }) {
+function get(
+  host: string,
+  path: string,
+  via?: { dial: string; headers: Record<string, string>; port: number },
+) {
   return new Promise<{ body: string; headers: IncomingMessage['headers']; status: number }>(
     (resolve, reject) => {
       const req = request(
         {
           headers: { connection: 'close', host, ...via?.headers },
-          host: '127.0.0.1',
+          host: via?.dial ?? '127.0.0.1',
           path,
           port: via?.port ?? gatewayPort,
         },
@@ -95,11 +99,16 @@ function get(host: string, path: string, via?: { headers: Record<string, string>
   );
 }
 
-/** Exactly the dial `proxy.ts` makes: the minted host as `Host`, the token as the header. */
+/**
+ * Exactly the dial `proxy.ts` makes: the minted host as `Host`, the token as the header, to
+ * PREVIEW_UPSTREAM_DIAL's host and port (e.g. 172.30.2.1:3987 against a compose-run sandboxd).
+ */
 function upstream(path: string) {
+  const dial = process.env.PREVIEW_UPSTREAM_DIAL;
   return get(new URL(route.upstream).host, path, {
+    dial: dial === undefined ? '127.0.0.1' : new URL(dial).hostname,
     headers: { 'x-daytona-preview-token': route.upstreamToken },
-    port: Number(new URL(process.env.PREVIEW_UPSTREAM_DIAL ?? route.upstream).port || 80),
+    port: Number(new URL(dial ?? route.upstream).port || 80),
   });
 }
 

@@ -107,6 +107,9 @@ export const environmentSchema = z
     ROUTE_CACHE_TTL_MS: z.coerce.number().int().positive().default(5_000),
     // Deployed sites are served at `<site_label>.<SITE_DOMAIN>` (spec 027 R10, R11).
     SITE_DOMAIN: z.string().trim().toLowerCase().min(1).optional(),
+    // When set, a second listener answers an on-demand TLS edge's `ask` (`?domain=`): 200 only
+    // for a preview host the broker knows (tls-ask.ts). Never route public traffic to it.
+    TLS_ASK_PORT: z.coerce.number().int().min(1).max(65_535).optional(),
   })
   .superRefine((environment, ctx) => {
     const isRealDeployment = environment.DEPLOY_ENV !== 'local';

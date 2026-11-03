@@ -43,6 +43,11 @@ function validEnvironment(overrides: Record<string, unknown> = {}): Record<strin
 }
 
 describe('validateEnvironment', () => {
+  it('TLS_ASK_PORT is an optional port', () => {
+    expect(validateEnvironment(validEnvironment({ TLS_ASK_PORT: '3201' })).TLS_ASK_PORT).toBe(3201);
+    expect(() => validateEnvironment(validEnvironment({ TLS_ASK_PORT: '0' }))).toThrow();
+  });
+
   it('defaults to a plain broker on :3001 and PORT 3200 under local', () => {
     const result = validateEnvironment(validEnvironment());
 
@@ -60,6 +65,7 @@ describe('validateEnvironment', () => {
     expect(result.GATEWAY_UPSTREAM_TIMEOUT_MS).toBe(30_000);
     expect(result.GATEWAY_SOCKET_MAX_MS).toBe(3_600_000);
     expect(result.GATEWAY_WAKE_BUDGET_MS).toBe(90_000);
+    expect(result.TLS_ASK_PORT).toBeUndefined();
   });
 
   it('names the missing variable when DEPLOY_ENV is absent', () => {
