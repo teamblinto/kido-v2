@@ -41,6 +41,16 @@ describe('loadConfig', () => {
     expect(() => loadConfig(env)).toThrow(/SANDBOXD_API_HOST/);
     expect(loadConfig({ ...env, SANDBOXD_API_HOST: 'a.test' }).real).toBe(true);
   });
+  it('SANDBOXD_DNS: IPv4 literals only, default 1.1.1.1 and 9.9.9.9', () => {
+    const env = { SANDBOXD_API_KEY: 'k', SANDBOXD_DATA_DIR: dir() };
+    expect(loadConfig(env).dns).toEqual(['1.1.1.1', '9.9.9.9']);
+    expect(loadConfig({ ...env, SANDBOXD_DNS: ' 8.8.8.8 , 8.8.4.4' }).dns).toEqual([
+      '8.8.8.8',
+      '8.8.4.4',
+    ]);
+    for (const bad of ['', 'dns.google', '1.1.1', '256.1.1.1', '::1', '1.1.1.1 -j ACCEPT'])
+      expect(() => loadConfig({ ...env, SANDBOXD_DNS: bad })).toThrow(/SANDBOXD_DNS/);
+  });
   it('applies defaults and generates the preview secret once', () => {
     const d = dir();
     const env = { SANDBOXD_API_KEY: 'k', SANDBOXD_DATA_DIR: d };

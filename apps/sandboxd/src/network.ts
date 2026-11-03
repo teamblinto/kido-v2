@@ -49,7 +49,7 @@ export function firewallMode(
 
 /** Single source of truth for firewall.sh: the same constants the networks are created from. */
 export function firewallEnv(
-  cfg: Pick<Config, 'egressListen' | 'listen' | 'previewListen'>,
+  cfg: Pick<Config, 'egressListen' | 'listen' | 'previewListen' | 'dns'>,
 ): Record<string, string> {
   const [agent, proj] = [NETWORKS[0]![1], NETWORKS[1]![1]];
   return {
@@ -66,12 +66,16 @@ export function firewallEnv(
     // Only when the control/preview listeners sit on the local sbx-ctl bridge gateway. On the
     // staging mesh they listen on a WireGuard address and callers are remote: no INPUT pin.
     SBX_CTL_IP: cfg.listen.host === CTL_GATEWAY ? CTL_GATEWAY : '',
+    SBX_CTL_PORTS: `${cfg.listen.port},${cfg.previewListen.port}`,
+    SBX_DNS: cfg.dns.join(','),
   };
 }
 
 type Run = (sub: 'apply' | 'check') => Promise<boolean>;
 
-export function realRunner(cfg: Pick<Config, 'egressListen' | 'listen' | 'previewListen'>): Run {
+export function realRunner(
+  cfg: Pick<Config, 'egressListen' | 'listen' | 'previewListen' | 'dns'>,
+): Run {
   return (sub) =>
     new Promise((resolve) => {
       execFile(
@@ -88,7 +92,7 @@ export function realRunner(cfg: Pick<Config, 'egressListen' | 'listen' | 'previe
 }
 
 export async function applyFirewall(
-  cfg: Pick<Config, 'egressListen' | 'listen' | 'previewListen'>,
+  cfg: Pick<Config, 'egressListen' | 'listen' | 'previewListen' | 'dns'>,
 ): Promise<void> {
   if (!(await realRunner(cfg)('apply'))) throw new Error('firewall.sh apply failed');
 }

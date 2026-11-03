@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { isIP } from 'node:net';
 import { join } from 'node:path';
 
 export interface HostPort {
@@ -28,6 +29,8 @@ export interface Config {
   apiHost: string;
   egressAgentDefault: string[];
   storageQuota: boolean;
+  /** IPv4 resolvers gVisor sandboxes use (classes.ts resolv.conf, firewall.sh accepts them). */
+  dns: string[];
   /** Real deployment: firewall cannot be disabled and the API host is mandatory. */
   real: boolean;
 }
@@ -39,6 +42,15 @@ const list = (v: string | undefined, dflt: string[] = []): string[] =>
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
+
+/** Validated: the values go into a resolv.conf and into iptables rules. */
+function dnsList(v: string | undefined): string[] {
+  const l = list(v, ['1.1.1.1', '9.9.9.9']);
+  if (l.length === 0 || !l.every((a) => isIP(a) === 4)) {
+    throw new Error(`SANDBOXD_DNS must be a comma list of IPv4 addresses, got "${v ?? ''}"`);
+  }
+  return l;
+}
 
 function hostPort(v: string): HostPort {
   const i = v.lastIndexOf(':');
@@ -116,6 +128,7 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
       'statsig.anthropic.com',
     ]),
     storageQuota: env.SANDBOXD_STORAGE_QUOTA === '1',
+    dns: dnsList(env.SANDBOXD_DNS),
     real,
   };
 }

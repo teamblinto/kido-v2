@@ -1,6 +1,7 @@
 import { createServer, type Server } from 'node:http';
 
 import { Admission } from './admission.ts';
+import { writeResolvConf } from './classes.ts';
 import { loadConfig } from './config.ts';
 import { router, sendJson } from './http.ts';
 import { DockerodePort } from './docker.ts';
@@ -21,6 +22,7 @@ import { Store } from './store.ts';
 import { clearStaleSessions, registerToolboxRoutes } from './toolbox.ts';
 
 const config = loadConfig(process.env);
+writeResolvConf(config);
 const store = new Store(config.dataDir);
 const docker = new DockerodePort();
 const admission = new Admission({ cfg: config, store, docker });

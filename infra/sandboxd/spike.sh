@@ -134,5 +134,19 @@ mem() { # runtime
 echo "INFO 7 idle-mem runc=$(mem runc)"
 if [ $HAVE_RUNSC = 1 ]; then echo "INFO 7 idle-mem runsc=$(mem runsc)"; else skip "7 idle-mem runsc" "runsc not registered"; fi
 
+# 8. DNS under runsc on a user-defined bridge, the way sandboxd sets it up (classes.ts): gVisor's
+# netstack cannot reach Docker's embedded 127.0.0.11, so sandboxd binds a resolv.conf naming
+# public resolvers. The default (no bind) result is printed for reference; it fails under gVisor.
+if [ $HAVE_RUNSC = 0 ] || [ $IS_LINUX = 0 ]; then skip "8 runsc-dns" "needs runsc on a Linux host"
+else
+  docker network create --driver bridge "$P-dns" >/dev/null
+  printf 'nameserver 1.1.1.1\nnameserver 9.9.9.9\noptions timeout:2 attempts:2\n' >"$TMP/resolv.conf"
+  chmod 644 "$TMP/resolv.conf"
+  dns() { docker run --rm --runtime=runsc --network "$P-dns" "$@" "$NODE_IMG" getent hosts registry.npmjs.org >/dev/null 2>&1; }
+  if dns; then echo "INFO 8 runsc-dns default resolv.conf resolves"; else echo "INFO 8 runsc-dns default resolv.conf (127.0.0.11) does NOT resolve"; fi
+  if dns -v "$TMP/resolv.conf:/etc/resolv.conf:ro"; then pass "8 runsc-dns"
+  else fail "8 runsc-dns" "no resolution even with the bound resolv.conf (outbound udp/53 blocked?)"; fi
+fi
+
 [ $FAILS -eq 0 ] || { echo "$FAILS check(s) FAILED"; exit 1; }
 echo "all checks passed or skipped"

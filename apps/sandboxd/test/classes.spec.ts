@@ -1,13 +1,19 @@
+import { mkdtempSync, readFileSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { describe, expect, it } from 'vitest';
 
-import { classOf, containerSpec } from '../src/classes.ts';
+import { classOf, containerSpec, writeResolvConf } from '../src/classes.ts';
 import type { Config } from '../src/config.ts';
 
-const cfg = (storageQuota: boolean) =>
+const cfg = (storageQuota: boolean, runtimeProject = 'runsc') =>
   ({
-    runtimeProject: 'runsc',
+    runtimeProject,
     egressListen: { host: '172.30.0.1', port: 3988 },
     storageQuota,
+    dataDir: '/var/lib/sandboxd',
+    dns: ['1.1.1.1', '9.9.9.9'],
   }) as Config;
 
 describe('classOf', () => {
@@ -86,10 +92,36 @@ describe('containerSpec', () => {
         Init: true,
         Ulimits: [{ Name: 'nofile', Soft: 4096, Hard: 4096 }],
       });
-      expect(h).not.toHaveProperty('Binds');
+      // The one host mount there is: gVisor classes get sandboxd's resolv.conf, read-only.
+      if (cls === 'agent') expect(h).not.toHaveProperty('Binds');
+      else expect(h.Binds).toEqual(['/var/lib/sandboxd/resolv.sandbox.conf:/etc/resolv.conf:ro']);
     }
     expect(containerSpec(cfg(true), 'x', 'img', cls, {}, []).user).toBe('1000:1000');
     expect(on).toHaveProperty('StorageOpt');
     expect(off).not.toHaveProperty('StorageOpt');
+  });
+
+  it('runc project sandboxes keep Docker DNS: no host mount at all', () => {
+    for (const cls of ['project', 'build'] as const)
+      expect(hc(containerSpec(cfg(true, 'runc'), 'x', 'img', cls, {}, []))).not.toHaveProperty(
+        'Binds',
+      );
+  });
+});
+
+describe('writeResolvConf', () => {
+  it('writes the resolvers world-readable, and leaves an unchanged file (and inode) alone', () => {
+    const d = mkdtempSync(join(tmpdir(), 'sbxd-'));
+    const f = writeResolvConf({ dataDir: d, dns: ['1.1.1.1', '9.9.9.9'] });
+    expect(f).toBe(`${d}/resolv.sandbox.conf`);
+    expect(readFileSync(f, 'utf8')).toBe(
+      'nameserver 1.1.1.1\nnameserver 9.9.9.9\noptions timeout:2 attempts:2\n',
+    );
+    if (process.platform !== 'win32') expect(statSync(f).mode & 0o777).toBe(0o644);
+    const ino = statSync(f).ino;
+    writeResolvConf({ dataDir: d, dns: ['1.1.1.1', '9.9.9.9'] });
+    expect(statSync(f).ino).toBe(ino);
+    writeResolvConf({ dataDir: d, dns: ['8.8.8.8'] });
+    expect(readFileSync(f, 'utf8')).toBe('nameserver 8.8.8.8\noptions timeout:2 attempts:2\n');
   });
 });

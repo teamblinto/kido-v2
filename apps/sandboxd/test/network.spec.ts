@@ -44,6 +44,7 @@ describe('firewallEnv', () => {
       egressListen: { host: '172.30.0.9', port: 4000 },
       listen: { host: '172.30.2.1', port: 3986 },
       previewListen: { host: '172.30.2.1', port: 3987 },
+      dns: ['1.1.1.1', '9.9.9.9'],
     };
     expect(firewallEnv(cfg)).toMatchObject({
       SBX_EGRESS_PORT: '4000',
@@ -56,6 +57,8 @@ describe('firewallEnv', () => {
       SBX_PROJ_IF: 'sbx-proj0',
       SBX_CTL_IF: 'sbx-ctl0',
       SBX_CTL_IP: '172.30.2.1',
+      SBX_CTL_PORTS: '3986,3987',
+      SBX_DNS: '1.1.1.1,9.9.9.9',
     });
   });
 
@@ -64,6 +67,7 @@ describe('firewallEnv', () => {
       egressListen: { host: '172.30.0.1', port: 3988 },
       listen: { host: '10.99.0.5', port: 3986 },
       previewListen: { host: '10.99.0.5', port: 3987 },
+      dns: ['1.1.1.1'],
     });
     expect(env.SBX_CTL_IP).toBe('');
   });
