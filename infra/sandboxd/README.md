@@ -259,8 +259,23 @@ Operator commands (as root on the VPS):
 
     kido-deploy build /opt/kido/src [id]    # build the three images and the web app here, deploy them
     kido-deploy rollback                    # re-deploy the previous release
+    kido-deploy redeploy                    # re-deploy the current release (after editing kido.env or oauth.env)
     kido-deploy deploy <id>                 # re-deploy any kept release (its images are still local)
     d=/opt/kido/current; docker compose -p kido --project-directory $d --env-file /opt/kido/kido.env --env-file $d/release.env ps
+
+Sign-in providers (optional): the api reads `/opt/kido/oauth.env` if it exists (`env_file` with
+`required: false` in compose.vps.yaml; only the api runs OAuth). Create it root-only with both
+lines of a provider, never a blank value (an empty value fails the api's config check):
+
+    install -m 0600 /dev/null /opt/kido/oauth.env
+    printf '%s\n' 'GOOGLE_OAUTH_CLIENT_ID=<client id>' 'GOOGLE_OAUTH_CLIENT_SECRET=<client secret>' >> /opt/kido/oauth.env
+    kido-deploy redeploy
+
+The Google OAuth client's authorised redirect URI is
+`https://kido.blinto.co/api/v1/auth/oauth/google/callback` (`APP_URL`, which the overlay sets to
+`https://APP_HOST`, plus `/api/v1/auth/oauth/google/callback`). GitHub sign-in works the same way
+with `GITHUB_OAUTH_CLIENT_ID`/`GITHUB_OAUTH_CLIENT_SECRET`. Removing the file and redeploying
+turns the provider off.
 
 To deploy a commit by hand without CI:
 `git archive <commit> | ssh root@VPS 'rm -rf /opt/kido/src && mkdir /opt/kido/src && tar -x -C /opt/kido/src'`,

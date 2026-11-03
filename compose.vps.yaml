@@ -93,6 +93,12 @@ services:
   # depends_on is replaced, not merged: the base file's list names openbao, which is off here.
   api:
     image: ${FORGE_APP_IMAGE:-forge-app}
+    # Optional sign-in providers (GOOGLE_OAUTH_CLIENT_ID/_SECRET, GITHUB_OAUTH_*), only in the api
+    # (the OAuth controller). A file, not `${VAR:-}` here: an empty value fails the schema's
+    # min(1), so only variables the file actually sets reach the api. Absent file: no providers.
+    env_file:
+      - path: ${KIDO_ROOT:-/opt/kido}/oauth.env
+        required: false
     depends_on: !override
       migrate:
         condition: service_completed_successfully

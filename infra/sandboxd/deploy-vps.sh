@@ -10,6 +10,8 @@
 #   kido-deploy build SRC [ID]                  build the images and the web app from the source tree
 #                                               SRC on this host (no registry), then deploy them
 #   kido-deploy rollback                        deploy the previous release again
+#   kido-deploy redeploy                        deploy the current release again (after editing
+#                                               kido.env or oauth.env)
 #
 # Layout (KIDO_ROOT, default /opt/kido): kido.env (0600: secrets and host config, never shipped by
 # CI), releases/<ID>/ (one per deploy; release.env pins the image refs, no secrets), current and
@@ -205,5 +207,6 @@ case "${1:-}" in
   deploy) shift; cmd_deploy "$@" ;;
   build) shift; cmd_build "$@" ;;
   rollback) shift; cmd_rollback ;;
-  *) sed -n '2,20p' "$0"; exit 64 ;;
+  redeploy) cmd_deploy "$(basename "$(readlink -f "$ROOT/current")")" ;;
+  *) sed -n '2,22p' "$0"; exit 64 ;;
 esac
