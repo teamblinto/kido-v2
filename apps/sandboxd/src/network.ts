@@ -2,7 +2,9 @@ import { execFile } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { Config } from './config.ts';
 import type { DockerPort, NetworkOpts } from './docker.ts';
+import { log } from './log.ts';
 
 const script = join(dirname(fileURLToPath(import.meta.url)), '../../../infra/sandboxd/firewall.sh');
 
@@ -41,16 +43,70 @@ export function firewallMode(
   return platform !== 'linux' || env.SANDBOXD_FIREWALL === 'off' ? 'skipped' : 'on';
 }
 
-const run = (sub: 'apply' | 'check') =>
-  new Promise<{ ok: boolean; err: string }>((resolve) => {
-    execFile('bash', [script, sub], (e, _out, stderr) => resolve({ ok: !e, err: stderr.trim() }));
-  });
-
-export async function applyFirewall(): Promise<void> {
-  const r = await run('apply');
-  if (!r.ok) throw new Error(`firewall.sh apply failed: ${r.err}`);
+/** Single source of truth for firewall.sh: the same constants the networks are created from. */
+export function firewallEnv(cfg: Pick<Config, 'egressListen'>): Record<string, string> {
+  const [agent, proj] = [NETWORKS[0]![1], NETWORKS[1]![1]];
+  return {
+    SBX_EGRESS_PORT: String(cfg.egressListen.port),
+    SBX_AGENT_GW: cfg.egressListen.host,
+    SBX_AGENT_NET: agent.subnet!,
+    SBX_PROJ_NET: proj.subnet!,
+    SBX_AGENT_IF: agent.bridgeName!,
+    SBX_PROJ_IF: proj.bridgeName!,
+  };
 }
 
-export async function checkFirewall(): Promise<boolean> {
-  return (await run('check')).ok;
+type Run = (sub: 'apply' | 'check') => Promise<boolean>;
+
+export function realRunner(cfg: Pick<Config, 'egressListen'>): Run {
+  return (sub) =>
+    new Promise((resolve) => {
+      execFile(
+        'bash',
+        [script, sub],
+        { timeout: 10_000, env: { ...process.env, ...firewallEnv(cfg) } },
+        (e, _out, stderr) => {
+          if (e && sub === 'apply')
+            log('error', 'firewall.sh apply failed', { stderr: stderr.trim() });
+          resolve(!e);
+        },
+      );
+    });
+}
+
+export async function applyFirewall(cfg: Pick<Config, 'egressListen'>): Promise<void> {
+  if (!(await realRunner(cfg)('apply'))) throw new Error('firewall.sh apply failed');
+}
+
+/**
+ * Every 30 s verify the rules and re-apply after an external flush; never overlaps. `status()`
+ * serves /healthz from a <=5 s cache so unauthenticated hits don't spawn iptables.
+ */
+export function startFirewallGuard(run: Run, onError: (msg: string) => void) {
+  let cached: { at: number; ok: boolean } | undefined;
+  let inflight: Promise<boolean> | undefined;
+  let busy = false;
+  const check = (): Promise<boolean> =>
+    (inflight ??= run('check')
+      .then((ok) => {
+        cached = { at: Date.now(), ok };
+        return ok;
+      })
+      .finally(() => (inflight = undefined)));
+  const timer = setInterval(() => {
+    if (busy) return;
+    busy = true;
+    void (async () => {
+      if (await check()) return;
+      onError('firewall rules missing or altered, re-applying');
+      await run('apply');
+      await check();
+    })()
+      .catch((e: unknown) => onError(`firewall guard failed: ${String(e)}`))
+      .finally(() => (busy = false));
+  }, 30_000);
+  return {
+    status: async () => (cached && Date.now() - cached.at < 5000 ? cached.ok : check()),
+    stop: () => clearInterval(timer),
+  };
 }
