@@ -2,11 +2,8 @@
   "name": "@repo/companion",
   "version": "0.1.0",
   "private": true,
-  "description": "Local agent companion: runs the person's own signed-in CLI and relays it to BAIOS over outbound HTTPS",
+  "description": "BAIOS agent-home runner: runs the person's signed-in Claude Code inside their private cloud agent home and relays it to BAIOS over outbound HTTPS",
   "type": "module",
-  "bin": {
-    "baios-companion": "./dist/main.js"
-  },
   "files": [
     "dist"
   ],
@@ -15,7 +12,6 @@
   },
   "scripts": {
     "build": "tsup",
-    "dev": "node --watch src/main.ts",
     "lint": "eslint .",
     "test": "vitest run",
     "typecheck": "tsc --noEmit"

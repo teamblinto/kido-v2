@@ -156,8 +156,8 @@ export class AgentRunConsumer extends EventConsumer<
     const fence = { epoch, orgId, runId };
     const batcher = this.batchers.create(fence);
     const controller = new AbortController();
-    // 040: a local run on its own workspace has no sandbox — it is neither required nor touched
-    // (spec 040 § 3). 041: one on the sandbox tool bridge uses the project's sandbox as a cloud run.
+    // A subscription run uses the project's sandbox as a cloud run does (041's tool bridge); a
+    // retired own-computer run (`workspace`, spec 040) never touches it on its way to failing.
     const local = await inTx((tx) => this.executors.select(tx, orgId, runId));
     const executor = local ?? this.executor;
     const touches =

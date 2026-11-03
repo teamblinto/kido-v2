@@ -1,4 +1,5 @@
-import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join, sep } from 'node:path';
 
 import { tempDir, waitFor } from '../test/helpers.ts';
@@ -12,13 +13,7 @@ import {
   waitForExit,
   withoutBaiosVars,
 } from './process.ts';
-import {
-  isRoutineWrite,
-  isSensitivePath,
-  redactPaths,
-  resolveWriteTarget,
-  toWorkspaceRelative,
-} from './util.ts';
+import { redactPaths } from './util.ts';
 
 describe('resolveBinary', () => {
   it('prefers a real .exe anywhere on PATH over a .cmd shim (Windows rules)', () => {
@@ -36,7 +31,7 @@ describe('resolveBinary', () => {
     expect(resolveBinary('claude', undefined, env, 'win32')?.path).toBe(join(native, 'claude.exe'));
     const shimOnly = resolveBinary('claude', undefined, { ...env, PATH: shims }, 'win32');
     expect(shimOnly).toMatchObject({ path: join(shims, 'claude.cmd'), viaCmd: true });
-    expect(resolveBinary('codex', undefined, env, 'win32')).toBeNull();
+    expect(resolveBinary('gemini', undefined, env, 'win32')).toBeNull();
   });
 
   it('runs a .mjs override with this node, and rejects a missing override', () => {
@@ -100,28 +95,17 @@ describe('scrubbing', () => {
   });
 });
 
-describe('workspace paths', () => {
-  it('relativizes inside the workspace and refuses anything outside it', () => {
-    const root = tempDir();
-    expect(toWorkspaceRelative(root, join(root, 'src', 'a.ts'))).toBe('src/a.ts');
-    expect(toWorkspaceRelative(root, 'b.ts')).toBe('b.ts');
-    expect(toWorkspaceRelative(root, root)).toBeNull();
-    expect(toWorkspaceRelative(root, join(root, '..', 'x'))).toBeNull();
-    expect(toWorkspaceRelative(root, join(`${root}-other`, 'x'))).toBeNull();
-  });
-
-  it('rewrites the workspace root to <workspace> at any depth and truncates long strings', () => {
-    const root = tempDir();
-    const redact = redactPaths(root, 50);
+describe('redactPaths', () => {
+  it('rewrites the home directory to ~ at any depth and truncates long strings', () => {
+    const redact = redactPaths(50);
     const out = redact({
-      cmd: `ls ${join(root, 'src')}`,
-      list: [`${root}-x`],
+      cmd: `ls ${join(homedir(), 'src')}`,
+      list: [`${homedir()}-x`],
       long: 'y'.repeat(80),
     });
-    expect(out.cmd).toBe(`ls <workspace>${sep}src`);
-    // A sibling is not the workspace (it may still lose its home-directory prefix to `~`).
-    expect(out.list[0]).toMatch(/-x$/);
-    expect(out.list[0]?.startsWith('<workspace>')).toBe(false);
+    expect(out.cmd).toBe(`ls ~${sep}src`);
+    // A sibling is not the home directory.
+    expect(out.list[0]).toBe(`${homedir()}-x`);
     expect(out.long).toBe(`${'y'.repeat(49)}…`);
   });
 });
@@ -149,55 +133,12 @@ describe('scrubTokens (agent output sent to BAIOS)', () => {
   });
 
   it('applies to everything redactPaths prepares', () => {
-    expect(redactPaths(null)({ out: `key sk-proj-${'z'.repeat(40)}` }).out).toBe(
-      'key sk-[redacted]',
-    );
-  });
-});
-
-describe('resolveWriteTarget', () => {
-  it('follows links to where a write really lands and flags sensitive paths', () => {
-    const root = tempDir();
-    const outside = tempDir();
-    mkdirSync(join(root, 'src'));
-    symlinkSync(outside, join(root, 'link'), 'junction');
-    expect(resolveWriteTarget(root, join(root, 'src', 'new', 'a.ts'))).toBe('src/new/a.ts');
-    expect(resolveWriteTarget(root, join(root, 'link', 'a.ts'))).toBeNull();
-    expect(resolveWriteTarget(root, join(root, '..', 'a.ts'))).toBeNull();
-    expect(resolveWriteTarget(root, join(root, '.git', 'hooks', 'pre-commit'))).toBe(
-      '.git/hooks/pre-commit',
-    );
-    expect(isRoutineWrite(root, join(root, 'src', 'a.ts'))).toBe(true);
-    for (const path of [
-      '.git/hooks/pre-commit',
-      '.GIT/config',
-      'sub/.git',
-      '.claude/settings.json',
-      '.vscode/tasks.json',
-      '.github/workflows/ci.yml',
-      '.env.local',
-      'packages/x/package.json',
-      '.mcp.json',
-    ]) {
-      expect(isSensitivePath(path), path).toBe(true);
-      expect(isRoutineWrite(root, join(root, path)), path).toBe(false);
-    }
-    for (const path of ['src/env.ts', '.gitignore', '.github/CODEOWNERS', 'docs/package.md']) {
-      expect(isSensitivePath(path), path).toBe(false);
-    }
-  });
-
-  it.runIf(process.platform === 'win32')('treats names Windows would alias as unsafe', () => {
-    const root = tempDir();
-    mkdirSync(join(root, '.git'));
-    expect(resolveWriteTarget(root, join(root, '.git.', 'config'))).toBeNull();
-    expect(resolveWriteTarget(root, join(root, 'a.txt:stream'))).toBeNull();
-    expect(resolveWriteTarget(root, join(root, 'a.txt '))).toBeNull();
+    expect(redactPaths()({ out: `key sk-proj-${'z'.repeat(40)}` }).out).toBe('key sk-[redacted]');
   });
 });
 
 describe('killAllChildrenSync', () => {
-  it('kills every CLI process the companion started', async () => {
+  it('kills every CLI process the runner started', async () => {
     const script = join(tempDir(), 'sleep.mjs');
     writeFileSync(script, 'setInterval(() => {}, 1000);');
     const child = spawnBinary(resolveBinary('node', script) ?? fail(), []);

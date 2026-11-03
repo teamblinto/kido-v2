@@ -1,6 +1,6 @@
 /**
  * Concise leveled logging to stderr (stdout belongs to command output, and to the MCP channel in
- * `mcp-approval`). Every line is scrubbed, so a token that slips into a message never reaches a
+ * `mcp-tools`). Every line is scrubbed, so a token that slips into a message never reaches a
  * terminal or a log file.
  */
 
@@ -55,7 +55,7 @@ const TOKEN_PATTERNS: [RegExp, string][] = [
   [/\bBearer\s+[A-Za-z0-9._~+/-]{20,}=*/g, 'Bearer [redacted]'],
 ];
 
-/** Conservative: for agent output and approval details sent to BAIOS (H2), not just logs. */
+/** Conservative: for agent output sent to BAIOS (H2), not just logs. */
 export function scrubTokens(text: string): string {
   let out = text;
   for (const [pattern, replacement] of TOKEN_PATTERNS) out = out.replace(pattern, replacement);

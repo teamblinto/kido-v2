@@ -139,14 +139,6 @@ export const EVENTS = {
       recipientUserId: z.uuid(),
     }),
   },
-  /**
-   * Spec 040 § 3 decision 3: a device was paired to a person's account. Ids only; the consumer
-   * reads the device's name and asks identity for the address.
-   */
-  'mail.local-agent-paired': {
-    aggregate: 'local-agent-device',
-    payload: z.strictObject({ deviceId: z.uuid(), recipientUserId: z.uuid() }),
-  },
   'mail.domain': {
     aggregate: 'domain',
     payload: z.strictObject({

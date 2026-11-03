@@ -21,8 +21,6 @@ export const MAIL_TEMPLATE_IDS = Object.freeze([
   'domain-released',
   'email-verification',
   'invitation',
-  // Spec 040: a computer was paired with the person's account (§ 3 decision 3).
-  'local-agent-paired',
   'password-reset',
   // Spec 031: an invitation to one project (contracts/sharing.md § 7).
   'project-invitation',

@@ -102,26 +102,24 @@ export class CompanionController {
 
   @Post('status')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Report the CLIs and workspaces the companion found' })
+  @ApiOperation({ summary: 'Report the CLI the runner found and its sign-in' })
   async status(
     @CurrentDevice() device: LocalAgentDeviceRow,
     @Body() body: CompanionStatusReportDto,
   ): Promise<void> {
     await this.devices.reportStatus(device, body);
 
-    if (device.kind === 'cloud') await this.homes.onReport(device.id);
+    await this.homes.onReport(device.id);
   }
 
   /**
    * Spec 041: an agent home's runner reports its sign-in — the Anthropic URL to show, then the
-   * result. Cloud devices only; a person's own computer signs its CLI in locally.
+   * result.
    */
   @Post('auth')
   @HttpCode(HttpStatus.NO_CONTENT)
-  @ApiOperation({ summary: 'Report a Claude sign-in’s URL or result (agent homes only)' })
+  @ApiOperation({ summary: 'Report a Claude sign-in’s URL or result' })
   async auth(@CurrentDevice() device: LocalAgentDeviceRow, @Body() raw: unknown): Promise<void> {
-    if (device.kind !== 'cloud') throw new NotFoundError('Cannot find this route.');
-
     // A discriminated union has no DTO class (a class cannot extend a union), so it is parsed here,
     // with the pipe's own issue mapping.
     const parsed = companionAuthEventSchema.safeParse(raw);

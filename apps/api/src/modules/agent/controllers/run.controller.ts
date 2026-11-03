@@ -74,7 +74,6 @@ export class RunController {
       body.prompt,
       body.model,
       body.credential,
-      body.localAgent,
       body.subscription,
     );
   }

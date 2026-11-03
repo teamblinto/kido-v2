@@ -32,11 +32,6 @@ export const routes = {
    * `invitationUrl` puts the token in the query, unlike {@link routes.projectInvitationAccept}.
    */
   invitationAccept: '/invitations/accept',
-  /**
-   * The person's paired computers (spec 040). The companion prints `APP_URL` + this + `?code=`,
-   * so the path is a published contract like the mailed ones above.
-   */
-  localAgentsSettings: '/settings/local-agents',
   /** The organisation's members, and the invite form (spec 033). */
   membersSettings: '/settings/members',
   /** Where a password-reset mail lands, carrying `?token=`. */

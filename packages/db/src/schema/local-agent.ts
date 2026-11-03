@@ -16,18 +16,22 @@ import { timestamps } from './columns';
 import { users } from './identity';
 
 /**
- * A person's paired companion (spec 040 § 3 decision 3). A root table (ADR 015), as
- * `linked_accounts` is: owned by a person, so no `org_id` and no RLS. `token_hash` is the hex
- * SHA-256 of the `bld_` device token — a 256-bit random value needs no slow hash, and a digest
- * is what makes the lookup an index probe. Revocation is a timestamp, not a delete, so a
- * revoked device still names the runs it executed.
+ * The runner a person's agent home connects as (spec 041; table from spec 040). A root table
+ * (ADR 015), as `linked_accounts` is: owned by a person, so no `org_id` and no RLS. `token_hash`
+ * is the hex SHA-256 of the `bld_` device token — a 256-bit random value needs no slow hash, and a
+ * digest is what makes the lookup an index probe. Revocation is a timestamp, not a delete, so a
+ * revoked device still names the runs it executed. `kind = 'local'` rows are history: computers
+ * paired under the retired local-agent feature (spec 040), all revoked by migration 0056.
  */
 export const localAgentDevices = pgTable(
   'local_agent_devices',
   {
     companionVersion: text('companion_version').notNull(),
     id: uuid('id').primaryKey().defaultRandom(),
-    /** Spec 041: `cloud` is the hosted runner in a person's agent home, never paired by hand. */
+    /**
+     * `cloud`: the hosted runner in a person's agent home — the only kind created now. `local` (a
+     * person's own paired computer, spec 040) is retired; its default stays for the old rows only.
+     */
     kind: text('kind', { enum: ['local', 'cloud'] })
       .notNull()
       .default('local'),
@@ -48,14 +52,14 @@ export const localAgentDevices = pgTable(
 );
 
 /**
- * Which device and CLI executed a run (spec 040 § 3 decisions 4 and 9). Tenant-owned, one row per
- * run and keyed by it — `project_context`'s id-less shape: the primary key `(org_id, run_id)` is
- * also the composite FK to `agent_runs`, so the row goes with its run. `provider_session_id` is
- * the provider's opaque resume reference, never the conversation of record. `permission_mode` is
- * the mode requested at creation (the companion clamps it to its local ceiling), kept with the run
- * so every continuation turn asks for the same one. `tool_mode` (spec 041, sandbox tool bridge):
- * `workspace` runs the CLI's own tools on a registered local folder; `sandbox` switches them off
- * and has the CLI call the project's sandbox tools through the server, so it names no workspace.
+ * Which runner and CLI executed a subscription run (spec 041; table from spec 040). Tenant-owned,
+ * one row per run and keyed by it — `project_context`'s id-less shape: the primary key
+ * `(org_id, run_id)` is also the composite FK to `agent_runs`, so the row goes with its run.
+ * `provider_session_id` is the provider's opaque resume reference, never the conversation of
+ * record. New rows are always `tool_mode = 'sandbox'` (the CLI's own tools off; it calls the
+ * project's sandbox tools through the server), `workspace_id` null and `permission_mode`
+ * `default`. `workspace` rows, workspace ids, other permission modes and provider `codex` are
+ * history from the retired local-agent feature (spec 040), kept as the record of those runs.
  */
 export const localAgentRuns = pgTable(
   'local_agent_runs',

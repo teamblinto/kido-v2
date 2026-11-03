@@ -86,11 +86,6 @@ const FIXTURES = [
     shape: 'netlify-token',
   },
   {
-    name: 'local agent pairing code in a request path',
-    secret: '/api/v1/me/local-agents/pairings/BCDF-GHJK',
-    shape: 'local-agent-pairing-code',
-  },
-  {
     name: 'neon api key',
     secret: 'napi_k3m9x2q7w4p8r1t6v5n0b3l7c2y9z4d8f1g6h5j0',
     shape: 'neon-key',
@@ -201,17 +196,6 @@ describe('scrubSecrets', () => {
     expect(scrubbed).not.toContain('rst_9ZyXwVuTsRq');
   });
 
-  it('keeps the route of a redacted pairing code, and the approve and deny routes whole', () => {
-    expect(scrubSecrets('GET /api/v1/me/local-agents/pairings/bcdf-ghjk?x=1 200')).toBe(
-      'GET /api/v1/me/local-agents/pairings/[Redacted:local-agent-pairing-code]?x=1 200',
-    );
-
-    for (const route of ['approve', 'deny']) {
-      const url = `POST /api/v1/me/local-agents/pairings/${route} 204`;
-      expect(scrubSecrets(url)).toBe(url);
-    }
-  });
-
   it('leaves a query parameter that names nothing secret alone', () => {
     const url = '/api/v1/things?page=2&sort=name&limit=50';
 
@@ -286,49 +270,6 @@ describe('scrubLogLine', () => {
     });
 
     expectHidden(scrubLogLine(line), 'sk_live_51NxQvZ2eZvKYlo2C0aBcDeFg');
-  });
-
-  /** Spec 040: the request record pino-http wrote for a pairing preview, as QA found it leaking. */
-  it('redacts a pairing code in every place the request record carries the path', () => {
-    const line = JSON.stringify({
-      level: 30,
-      msg: 'request completed',
-      req: {
-        id: 7,
-        method: 'GET',
-        originalUrl: '/api/v1/me/local-agents/pairings/GTXM-NVDB',
-        params: {
-          splat: ['api', 'v1', 'me', 'local-agents', 'pairings', 'GTXM-NVDB'],
-          userCode: 'GTXM-NVDB',
-        },
-        url: '/api/v1/me/local-agents/pairings/GTXM-NVDB',
-      },
-    });
-    const scrubbed = JSON.parse(scrubLogLine(line)) as {
-      req: { params: { splat: string[] }; url: string };
-    };
-
-    expect(JSON.stringify(scrubbed)).not.toContain('GTXM-NVDB');
-    expect(scrubbed.req.url).toBe(
-      '/api/v1/me/local-agents/pairings/[Redacted:local-agent-pairing-code]',
-    );
-    expect(scrubbed.req.params.splat).toEqual([
-      'api',
-      'v1',
-      'me',
-      'local-agents',
-      'pairings',
-      '[Redacted:local-agent-pairing-code]',
-    ]);
-  });
-
-  it('keeps the approve and deny routes whole in the splat param', () => {
-    for (const route of ['approve', 'deny']) {
-      const splat = ['api', 'v1', 'me', 'local-agents', 'pairings', route];
-      const line = JSON.stringify({ req: { params: { splat } } });
-
-      expect(JSON.parse(scrubLogLine(line))).toEqual({ req: { params: { splat } } });
-    }
   });
 
   /**

@@ -7,7 +7,6 @@ import {
   LOCAL_AGENT_PROVIDERS,
 } from '@repo/contracts';
 
-import { type CompanionConfig, isProviderEnabled } from './config.ts';
 import { type ApiClient, DeviceRevokedError } from './http.ts';
 import { log } from './log.ts';
 import type { ProviderRegistry } from './providers/registry.ts';
@@ -27,9 +26,8 @@ export type SupervisorOutcome = 'revoked' | 'stopped' | 'unauthorized';
 
 export interface SupervisorDeps {
   api: ApiClient;
-  config: CompanionConfig;
-  /** Hosted runner: `event: auth` frames go here; anywhere else they are ignored. */
-  onAuth?: (data: string) => void;
+  /** `event: auth` frames (sign-in commands) go here. */
+  onAuth: (data: string) => void;
   providers: ProviderRegistry;
   runs: RunManager;
   /** Periodic status report interval; 5 minutes by default. */
@@ -144,9 +142,8 @@ export class Supervisor {
       return;
     }
     if (event.event === COMPANION_AUTH_SSE_EVENT) {
-      // Carries a sign-in code: only the hosted handler sees it, and nothing here logs it.
-      if (this.deps.onAuth) this.deps.onAuth(event.data);
-      else log.debug('Ignoring a sign-in command (not a hosted runner).');
+      // Carries a sign-in code: only the sign-in handler sees it, and nothing here logs it.
+      this.deps.onAuth(event.data);
       return;
     }
     let data: unknown;
@@ -169,16 +166,13 @@ export class Supervisor {
         healthy.value = true;
         this.policy = command.policy;
         this.heartbeatSeconds = command.heartbeatSeconds;
-        if (this.deps.config.deviceId && command.deviceId !== this.deps.config.deviceId) {
-          log.warn('BAIOS knows this computer under a different device id than the local config.');
-        }
         void this.reportStatus();
         return;
       case 'status.refresh':
         void this.reportStatus();
         return;
       case 'device.revoked':
-        log.warn('BAIOS revoked this computer.');
+        log.warn('BAIOS revoked this runner.');
         this.stop('revoked');
         return;
       default:
@@ -199,25 +193,15 @@ export class Supervisor {
   }
 
   private async sendStatus(): Promise<void> {
-    const { api, config, providers } = this.deps;
+    const { api, providers } = this.deps;
     try {
-      // A hosted runner reports only what it offers (Claude); a computer shows what is turned off.
-      const ids = LOCAL_AGENT_PROVIDERS.filter(
-        (id) => !this.deps.onAuth || isProviderEnabled(config, id),
-      );
-      const statuses = await Promise.all(ids.map((id) => providers.probe(id)));
+      const statuses = await Promise.all(LOCAL_AGENT_PROVIDERS.map((id) => providers.probe(id)));
       const report = companionStatusReportSchema.parse({
         companionVersion: COMPANION_VERSION,
-        providers: statuses.map((status) =>
-          isProviderEnabled(config, status.provider)
-            ? { ...status, policy: policyVerdict(this.policy, status.provider, status.auth.method) }
-            : {
-                ...status,
-                message: `Turned off on this computer (baios-companion config set ${status.provider}.enabled true).`,
-                policy: { allowed: false, reason: 'Turned off on this computer.' },
-              },
-        ),
-        workspaces: config.workspaces.map(({ id, label }) => ({ id, label })),
+        providers: statuses.map((status) => ({
+          ...status,
+          policy: policyVerdict(this.policy, status.provider, status.auth.method),
+        })),
       });
       await api.post('/local-agent/status', report);
       log.debug('Status reported.');

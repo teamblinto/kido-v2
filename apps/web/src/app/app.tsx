@@ -21,7 +21,6 @@ import { ProjectNewImportPage } from '@/pages/project-new-import';
 import { GithubCallbackPage } from '@/pages/github-callback-page';
 import { SupabaseCallbackPage } from '@/pages/supabase-callback-page';
 import { InvitationAcceptPage } from '@/pages/invitation-accept-page';
-import { LocalAgentsSettingsPage } from '@/pages/local-agents-settings-page';
 import { MembersSettingsPage } from '@/pages/members-settings-page';
 import { NotFoundPage } from '@/pages/not-found-page';
 import { PreviewAuthorizePage } from '@/pages/preview-authorize-page';
@@ -86,15 +85,6 @@ export function App(): React.JSX.Element {
         element={
           <RequireAuth>
             <AccountSettingsPage />
-          </RequireAuth>
-        }
-      />
-      {/* Spec 040: `?code=` rides through sign-in on `state.from`, so the companion's link survives. */}
-      <Route
-        path={routes.localAgentsSettings}
-        element={
-          <RequireAuth>
-            <LocalAgentsSettingsPage />
           </RequireAuth>
         }
       />

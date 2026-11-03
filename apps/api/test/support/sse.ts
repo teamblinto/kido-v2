@@ -24,7 +24,7 @@ export interface OpenStream {
 export function openStream(
   port: number,
   path: string,
-  // `headers` for a caller that is not a browser — the 040 companion sends a bearer token, no cookie.
+  // `headers` for a caller that is not a browser — the agent home's runner sends a bearer token.
   options: { cookie?: string; headers?: Record<string, string>; lastEventId?: number | string },
 ): Promise<OpenStream> {
   return new Promise((resolve, reject) => {

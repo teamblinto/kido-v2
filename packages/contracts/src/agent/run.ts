@@ -1,12 +1,7 @@
 import { z } from 'zod';
 
 import { cursorPageQuerySchema, cursorSchema } from '../common/cursor';
-import {
-  companionFailureClassSchema,
-  localAgentModelSchema,
-  localAgentProviderSchema,
-  localAgentRunTargetSchema,
-} from '../local-agent/provider';
+import { companionFailureClassSchema, localAgentModelSchema } from '../local-agent/provider';
 import { subscriptionRunTargetSchema } from '../local-agent/subscription';
 
 /**
@@ -55,30 +50,22 @@ export const createRunRequestSchema = z
   .strictObject({
     /** Use the organisation's credential while the caller's subscription is limited (spec 032 A3). */
     credential: z.literal('organisation').optional(),
-    /** 040: run on the caller's own paired device; `model` is then that CLI's model id or alias. */
-    localAgent: localAgentRunTargetSchema.optional(),
     model: z.string().trim().min(1).optional(),
     prompt: runText,
     /** 041: run on the caller's own Claude subscription, in their cloud agent home. */
     subscription: subscriptionRunTargetSchema.optional(),
   })
+  .refine((body) => body.credential === undefined || body.subscription === undefined, {
+    error: 'A subscription run uses its own sign-in; send credential or subscription, not both.',
+    path: ['credential'],
+  })
+  // The model reaches the CLI's argv, so a subscription run's is a plain token (040 § 3).
   .refine(
     (body) =>
-      [body.credential, body.localAgent, body.subscription].filter((t) => t !== undefined).length <=
-      1,
-    {
-      error:
-        'A local agent or a subscription runs on its own sign-in; send at most one of credential, localAgent and subscription.',
-      path: ['credential'],
-    },
-  )
-  // The model reaches the CLI's argv, so a local or subscription run's is a plain token (040 § 3).
-  .refine(
-    (body) =>
-      (body.localAgent === undefined && body.subscription === undefined) ||
+      body.subscription === undefined ||
       body.model === undefined ||
       localAgentModelSchema.safeParse(body.model).success,
-    { error: 'A local agent model is a plain model id or alias.', path: ['model'] },
+    { error: 'A subscription model is a plain model id or alias.', path: ['model'] },
   );
 
 export type CreateRunRequest = z.output<typeof createRunRequestSchema>;
@@ -88,7 +75,10 @@ export const runInputRequestSchema = z.strictObject({ message: runText });
 
 export type RunInputRequest = z.output<typeof runInputRequestSchema>;
 
-/** 040: what a local agent asks permission for, and the two answers. */
+/**
+ * 040 (retired): what a person's own device asked permission for, and the two answers. Nothing
+ * emits approvals now; the vocabulary stays so approval events already stored still parse.
+ */
 export const RUN_APPROVAL_KINDS = ['command', 'file_change', 'tool'] as const;
 
 export const runApprovalKindSchema = z.enum(RUN_APPROVAL_KINDS);
@@ -100,15 +90,6 @@ export const RUN_APPROVAL_DECISIONS = ['allow', 'deny'] as const;
 export const runApprovalDecisionSchema = z.enum(RUN_APPROVAL_DECISIONS);
 
 export type RunApprovalDecision = z.output<typeof runApprovalDecisionSchema>;
-
-/** `POST …/runs/:runId/approvals/:requestId`, behind `project:agent.run` (040 § 5). */
-export const runApprovalDecisionRequestSchema = z.strictObject({
-  decision: runApprovalDecisionSchema,
-  /** Passed to the agent with a denial, so it can change course rather than retry. */
-  message: z.string().trim().min(1).max(2_000).optional(),
-});
-
-export type RunApprovalDecisionRequest = z.output<typeof runApprovalDecisionRequestSchema>;
 
 /**
  * The event envelope (data-model.md § envelope): `seq` is contiguous per run, `run` is the run
@@ -136,18 +117,18 @@ export const runEventSchema = z.discriminatedUnion('type', [
       from: runStatusSchema.nullable(),
       reason: z.union([runStateReasonSchema, z.string()]).optional(),
       /**
-       * 040: set when a run on the person's own device failed, so the web picks its remedy from
-       * the class rather than the reason's words (which still name the fixing command).
+       * Set when a subscription run's CLI failed, so the web picks its remedy from the class
+       * rather than the reason's words.
        */
       localAgentFailure: z
         .strictObject({
           class: companionFailureClassSchema,
           /**
-           * 041: where the CLI ran — the person's own `device` (remedy: the companion command) or
-           * their cloud `subscription` home (remedy: Settings). Absent on events written before.
+           * Always `subscription` now. `device`, an absent origin, and provider `codex` appear only
+           * on events written by the retired local-agent feature (spec 040), kept so they parse.
            */
           origin: z.enum(['device', 'subscription']).optional(),
-          provider: localAgentProviderSchema,
+          provider: z.enum(['claude', 'codex']),
         })
         .optional(),
       /** Set with a `subscription-limited` failure (spec 032, FR-022). */
@@ -209,8 +190,8 @@ export const runEventSchema = z.discriminatedUnion('type', [
     }),
     type: z.literal('sandbox.preparing'),
   }),
-  // 040: a local agent waits on a person's decision; `resolved` closes it — the person answered,
-  // the wait timed out (deny), or the run ended first. Durable, so a reload still shows the prompt.
+  // 040 (retired): a person's own device waited on their decision. Never emitted now; kept so the
+  // approval events already stored still parse and a transcript can show them as history.
   z.strictObject({
     ...envelope,
     data: z.strictObject({

@@ -209,14 +209,16 @@ describe('Cloud subscription agent (e2e)', () => {
                 checkedAt: new Date().toISOString(),
                 installed: true,
                 // What a signed-out runner says; the person must never see it.
-                message: auth === 'authenticated' ? null : 'Run `baios-companion login claude`.',
+                message:
+                  auth === 'authenticated'
+                    ? null
+                    : 'Claude Code is not signed in. Sign in again from BAIOS.',
                 models: [],
                 policy: { allowed: true, reason: null },
                 provider: 'claude',
                 version: '2.1.0',
               },
             ],
-            workspaces: [],
           })
           .expect(204);
       }
@@ -429,13 +431,17 @@ describe('Cloud subscription agent (e2e)', () => {
             CompanionCommand,
             { type: 'run.start' }
           >;
-          expect(runStart).toMatchObject({
-            model: null,
-            provider: 'claude',
-            runId: run.id,
-            toolMode: 'sandbox',
-            workspaceId: null,
-          });
+          expect(runStart).toMatchObject({ model: null, provider: 'claude', runId: run.id });
+          expect(runStart.conversationKey).toMatch(/^[0-9a-f]{32}$/);
+          expect(runStart.toolset.map((tool) => tool.name)).toEqual([
+            'fs_read',
+            'fs_list',
+            'fs_edit',
+            'exec',
+            'search',
+            'find',
+            'preview_status',
+          ]);
 
           const post = (events: CompanionRunEvent[]) =>
             http(app)
@@ -445,9 +451,15 @@ describe('Cloud subscription agent (e2e)', () => {
               .expect(204);
           const content = '# Demo\n\nEdited from the agent home.\n';
           await post([
+            // The CLI's own view of the bridged call: dropped, the server's step is the record.
+            {
+              data: { input: { path: 'README.md' }, name: 'mcp__baios__fs_edit', toolId: 'cli-1' },
+              seq: 1,
+              type: 'tool.start',
+            },
             {
               data: { callId: 'call-1', input: { content, path: 'README.md' }, name: 'fs_edit' },
-              seq: 1,
+              seq: 2,
               type: 'tool.call',
             },
           ]);
@@ -456,9 +468,12 @@ describe('Cloud subscription agent (e2e)', () => {
             { type: 'tool.result' }
           >;
           expect(result).toMatchObject({ callId: 'call-1', ok: true, runId: run.id });
+          const readme = fake.workspace.get(`${fake.workDir}/README.md`);
+          expect(readme?.kind === 'file' ? readme.content.toString() : undefined).toBe(content);
           await post([
-            { data: { text: 'Edited.' }, seq: 2, type: 'text.delta' },
-            { data: { status: 'completed' }, seq: 3, type: 'terminal' },
+            { data: { ok: true, summary: 'edited', toolId: 'cli-1' }, seq: 3, type: 'tool.end' },
+            { data: { text: 'Edited.' }, seq: 4, type: 'text.delta' },
+            { data: { status: 'completed' }, seq: 5, type: 'terminal' },
           ]);
 
           await until('awaiting_input', async () => {
@@ -478,6 +493,9 @@ describe('Cloud subscription agent (e2e)', () => {
           expect(events.map((event) => event.type)).toEqual(
             expect.arrayContaining(['tool.start', 'tool.end', 'file.patch', 'checkpoint']),
           );
+          const tools = events.filter((event) => event.type === 'tool.start');
+          expect(tools).toHaveLength(1);
+          expect(tools[0]).toMatchObject({ data: { tool: 'fs_edit' } });
           const checkpoints = checkpointListResponseSchema.parse(
             (
               await http(app)
@@ -490,9 +508,8 @@ describe('Cloud subscription agent (e2e)', () => {
           );
           expect(checkpoints.items[0]).toMatchObject({ gitSha: git.head(), label: 'Turn 1' });
 
-          // The home's device is not one of the person's paired computers.
-          const devices = await http(app).get('/api/v1/me/local-agents').set('Cookie', cookie());
-          expect((devices.body as { devices: unknown[] }).devices).toEqual([]);
+          // The retired "your computers" list (spec 040) is no longer served.
+          await http(app).get('/api/v1/me/local-agents').set('Cookie', cookie()).expect(404);
 
           // Disconnect: logout in the home first, then the sandbox, the device and the row go.
           const disconnecting = unsafe(http(app).delete(`${SUBSCRIPTIONS}/claude`), [cookie()]);

@@ -11,7 +11,7 @@ import { delimiter, extname, join, resolve } from 'node:path';
 import { scrub } from './log.ts';
 
 /**
- * Spawning the person's CLIs (spec 040 § 7): no shell, hidden console windows, a process group on
+ * Spawning the CLI (spec 040 § 7): no shell, hidden console windows, a process group on
  * POSIX so the whole tree can be killed, and the environment passed through (the CLI's own sign-in
  * is its business) minus the companion's own `BAIOS_*` settings, which no CLI needs.
  */
@@ -109,8 +109,6 @@ export function quoteForCmd(arg: string): string {
 export interface SpawnBinaryOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
-  /** POSIX: own process group so `killTree` reaches grandchildren. Off for interactive logins. */
-  group?: boolean;
   stdio?: StdioOptions;
 }
 
@@ -126,7 +124,8 @@ export function spawnBinary(
 ): ChildProcess {
   const base: SpawnOptions = {
     cwd: options.cwd,
-    detached: process.platform !== 'win32' && options.group !== false,
+    // POSIX: own process group so `killTree` reaches grandchildren.
+    detached: process.platform !== 'win32',
     env: withoutBaiosVars(options.env ?? process.env),
     shell: false,
     stdio: options.stdio ?? ['pipe', 'pipe', 'pipe'],

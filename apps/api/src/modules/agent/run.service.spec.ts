@@ -69,7 +69,6 @@ describe('RunService', () => {
   let store: Record<
     | 'allocateSeq'
     | 'appendEvents'
-    | 'closeApprovals'
     | 'insertMessage'
     | 'insertRun'
     | 'line'
@@ -98,7 +97,6 @@ describe('RunService', () => {
     store = {
       allocateSeq: vi.fn(() => Promise.resolve(1)),
       appendEvents: vi.fn(() => Promise.resolve()),
-      closeApprovals: vi.fn(() => Promise.resolve()),
       insertMessage: vi.fn(() => Promise.resolve({ id: 'm1' })),
       insertRun: vi.fn(() => Promise.resolve(row())),
       listRuns: vi.fn(() =>
@@ -513,13 +511,12 @@ describe('RunService', () => {
 
     /** No worker holds these states, so none would hear the channel: the request ends the run. */
     it.each(['awaiting_input', 'paused', 'queued'] as const)(
-      'ends a %s run no worker holds in the request, closing its approvals, with no channel message',
+      'ends a %s run no worker holds in the request, with no channel message',
       async (status) => {
         store.requestCancel.mockResolvedValueOnce({ first: true, status });
 
         await service.cancel(ORG, PROJECT, RUN, USER);
 
-        expect(store.closeApprovals).toHaveBeenCalledWith(tx, { orgId: ORG, runId: RUN });
         // A terminal `transition` appends the `state` event and `agent-run.finished` (the release).
         expect(store.transition).toHaveBeenCalledWith(tx, {
           from: status,
@@ -557,11 +554,11 @@ describe('RunService', () => {
       expect(audit.record).not.toHaveBeenCalled();
     });
 
-    it('clears a local run’s device-side state after commit, and only after', async () => {
+    it('clears a subscription run’s runner-side state after commit, and only after', async () => {
       const release = vi.fn(() => Promise.resolve());
 
       vi.spyOn(registry, 'isLocal').mockResolvedValue(true);
-      registry.register({ admit: vi.fn(), admitSubscription: vi.fn(), execute: vi.fn(), release });
+      registry.register({ admitSubscription: vi.fn(), execute: vi.fn(), release });
       store.requestCancel.mockResolvedValueOnce({ first: true, status: 'awaiting_input' });
 
       await service.cancel(ORG, PROJECT, RUN, USER);
@@ -575,11 +572,10 @@ describe('RunService', () => {
       expect(release).toHaveBeenCalledWith(RUN);
     });
 
-    it('leaves a held run to its worker: no transition, no approvals closed', async () => {
+    it('leaves a held run to its worker: no transition', async () => {
       await service.cancel(ORG, PROJECT, RUN, USER);
 
       expect(store.transition).not.toHaveBeenCalled();
-      expect(store.closeApprovals).not.toHaveBeenCalled();
     });
   });
 
@@ -661,8 +657,8 @@ describe('RunService', () => {
       await expect(service.input(ORG, PROJECT, RUN, USER, 'go on')).rejects.toThrow(NotFoundError);
     });
 
-    /** Spec 040: the answer runs on the starter's own computer, so only the starter may give it. */
-    describe('on a run on the starter’s own computer', () => {
+    /** Spec 041: the answer runs on the starter's own subscription, so only the starter may give it. */
+    describe('on a run on the starter’s own subscription', () => {
       const OTHER = 'c1000000-0000-4000-8000-000000000009';
 
       function local(registered: boolean): RunService {
@@ -670,7 +666,6 @@ describe('RunService', () => {
         vi.spyOn(registry, 'isLocal').mockResolvedValue(true);
         if (registered)
           registry.register({
-            admit: vi.fn(),
             admitSubscription: vi.fn(),
             execute: vi.fn(),
             release: vi.fn(),
@@ -710,7 +705,7 @@ describe('RunService', () => {
         expect(store.transition).not.toHaveBeenCalled();
       });
 
-      it('refuses any answer where local agents are off (409), writing nothing', async () => {
+      it('refuses any answer where subscription runs are off (409), writing nothing', async () => {
         store.readRun.mockResolvedValue(row({ status: 'awaiting_input' }));
 
         await expect(local(false).input(ORG, PROJECT, RUN, USER, 'go on')).rejects.toThrow(

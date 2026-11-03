@@ -1,14 +1,11 @@
 import {
-  LOCAL_AGENT_APPROVAL_TIMEOUT_SECONDS,
   LOCAL_AGENT_HEARTBEAT_SECONDS,
-  LOCAL_AGENT_PAIRING_POLL_INTERVAL_SECONDS,
-  LOCAL_AGENT_PAIRING_TTL_SECONDS,
   LOCAL_AGENT_PRESENCE_TTL_SECONDS,
   LOCAL_AGENT_RUN_IDLE_TIMEOUT_SECONDS,
 } from '@repo/contracts';
 
 /**
- * The bridge's timings (spec 040 § 5, § 6). A provider, as `AGENT_TIMINGS` is, so a suite can
+ * The runner bridge's timings (spec 040 § 5, § 6). A provider, as `AGENT_TIMINGS` is, so a suite can
  * shorten every interval at once without a per-field env variable.
  */
 export const LOCAL_AGENT_TIMINGS = Symbol('forge.local-agent.timings');
@@ -19,10 +16,6 @@ export interface LocalAgentTimings {
   readonly presenceTtlSeconds: number;
   /** No companion event and no presence for this long fails a run `transport`. */
   readonly runIdleMs: number;
-  /** A pending approval past this is denied `by: 'timeout'`. */
-  readonly approvalTimeoutMs: number;
-  readonly pairingTtlSeconds: number;
-  readonly pairingIntervalSeconds: number;
   /** How long a run waits for its device to come online before failing offline. */
   readonly offlineGraceMs: number;
   /** After `run.interrupt`, how long the executor waits for the companion's terminal. */
@@ -40,14 +33,11 @@ export interface LocalAgentTimings {
 }
 
 export const DEFAULT_LOCAL_AGENT_TIMINGS: LocalAgentTimings = Object.freeze({
-  approvalTimeoutMs: LOCAL_AGENT_APPROVAL_TIMEOUT_SECONDS * 1_000,
   cancelPollMs: 1_000,
   heartbeatMs: LOCAL_AGENT_HEARTBEAT_SECONDS * 1_000,
   interruptWaitMs: 10_000,
   maxRunMs: 21_600_000,
   offlineGraceMs: 10_000,
-  pairingIntervalSeconds: LOCAL_AGENT_PAIRING_POLL_INTERVAL_SECONDS,
-  pairingTtlSeconds: LOCAL_AGENT_PAIRING_TTL_SECONDS,
   presenceTtlSeconds: LOCAL_AGENT_PRESENCE_TTL_SECONDS,
   readBlockMs: 1_000,
   runEventBudgetBytes: 32 * 1_024 * 1_024,
@@ -57,10 +47,6 @@ export const DEFAULT_LOCAL_AGENT_TIMINGS: LocalAgentTimings = Object.freeze({
 
 /** Every key the bridge writes, in one place. Ids are server-minted uuids, never caller text. */
 export const keys = {
-  /** Session Redis: one pending pairing, under the digest of its device code. */
-  pairing: (deviceCodeHash: string) => `local-agent:pairing:${deviceCodeHash}`,
-  /** Session Redis: the user code's pointer to the pairing above. */
-  pairingCode: (userCode: string) => `local-agent:pairing-code:${userCode}`,
   /** Stream Redis: the id of the device's live connection, TTL'd. Its existence is "online". */
   presence: (deviceId: string) => `local-agent:presence:${deviceId}`,
   /** Stream Redis: the device's last status report, policy recomputed. */
@@ -79,10 +65,8 @@ export const keys = {
    * `run.start` and dropped when the turn ends; the uplink accepts only this turn's events.
    */
   runTurn: (runId: string) => `local-agent:run:${runId}:turn`,
-  /** Stream Redis: approval decisions (and aborts: revoked, over budget) on their way to the executor. */
+  /** Stream Redis: aborts (revoked, over budget) on their way to the executor. */
   runControl: (runId: string) => `local-agent:run:${runId}:control`,
-  /** Stream Redis: requestId → deadline (ms) of every approval still waiting. */
-  runApprovals: (runId: string) => `local-agent:run:${runId}:approvals`,
   /** Stream Redis: how far the executor has read both run streams. */
   runCursor: (runId: string) => `local-agent:run:${runId}:cursor`,
   /**

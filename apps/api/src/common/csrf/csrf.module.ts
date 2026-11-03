@@ -33,16 +33,14 @@ export const SIGNATURE_VERIFIED_WEBHOOK_PATHS: readonly string[] = Object.freeze
 const UUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
 
 /**
- * Spec 040 § 5: the companion's unsafe routes. Its caller is a process on the person's machine
- * holding a `bld_` device token in `Authorization` (or, for the two pairing routes, nothing yet) —
- * never a cookie, so there is no ambient credential for a forged cross-site request to ride.
- * `DeviceTokenGuard` checks the token on every call. A separate list from the webhook one because
- * the events route names its run: each entry is anchored and its one variable segment is a uuid,
- * so nothing mounted beside or beneath these is exempt.
+ * Spec 040 § 5: the runner's unsafe routes. Its caller is the hosted runner in a person's agent
+ * home (spec 041), holding a `bld_` device token in `Authorization` — never a cookie, so there is
+ * no ambient credential for a forged cross-site request to ride. `DeviceTokenGuard` checks the
+ * token on every call. A separate list from the webhook one because the events route names its
+ * run: each entry is anchored and its one variable segment is a uuid, so nothing mounted beside or
+ * beneath these is exempt.
  */
 export const DEVICE_TOKEN_PATHS: readonly RegExp[] = Object.freeze([
-  /^\/api\/v1\/local-agent\/pairings$/,
-  /^\/api\/v1\/local-agent\/pairings\/token$/,
   /^\/api\/v1\/local-agent\/status$/,
   // Spec 041: an agent home's runner reporting its sign-in URL and result.
   /^\/api\/v1\/local-agent\/auth$/,

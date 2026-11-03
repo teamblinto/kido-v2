@@ -33,7 +33,7 @@ describe('mail template catalogue', () => {
     expect(new Set(MAIL_TEMPLATE_IDS).size).toBe(MAIL_TEMPLATE_IDS.length);
   });
 
-  it('covers the templates of spec 001, the domain notices of 028, the webhook notice of 029, the BYOS notice of 032 and the pairing notice of 040', () => {
+  it('covers the templates of spec 001, the domain notices of 028, the webhook notice of 029 and the BYOS notice of 032', () => {
     expect([...MAIL_TEMPLATE_IDS].sort()).toEqual([
       // T13's enumeration-safe signup: the only channel that tells an existing address it is
       // already registered, because the endpoint will not (ADR 007).
@@ -46,8 +46,6 @@ describe('mail template catalogue', () => {
       'domain-released',
       'email-verification',
       'invitation',
-      // Spec 040: a computer was paired with the person's account.
-      'local-agent-paired',
       'password-reset',
       'project-invitation',
       'webhook-paused',

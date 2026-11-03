@@ -4,20 +4,14 @@ import { createInterface } from 'node:readline';
 
 import { isRecord, str } from '../../util.ts';
 import type { ToolCallResult } from '../types.ts';
-import {
-  APPROVAL_ENDPOINT_ENV,
-  APPROVAL_TOKEN_ENV,
-  type ApprovalResult,
-} from './approval-bridge.ts';
+import { TOOL_ENDPOINT_ENV, TOOL_TOKEN_ENV } from './tool-bridge.ts';
 
 /**
- * `baios-companion mcp-approval`: a dependency-free stdio MCP server (name `baios`) that Claude
- * Code starts from the per-run `--mcp-config`. It serves `approve` for
- * `--permission-prompt-tool mcp__baios__approve` or, in sandbox tool mode (no prompt tool), only
- * the run's BAIOS tools (`mcp__baios__<name>`, read from the file named by `BAIOS_TOOLSET_FILE`). Every call is relayed
- * to the parent companion over the per-run IPC endpoint and held until it answers.
- * Newline-delimited JSON-RPC 2.0; unknown methods (including the `server/discover` probe) get
- * -32601 so the client falls back to `initialize`.
+ * `mcp-tools`: a dependency-free stdio MCP server (name `baios`) that Claude Code starts from the
+ * per-run `--mcp-config`. It serves only the run's BAIOS tools (`mcp__baios__<name>`, read from
+ * the file named by `BAIOS_TOOLSET_FILE`). Every call is relayed to the parent runner over the
+ * per-run IPC endpoint and held until it answers. Newline-delimited JSON-RPC 2.0; unknown methods
+ * (including the `server/discover` probe) get -32601 so the client falls back to `initialize`.
  */
 
 export const TOOLSET_FILE_ENV = 'BAIOS_TOOLSET_FILE';
@@ -29,25 +23,6 @@ interface McpTool {
   inputSchema: Record<string, unknown>;
   name: string;
 }
-
-const APPROVE: McpTool = {
-  description: 'Asks the person in BAIOS whether a tool call may run.',
-  inputSchema: {
-    properties: {
-      input: { type: 'object' },
-      tool_name: { type: 'string' },
-      tool_use_id: { type: 'string' },
-    },
-    required: ['tool_name', 'input'],
-    type: 'object',
-  },
-  name: 'approve',
-};
-
-const unavailable = (reason: string): ApprovalResult => ({
-  behavior: 'deny',
-  message: `BAIOS approval channel unavailable (${reason}); the tool call was not allowed.`,
-});
 
 const toolUnavailable = (reason: string): ToolCallResult => ({
   isError: true,
@@ -63,7 +38,7 @@ function readToolset(): McpTool[] {
     if (!Array.isArray(list)) return [];
     return list.flatMap((tool: unknown) => {
       const name = isRecord(tool) ? str(tool.name) : undefined;
-      if (!isRecord(tool) || !name || name === APPROVE.name) return [];
+      if (!isRecord(tool) || !name) return [];
       const inputSchema = isRecord(tool.inputSchema) ? tool.inputSchema : { type: 'object' };
       return [{ description: str(tool.description) ?? '', inputSchema, name }];
     });
@@ -77,36 +52,30 @@ class ParentLink {
   private nextId = 1;
   private readonly pending = new Map<number, (result: unknown) => void>();
 
-  ask(toolName: string, input: Record<string, unknown>, toolUseId: string | null) {
-    return this.send({ input, toolName, toolUseId, type: 'request' }, unavailable);
-  }
-
-  callTool(name: string, input: Record<string, unknown>) {
-    return this.send({ input, name, type: 'tool' }, toolUnavailable);
+  callTool(name: string, input: Record<string, unknown>): Promise<ToolCallResult> {
+    return new Promise((resolve) => {
+      this.open()
+        .then((socket) => {
+          const id = this.nextId++;
+          // `undefined` (the link dropped) falls back to an "unavailable" answer.
+          this.pending.set(id, (result) =>
+            resolve((result as ToolCallResult | undefined) ?? toolUnavailable('disconnected')),
+          );
+          socket.write(`${JSON.stringify({ id, input, name, type: 'tool' })}\n`);
+        })
+        .catch((error: unknown) =>
+          resolve(toolUnavailable(error instanceof Error ? error.message : 'connect failed')),
+        );
+    });
   }
 
   close(): void {
     void this.socket?.then((socket) => socket.destroy()).catch(() => undefined);
   }
 
-  private send<T>(payload: Record<string, unknown>, fallback: (reason: string) => T): Promise<T> {
-    return new Promise<T>((resolve) => {
-      this.open()
-        .then((socket) => {
-          const id = this.nextId++;
-          // `undefined` (the link dropped) falls back to this call's own "unavailable" answer.
-          this.pending.set(id, (result) => resolve((result ?? fallback('disconnected')) as T));
-          socket.write(`${JSON.stringify({ id, ...payload })}\n`);
-        })
-        .catch((error: unknown) =>
-          resolve(fallback(error instanceof Error ? error.message : 'connect failed')),
-        );
-    });
-  }
-
   private open(): Promise<Socket> {
-    const endpoint = process.env[APPROVAL_ENDPOINT_ENV];
-    const token = process.env[APPROVAL_TOKEN_ENV];
+    const endpoint = process.env[TOOL_ENDPOINT_ENV];
+    const token = process.env[TOOL_TOKEN_ENV];
     if (!endpoint || !token) return Promise.reject(new Error('not configured'));
     this.socket ??= new Promise<Socket>((resolve, reject) => {
       const socket = connect(endpoint, () => {
@@ -135,9 +104,8 @@ class ParentLink {
   }
 }
 
-export function runMcpApprovalServer(): Promise<void> {
+export function runMcpToolServer(): Promise<void> {
   const link = new ParentLink();
-  const sandbox = Boolean(process.env[TOOLSET_FILE_ENV]);
   const toolset = readToolset();
   const names = new Set(toolset.map((tool) => tool.name));
   const send = (message: Record<string, unknown>) =>
@@ -166,22 +134,10 @@ export function runMcpApprovalServer(): Promise<void> {
       case 'ping':
         return reply(id, {});
       case 'tools/list':
-        return reply(id, { tools: sandbox ? toolset : [APPROVE] });
+        return reply(id, { tools: toolset });
       case 'tools/call': {
         const args = isRecord(params.arguments) ? params.arguments : {};
         const name = str(params.name);
-        if (name === APPROVE.name && !sandbox) {
-          void link
-            .ask(
-              str(args.tool_name) ?? 'unknown',
-              isRecord(args.input) ? args.input : {},
-              str(args.tool_use_id) ?? null,
-            )
-            .then((result) =>
-              reply(id, { content: [{ text: JSON.stringify(result), type: 'text' }] }),
-            );
-          return;
-        }
         if (name && names.has(name)) {
           void link.callTool(name, args).then((result) =>
             reply(id, {

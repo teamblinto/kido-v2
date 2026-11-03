@@ -1,7 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
-  LocalAgentRunTarget,
   SubscriptionRunTarget,
   RunEvent,
   RunEventsResponse,
@@ -17,7 +16,6 @@ import {
   ForbiddenError,
   NotFoundError,
 } from '../../common/errors/domain-error';
-import { ValidationFailedError } from '../../common/validation/validation-failed.error';
 import type { Environment } from '../../config/environment';
 import type { TenantTransaction } from '../../database/database.types';
 import { TenantContext } from '../../database/tenant-context';
@@ -57,7 +55,7 @@ export class RunService {
     @Inject(CredentialResolver) private readonly resolver: CredentialResolver,
     // 031 R3: the line is counted under the project writer lock the claim takes.
     @Inject(CheckpointService) private readonly checkpoints: CheckpointService,
-    // 040: admits a `localAgent` target (empty when local agents are off). Required: whether a run
+    // 041: admits a `subscription` target (empty when they are off). Required: whether a run
     // is local decides who may answer it, so it must never be skipped for want of the registry.
     @Inject(RunExecutorRegistry) private readonly executors: RunExecutorRegistry,
   ) {
@@ -77,17 +75,13 @@ export class RunService {
     prompt: string,
     requestedModel?: string,
     credential?: 'organisation',
-    localAgent?: LocalAgentRunTarget,
     subscription?: SubscriptionRunTarget,
   ): Promise<RunResponse> {
     const tx = this.tenant.tx;
-    // 040: a local run is paid for by the person's own CLI sign-in, so there is no credential to
-    // resolve; `model` is that CLI's id or alias, and the provider's name stands for its default.
-    // 041: a subscription run is a local run on the person's cloud agent home.
-    const local =
-      localAgent === undefined && subscription === undefined
-        ? undefined
-        : this.executors.localAgent();
+    // 041: a subscription run is paid for by the person's own Claude sign-in in their cloud agent
+    // home, so there is no credential to resolve; `model` is that CLI's id or alias, and the
+    // provider's name stands for its default.
+    const local = subscription === undefined ? undefined : this.executors.localAgent();
 
     if (subscription !== undefined && local === undefined) {
       throw new DomainError(
@@ -96,17 +90,7 @@ export class RunService {
       );
     }
 
-    if (localAgent !== undefined && local === undefined) {
-      throw new ValidationFailedError('custom', [
-        {
-          code: 'local_agent_disabled',
-          detail: 'Local agents are not enabled on this deployment.',
-          pointer: '/localAgent',
-        },
-      ]);
-    }
-
-    const model = requestedModel ?? localAgent?.provider ?? subscription?.provider ?? this.model;
+    const model = requestedModel ?? subscription?.provider ?? this.model;
     const resolution =
       local === undefined
         ? await this.resolver.kindOnly(
@@ -163,12 +147,8 @@ export class RunService {
 
     await this.store.insertMessage(tx, { content: prompt, orgId, role: 'user', runId: run.id });
 
-    // Refuses (offline, provider unavailable, unknown workspace) or records the target, in this
-    // transaction: a refused run never committed.
-    if (local !== undefined && localAgent !== undefined) {
-      await local.admit(tx, { orgId, projectId, runId: run.id, userId }, localAgent);
-    }
-
+    // Refuses (no agent home, not signed in) or records the target, in this transaction: a refused
+    // run never committed.
     if (local !== undefined && subscription !== undefined) {
       await local.admitSubscription(tx, { orgId, projectId, runId: run.id, userId }, subscription);
     }
@@ -246,7 +226,6 @@ export class RunService {
         ? this.executors.localAgent()
         : undefined;
 
-      await this.store.closeApprovals(tx, fence);
       await this.store.transition(tx, {
         ...fence,
         from: live.status,
@@ -283,9 +262,9 @@ export class RunService {
    * row, and the executor picks the script up past the input it now has. Any other state is
    * conflict, naming it.
    *
-   * 040: a run on a person's own computer takes input from that person only — the prompt runs on
-   * their machine with their sign-in — and none at all where local agents are off. (Cancel stays
-   * open to every member with `project:agent.run`: stopping a run is always safe.)
+   * 041: a subscription run takes input from its starter only — the prompt runs on their own
+   * Claude sign-in — and none at all where subscription runs are off. (Cancel stays open to every
+   * member with `project:agent.run`: stopping a run is always safe.)
    */
   async input(
     orgId: string,
@@ -298,14 +277,14 @@ export class RunService {
 
     if (await executors.isLocal(this.tenant.tx, orgId, runId)) {
       if (executors.localAgent() === undefined) {
-        throw new ConflictError('Local agents are not enabled on this deployment.', {
+        throw new ConflictError('Subscription runs are not enabled on this deployment.', {
           reason: 'local-agent-disabled',
         });
       }
 
       if ((await this.row(orgId, projectId, runId)).userId !== actorId) {
         throw new ForbiddenError(
-          'Only the person who started this run can answer it: it runs on their own computer.',
+          'Only the person who started this run can answer it: it runs on their own subscription.',
         );
       }
     }

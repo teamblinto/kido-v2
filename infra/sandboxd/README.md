@@ -119,7 +119,7 @@ are not production-hardened, and the real deployment path is `infra/ansible`:
   provider's module (`xcaddy build --with github.com/caddy-dns/<provider>`); not done here.
 - Derived from `APP_HOST` by the overlay, nothing to set: `SANDBOXD_API_HOST` (the one BAIOS
   host agent homes may reach through the egress proxy), `AGENT_HOME_SERVER_URL=https://<APP_HOST>`
-  (where a home's companion calls the api: proxy -> host's public address -> Caddy -> api) and
+  (where a home's runner calls the api: proxy -> host's public address -> Caddy -> api) and
   `SANDBOX_CALLBACK_URL=https://<APP_HOST>/api/v1/internal/sandbox-callbacks` (project sandboxes
   reach it on the host's public address).
 - `KEK_ENV_MASTER_KEY`, generated once: `openssl rand -base64 32`. Every tenant data key is

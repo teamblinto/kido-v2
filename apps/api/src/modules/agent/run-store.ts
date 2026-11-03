@@ -1,11 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type {
-  CompanionFailureClass,
-  DurableRunEventType,
-  LocalAgentProvider,
-  RunFailureClass,
-  RunStatus,
-} from '@repo/contracts';
+import type { DurableRunEventType, RunEvent, RunFailureClass, RunStatus } from '@repo/contracts';
 import {
   type AgentRun,
   agentRuns,
@@ -361,12 +355,8 @@ export class RunStore {
     change: RunFence & {
       failureClass?: RunFailureClass;
       from: RunStatus;
-      /** 040: a local run's structured failure, carried on the `state` event. */
-      localAgentFailure?: {
-        class: CompanionFailureClass;
-        origin?: 'device' | 'subscription';
-        provider: LocalAgentProvider;
-      };
+      /** A subscription run's structured failure, carried on the `state` event as the schema has it. */
+      localAgentFailure?: Extract<RunEvent, { type: 'state' }>['data']['localAgentFailure'];
       reason?: string;
       /** 032 T046: a subscription limit's reset, carried on the `state` event as ISO. */
       resetsAt?: Date;
@@ -768,39 +758,6 @@ export class RunStore {
       .returning({ cancelRequestedAt: agentRuns.cancelRequestedAt, status: agentRuns.status });
 
     return row && { first: row.cancelRequestedAt?.getTime() === now.getTime(), status: row.status };
-  }
-
-  /**
-   * 040: closes every `approval.request` no `approval.resolved` answered — denied, `by: 'run-ended'`
-   * — for a run ended where no attempt holds it to do so itself. No epoch: the caller holds the row.
-   */
-  async closeApprovals(tx: TenantTransaction, fence: RunFence): Promise<void> {
-    const { rows } = await tx.execute<{ request_id: string }>(sql`
-      select r.data->>'requestId' as request_id
-      from ${runEvents} r
-      where r.org_id = ${fence.orgId} and r.run_id = ${fence.runId} and r.type = 'approval.request'
-        and not exists (
-          select 1 from ${runEvents} d
-          where d.org_id = r.org_id and d.run_id = r.run_id and d.type = 'approval.resolved'
-            and d.data->>'requestId' = r.data->>'requestId'
-        )
-      order by r.seq`);
-
-    if (rows.length === 0) return;
-
-    const first = await this.allocateSeq(tx, fence, rows.length);
-    const at = this.clock.now();
-
-    await this.appendEvents(
-      tx,
-      fence,
-      rows.map((row, index) => ({
-        at,
-        data: { by: 'run-ended', decision: 'deny', requestId: row.request_id },
-        seq: first + index,
-        type: 'approval.resolved' as const,
-      })),
-    );
   }
 
   /** The row flag — the truth `cancelled()` falls back to when the control channel said nothing. */

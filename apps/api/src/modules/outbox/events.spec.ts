@@ -6,10 +6,9 @@ import { EVENTS, MAX_PAYLOAD_BYTES } from './events';
 type DomainTemplate = Extract<(typeof MAIL_TEMPLATE_IDS)[number], `domain-${string}`>;
 type WebhookTemplate = Extract<(typeof MAIL_TEMPLATE_IDS)[number], `webhook-${string}`>;
 type ByosTemplate = Extract<(typeof MAIL_TEMPLATE_IDS)[number], `byos-${string}`>;
-type LocalAgentTemplate = Extract<(typeof MAIL_TEMPLATE_IDS)[number], `local-agent-${string}`>;
 type AccountTemplate = Exclude<
   (typeof MAIL_TEMPLATE_IDS)[number],
-  DomainTemplate | WebhookTemplate | ByosTemplate | LocalAgentTemplate
+  DomainTemplate | WebhookTemplate | ByosTemplate
 >;
 
 const isDomainTemplate = (id: (typeof MAIL_TEMPLATE_IDS)[number]): id is DomainTemplate =>
@@ -18,14 +17,8 @@ const isWebhookTemplate = (id: (typeof MAIL_TEMPLATE_IDS)[number]): id is Webhoo
   id.startsWith('webhook-');
 const isByosTemplate = (id: (typeof MAIL_TEMPLATE_IDS)[number]): id is ByosTemplate =>
   id.startsWith('byos-');
-// Spec 040's pairing notice is about a device, not an account flow: its own case below.
-const isLocalAgentTemplate = (id: (typeof MAIL_TEMPLATE_IDS)[number]): id is LocalAgentTemplate =>
-  id.startsWith('local-agent-');
 const isAccountTemplate = (id: (typeof MAIL_TEMPLATE_IDS)[number]): id is AccountTemplate =>
-  !isDomainTemplate(id) &&
-  !isWebhookTemplate(id) &&
-  !isByosTemplate(id) &&
-  !isLocalAgentTemplate(id);
+  !isDomainTemplate(id) && !isWebhookTemplate(id) && !isByosTemplate(id);
 
 /**
  * The catalogue is the review point for "ids, never contents" (§10): a payload that carries a
@@ -471,23 +464,6 @@ describe('event catalogue', () => {
         false,
       );
       expect(entry.payload.safeParse({ ...payload, accessToken: 'x' }).success).toBe(false);
-    });
-  });
-
-  /** Spec 040: one notice per paired device — the device and the person, by id only. */
-  describe('mail.local-agent-paired', () => {
-    const payload = {
-      deviceId: '4d7c5d8a-2f3b-4c1e-9a6f-0b1c2d3e4f5b',
-      recipientUserId: '4d7c5d8a-2f3b-4c1e-9a6f-0b1c2d3e4f5a',
-    } as const;
-
-    it('is strict and on the local-agent-device aggregate', () => {
-      const entry = EVENTS['mail.local-agent-paired'];
-
-      expect(entry.aggregate).toBe('local-agent-device');
-      expect(entry.payload.safeParse(payload).success).toBe(true);
-      expect(entry.payload.safeParse({ ...payload, name: 'Laptop' }).success).toBe(false);
-      expect(entry.payload.safeParse({ ...payload, deviceToken: 'bld_x' }).success).toBe(false);
     });
   });
 

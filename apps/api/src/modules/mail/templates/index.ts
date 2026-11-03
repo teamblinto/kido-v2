@@ -11,7 +11,6 @@ export {
   MAIL_LINK_PANEL_PARAM,
   accountSettingsUrl,
   invitationUrl,
-  localAgentsSettingsUrl,
   passwordResetUrl,
   projectDomainsUrl,
   projectInvitationUrl,
@@ -30,7 +29,6 @@ export {
 } from './domain-release-warning';
 export { type DomainReleasedMailInput, domainReleasedMail } from './domain-released';
 export { type InvitationMailInput, invitationMail } from './invitation';
-export { type LocalAgentPairedMailInput, localAgentPairedMail } from './local-agent-paired';
 export { type PasswordResetMailInput, passwordResetMail } from './password-reset';
 export { type ProjectInvitationMailInput, projectInvitationMail } from './project-invitation';
 export { type VerificationMailInput, verificationMail } from './verification';

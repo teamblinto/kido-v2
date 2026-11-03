@@ -13,7 +13,7 @@ function tx(rows: unknown[]): TenantTransaction {
   return { select: () => ({ from: () => ({ where }) }) } as unknown as TenantTransaction;
 }
 
-const local = { admit: vi.fn(), admitSubscription: vi.fn(), execute: vi.fn(), release: vi.fn() };
+const local = { admitSubscription: vi.fn(), execute: vi.fn(), release: vi.fn() };
 
 /** Spec 040 § 3 decision 4: a local run never reaches the default (cloud) executor. */
 describe('RunExecutorRegistry', () => {

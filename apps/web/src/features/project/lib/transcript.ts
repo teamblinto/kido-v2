@@ -219,22 +219,3 @@ export function items(state: TranscriptState): TranscriptItem[] {
 
   return rendered;
 }
-
-export type ApprovalResolution = Extract<RunEvent, { type: 'approval.resolved' }>;
-
-/**
- * Each answered `approval.request`, by `requestId` (spec 040). A request absent here is still
- * pending. Derived from the rendered items, like a tool's end, so a snapshot or a history read
- * settles a card exactly as the live stream does.
- */
-export function approvalResolutions(
-  rendered: readonly TranscriptItem[],
-): ReadonlyMap<string, ApprovalResolution> {
-  const resolved = new Map<string, ApprovalResolution>();
-
-  for (const { event } of rendered) {
-    if (event.type === 'approval.resolved') resolved.set(event.data.requestId, event);
-  }
-
-  return resolved;
-}

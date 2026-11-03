@@ -142,18 +142,10 @@ export const SECRET_SHAPES: readonly SecretShape[] = [
     replacement: censor('netlify-token'),
   },
   {
-    // Spec 040: a paired companion's device token, `bld_` + 43 base64url characters.
+    // Spec 040: the runner's device token, `bld_` + 43 base64url characters.
     name: 'local-agent-token',
     pattern: /\bbld_[A-Za-z0-9_-]{16,}/g,
     replacement: censor('local-agent-token'),
-  },
-  {
-    // Spec 040: a pairing code approves a device for ten minutes, and the preview route carries it
-    // in its path (`/me/local-agents/pairings/:userCode`), which pino-http logs as `req.url` — out
-    // of reach of `query-credential`. The two fixed siblings (`approve`, `deny`) are not codes.
-    name: 'local-agent-pairing-code',
-    pattern: /(\/local-agents\/pairings\/)(?!approve\b|deny\b|\[)[^/?#\s"'\\]+/gi,
-    replacement: `$1${censor('local-agent-pairing-code')}`,
   },
   {
     // verify (R16): Neon documents no prefix; current keys carry `napi_`. An unprefixed key in an
@@ -174,12 +166,12 @@ export const SECRET_SHAPES: readonly SecretShape[] = [
  * This is the rule that covers §11's "never log a password, session token, DEK, MFA seed or reset
  * token, even at trace" for fields nobody added to the path list. Spec 032 R15 adds the OAuth
  * link-flow fields: `code` (anchored — `statusCode` is not a secret — and not when its value
- * is an error code, see `ERROR_CODE_VALUE`), `codeVerifier` and `deviceCode`; `accessToken`, `refreshToken` and `idToken` were already `token`'s. Spec 040 adds
- * `userCode`, a pairing code (`params.userCode`, the approve and deny bodies). Only string values are censored:
+ * is an error code, see `ERROR_CODE_VALUE`), `codeVerifier` and `deviceCode`; `accessToken`,
+ * `refreshToken` and `idToken` were already `token`'s. Only string values are censored:
  * a `tokenCount` of 512 is a number, and blanking it would cost a metric to protect nothing.
  */
 const SECRET_KEY_NAME =
-  /pass(?:word|phrase|wd)|secret|token|api[_-]?key|private[_-]?key|credential|authoriz|cookie|session|seed|recovery[_-]?code|otp|mfa|^[dk]ek$|^code$|code[_-]?verifier|device[_-]?code|user[_-]?code/i;
+  /pass(?:word|phrase|wd)|secret|token|api[_-]?key|private[_-]?key|credential|authoriz|cookie|session|seed|recovery[_-]?code|otp|mfa|^[dk]ek$|^code$|code[_-]?verifier|device[_-]?code/i;
 
 /** Every value shape, applied to one string. Safe to run twice: the censored output matches nothing. */
 export function scrubSecrets(text: string): string {
@@ -207,36 +199,13 @@ function isSecretKey(key: string, item: unknown): boolean {
   return !(/^code$/i.test(key) && typeof item === 'string' && ERROR_CODE_VALUE.test(item));
 }
 
-/**
- * Spec 040: Express 5's `*splat` param — `req.params.splat` on every pino-http record — is the path
- * split into segments, so `local-agent-pairing-code` never sees `pairings/<code>` in one string.
- * The segment after `local-agents`, `pairings` is the code, bar the two fixed routes.
- */
-function isPairingCodeSegment(items: readonly unknown[], index: number): boolean {
-  const item = items[index];
-
-  return (
-    typeof item === 'string' &&
-    index >= 2 &&
-    /^local-agents$/i.test(String(items[index - 2])) &&
-    /^pairings$/i.test(String(items[index - 1])) &&
-    !/^(?:approve|deny)$/i.test(item)
-  );
-}
-
 function scrubValue(value: unknown, inheritedSecret: boolean): unknown {
   if (typeof value === 'string') {
     return inheritedSecret ? REDACTION_CENSOR : scrubSecrets(value);
   }
 
   if (Array.isArray(value)) {
-    const items = value as unknown[];
-
-    return items.map((item, index) =>
-      isPairingCodeSegment(items, index)
-        ? censor('local-agent-pairing-code')
-        : scrubValue(item, inheritedSecret),
-    );
+    return (value as unknown[]).map((item) => scrubValue(item, inheritedSecret));
   }
 
   if (typeof value === 'object' && value !== null) {

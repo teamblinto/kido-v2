@@ -599,23 +599,6 @@ describe('Agent runs (e2e)', () => {
           'queued',
         );
 
-        // An approval left open (as a local run's lost attempt could): the cancel closes it.
-        const store = app.get(RunStore);
-
-        await transactions.runInTenantTransaction(world.alpha.orgId, async (tx) => {
-          const fence = { orgId: world.alpha.orgId, runId: first };
-          const seq = await store.allocateSeq(tx, fence, 1);
-
-          await store.appendEvents(tx, fence, [
-            {
-              at: new Date(),
-              data: { detail: 'd', kind: 'command', requestId: 'req-open', title: 't' },
-              seq,
-              type: 'approval.request',
-            },
-          ]);
-        });
-
         await cancel(owner, first).expect(202);
 
         const ended = runResponseSchema.parse((await read(owner, first).expect(200)).body);
@@ -625,8 +608,7 @@ describe('Agent runs (e2e)', () => {
 
         const page = await eventsOf(owner, first);
 
-        expect(page.slice(-2).map((event) => [event.type, event.data])).toEqual([
-          ['approval.resolved', { by: 'run-ended', decision: 'deny', requestId: 'req-open' }],
+        expect(page.slice(-1).map((event) => [event.type, event.data])).toEqual([
           ['state', { from: 'awaiting_input', reason: 'cancelled-waiting', to: 'cancelled' }],
         ]);
         expect(page.map((event) => event.seq)).toEqual(page.map((_unused, index) => index + 1));

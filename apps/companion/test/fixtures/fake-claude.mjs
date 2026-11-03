@@ -1,6 +1,6 @@
 // A stand-in for Claude Code's headless stream-json protocol, shaped after live captures. The
-// scenario is picked by a keyword in the prompt. It drives the permission prompt tool by starting
-// the MCP server from --mcp-config exactly as Claude Code does (server/discover probe first).
+// scenario is picked by a keyword in the prompt. It calls the BAIOS tools by starting the MCP
+// server from --mcp-config exactly as Claude Code does (server/discover probe first).
 import { spawn } from 'node:child_process';
 import {
   appendFileSync,
@@ -10,7 +10,6 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 const args = process.argv.slice(2);
@@ -167,25 +166,12 @@ function startMcp() {
     );
     const tools = await call(nextId++, 'tools/list', {});
     const names = tools.result.tools.map((tool) => tool.name);
-    if (args.includes('--permission-prompt-tool') && !names.includes('approve')) {
-      throw new Error('no approve tool');
-    }
     return {
       child,
       names,
       request: async (method, params) => (await call(nextId++, method, params)).result,
     };
   })();
-}
-
-async function approve(toolName, input, toolUseId) {
-  mcp ??= startMcp();
-  const { request } = await mcp;
-  const answer = await request('tools/call', {
-    arguments: { input, tool_name: toolName, tool_use_id: toolUseId },
-    name: 'approve',
-  });
-  return JSON.parse(answer.content[0].text);
 }
 
 function startTurn(text) {
@@ -221,46 +207,6 @@ async function onPrompt(text) {
   if (text.includes('slow')) {
     slowTimer = setInterval(() => delta('x'), 20);
     return;
-  }
-  if (text.includes('write') || text.includes('bash')) {
-    const toolName = text.includes('write') ? 'Write' : 'Bash';
-    // `write:<relative path>` picks the file; `long` makes the content or command 9000 chars.
-    const target = /write:(\S+)/.exec(text)?.[1] ?? 'hello.txt';
-    const long = text.includes('long') ? ` ${'x'.repeat(9_000)}` : '';
-    const input =
-      toolName === 'Write'
-        ? { content: `hi${long}`, file_path: join(process.cwd(), target) }
-        : { command: `ls ${process.cwd()}${long}` };
-    const id = text.includes('write') ? 'toolu_write_1' : 'toolu_bash_1';
-    out({
-      message: { content: [{ id, input, name: toolName, type: 'tool_use' }], role: 'assistant' },
-      type: 'assistant',
-    });
-    const decision = await approve(toolName, input, id);
-    if (decision.behavior === 'allow') {
-      if (toolName === 'Write')
-        writeFileSync(decision.updatedInput.file_path, decision.updatedInput.content);
-      out({
-        message: {
-          content: [{ content: `Done in ${process.cwd()}`, tool_use_id: id, type: 'tool_result' }],
-          role: 'user',
-        },
-        tool_use_result: { type: 'create' },
-        type: 'user',
-      });
-    } else {
-      out({
-        message: {
-          content: [
-            { content: decision.message, is_error: true, tool_use_id: id, type: 'tool_result' },
-          ],
-          role: 'user',
-        },
-        type: 'user',
-      });
-    }
-    delta(decision.behavior);
-    return result();
   }
   const toolMatch = /tool:(\w+)/.exec(text);
   if (toolMatch) {

@@ -2,18 +2,14 @@ import type { ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join } from 'node:path';
+import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 
 import {
-  LOCAL_AGENT_APPROVAL_TIMEOUT_SECONDS,
   LOCAL_AGENT_MAX_TOOL_INPUT_CHARS,
-  type LocalAgentPermissionMode,
   localAgentModelSchema,
   localAgentProviderSessionIdSchema,
   localAgentSandboxToolSchema,
-  type RunApprovalDecision,
-  type RunApprovalKind,
   sandboxToolOf,
   truncateToolOutput,
 } from '@repo/contracts';
@@ -27,17 +23,7 @@ import {
   spawnBinary,
   StderrTail,
 } from '../../process.ts';
-import {
-  AsyncQueue,
-  isRecord,
-  isRoutineWrite,
-  isSensitivePath,
-  redactPaths,
-  resolveWriteTarget,
-  str,
-  toWorkspaceRelative,
-  truncate,
-} from '../../util.ts';
+import { AsyncQueue, isRecord, redactPaths, str, truncate } from '../../util.ts';
 import {
   type AdapterContext,
   DEFAULT_INTERRUPT_GRACE_MS,
@@ -49,29 +35,21 @@ import {
   type StartRunOptions,
   type ToolCallResult,
 } from '../types.ts';
+import { TOOLSET_FILE_ENV } from './mcp-tools.ts';
 import {
-  APPROVAL_ENDPOINT_ENV,
-  APPROVAL_TOKEN_ENV,
-  type ApprovalBridge,
-  type ApprovalRequest,
-  type ApprovalResult,
-  openApprovalBridge,
-} from './approval-bridge.ts';
-import { TOOLSET_FILE_ENV } from './mcp-approval.ts';
+  openToolBridge,
+  TOOL_ENDPOINT_ENV,
+  TOOL_TOKEN_ENV,
+  type ToolBridge,
+} from './tool-bridge.ts';
 
 /**
  * Claude Code (`claude -p`, stream-json in and out). One run is one prompt; the process is fed
- * the prompt as a stream-json user line and its stdin is closed after the final `result`.
- * Approvals arrive through `--permission-prompt-tool mcp__baios__approve`.
+ * the prompt as a stream-json user line and its stdin is closed after the final `result`. Its own
+ * file and shell tools are off; the run's BAIOS tools come from the `baios` MCP server.
  */
 
 const NAME = 'Claude Code';
-const FILE_TOOLS = new Set(['Edit', 'MultiEdit', 'NotebookEdit', 'Write']);
-const COMMAND_TOOLS = new Set(['Bash', 'PowerShell']);
-/** In `plan` these may still be asked about; anything else is denied here, never sent to BAIOS. */
-const PLAN_TOOLS = new Set(['Glob', 'Grep', 'LS', 'Read', 'TodoWrite']);
-/** Longer than this cannot be shown whole for approval, so a command is denied rather than cut. */
-const MAX_DETAIL = 8_000;
 const DEFAULT_TOOL_CALL_TIMEOUT_MS = 180_000;
 /** Claude's own wait for an MCP call; longer than ours, so ours always answers first. */
 const MCP_TIMEOUT_MS = 600_000;
@@ -82,18 +60,6 @@ const MODELS = [
   { id: 'opus', label: 'Opus' },
   { id: 'fable', label: 'Fable' },
 ];
-/**
- * 2.1.x names the ask-for-everything mode `manual` (shown as `default` in `system/init`). Our
- * `acceptEdits` runs the CLI in `manual` too: the CLI's own `acceptEdits` accepts edits without
- * consulting the prompt tool, so the companion accepts routine edits itself and still asks for
- * sensitive or outside-the-workspace ones.
- */
-const PERMISSION_FLAG: Record<LocalAgentPermissionMode, string> = {
-  acceptEdits: 'manual',
-  default: 'manual',
-  plan: 'plan',
-};
-
 type TerminalData = Extract<RunEventBody, { type: 'terminal' }>['data'];
 
 /**
@@ -101,7 +67,7 @@ type TerminalData = Extract<RunEventBody, { type: 'terminal' }>['data'];
  * built-ins, so every file/shell/search tool is gone from the model's list ("Agent" shows as
  * "Task"; WebFetch is left out because it could reach internal addresses from where the CLI
  * runs). The `baios` MCP tools and WebSearch are pre-approved and `dontAsk` refuses everything
- * else without a prompt tool; `--restricted` also refuses bypassPermissions. No setting sources,
+ * else without asking; `--restricted` also refuses bypassPermissions. No setting sources,
  * slash commands, memory, attachments or CLAUDE.md files. Never add a bypass/"dangerously" flag.
  */
 export function sandboxModeArgs(): string[] {
@@ -119,7 +85,7 @@ export function sandboxModeArgs(): string[] {
   ];
 }
 
-/** The CLI's environment in sandbox mode, beside `sandboxModeArgs()`. */
+/** The CLI's environment, beside `sandboxModeArgs()`. */
 export const SANDBOX_ENV: Readonly<Record<string, string>> = {
   CLAUDE_CODE_DISABLE_ATTACHMENTS: '1',
   CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
@@ -180,17 +146,10 @@ interface PendingToolCall {
   timer: NodeJS.Timeout;
 }
 
-interface PendingApproval {
-  input: Record<string, unknown>;
-  resolve: (result: ApprovalResult) => void;
-  timer: NodeJS.Timeout;
-}
-
 class ClaudeRun implements RunHandle {
   readonly events = new AsyncQueue<RunEventBody>();
-  private readonly approvals = new Map<string, PendingApproval>();
   private apiError: string | null = null;
-  private bridge: ApprovalBridge | null = null;
+  private bridge: ToolBridge | null = null;
   private child: ChildProcess | null = null;
   private readonly ctx: AdapterContext;
   private disposing: Promise<void> | null = null;
@@ -209,13 +168,14 @@ class ClaudeRun implements RunHandle {
   private readonly stderr = new StderrTail();
   private tempDir: string | null = null;
   private readonly toolCalls = new Map<string, PendingToolCall>();
-  private readonly tools = new Map<string, { input: Record<string, unknown>; name: string }>();
+  /** Tool use id → tool name. */
+  private readonly tools = new Map<string, string>();
 
   constructor(ctx: AdapterContext, options: StartRunOptions) {
     this.ctx = ctx;
     this.options = options;
-    this.redact = redactPaths(options.cwd);
-    this.redactFull = redactPaths(options.cwd, Infinity);
+    this.redact = redactPaths();
+    this.redactFull = redactPaths(Infinity);
     this.launch().catch((error: unknown) =>
       this.fail('crash', `${NAME} could not be started: ${String(error)}`),
     );
@@ -227,8 +187,8 @@ class ClaudeRun implements RunHandle {
 
   private async launch(): Promise<void> {
     const binary = resolveBinary('claude', this.ctx.binary);
-    if (!binary) return this.fail('provider', notInstalled(NAME, 'claude').message ?? NAME);
-    const { model, permissionMode, prompt, resume } = this.options;
+    if (!binary) return this.fail('provider', notInstalled(NAME).message ?? NAME);
+    const { model, prompt, resume, toolset } = this.options;
     // The contract checked these on receipt; they reach argv, so never trust one layer alone.
     if (model !== null && !localAgentModelSchema.safeParse(model).success) {
       return this.fail('provider', 'The requested model name is not valid.');
@@ -238,29 +198,24 @@ class ClaudeRun implements RunHandle {
     }
     // mkdtemp creates the directory 0700, so the socket and MCP config inside are private.
     this.tempDir = await mkdtemp(join(tmpdir(), 'baios-run-'));
-    this.bridge = await openApprovalBridge(
-      this.tempDir,
-      (request) => this.onApproval(request),
-      (name, input) => this.onToolCall(name, input),
-    );
-    const { toolset } = this.options;
+    this.bridge = await openToolBridge(this.tempDir, (name, input) => this.onToolCall(name, input));
     const toolsetFile = join(this.tempDir, 'toolset.json');
     // A file rather than env or argv: schemas can outgrow either.
-    if (toolset) await writeFile(toolsetFile, JSON.stringify(toolset), { mode: 0o600 });
+    await writeFile(toolsetFile, JSON.stringify(toolset), { mode: 0o600 });
     const mcpConfig = join(this.tempDir, 'mcp.json');
     await writeFile(
       mcpConfig,
       JSON.stringify({
         mcpServers: {
           baios: {
-            args: [this.ctx.selfScript, 'mcp-approval'],
+            args: [this.ctx.selfScript, 'mcp-tools'],
             command: process.execPath,
             env: {
-              [APPROVAL_ENDPOINT_ENV]: this.bridge.endpoint,
-              [APPROVAL_TOKEN_ENV]: this.bridge.token,
-              ...(toolset ? { [TOOLSET_FILE_ENV]: toolsetFile } : {}),
+              [TOOL_ENDPOINT_ENV]: this.bridge.endpoint,
+              [TOOL_TOKEN_ENV]: this.bridge.token,
+              [TOOLSET_FILE_ENV]: toolsetFile,
             },
-            ...(toolset ? { timeout: MCP_TIMEOUT_MS } : {}),
+            timeout: MCP_TIMEOUT_MS,
             type: 'stdio',
           },
         },
@@ -275,18 +230,11 @@ class ClaudeRun implements RunHandle {
     // `--flag=value` keeps each value bound to its flag (`--resume` takes an *optional* value).
     if (model) args.push(`--model=${model}`);
     if (resume) args.push(`--resume=${resume}`);
-    args.push('--mcp-config', mcpConfig, '--strict-mcp-config');
-    if (toolset) {
-      args.push(...sandboxModeArgs());
-    } else {
-      args.push(`--permission-mode=${PERMISSION_FLAG[permissionMode]}`);
-      if (this.ctx.settingSources) args.push(`--setting-sources=${this.ctx.settingSources}`);
-      args.push('--permission-prompt-tool', 'mcp__baios__approve');
-    }
+    args.push('--mcp-config', mcpConfig, '--strict-mcp-config', ...sandboxModeArgs());
 
     const child = spawnBinary(binary, args, {
       cwd: this.options.cwd,
-      ...(toolset ? { env: { ...process.env, ...SANDBOX_ENV } } : {}),
+      env: { ...process.env, ...SANDBOX_ENV },
     });
     this.child = child;
     child.stdin?.on('error', () => undefined);
@@ -385,7 +333,7 @@ class ClaudeRun implements RunHandle {
       const name = str(block.name);
       if (!id || !name || this.tools.has(id)) continue;
       const input = isRecord(block.input) ? block.input : {};
-      this.tools.set(id, { input, name });
+      this.tools.set(id, name);
       // A sandbox tool: the server reports its start and end itself.
       if (sandboxToolOf(name)) continue;
       this.emit({
@@ -398,25 +346,18 @@ class ClaudeRun implements RunHandle {
   private onUser(message: Record<string, unknown>): void {
     const body = isRecord(message.message) ? message.message : {};
     if (!Array.isArray(body.content)) return;
-    const meta = isRecord(message.tool_use_result) ? message.tool_use_result : {};
     for (const block of body.content as unknown[]) {
       if (!isRecord(block) || block.type !== 'tool_result') continue;
       const id = str(block.tool_use_id);
       if (!id) continue;
-      const tool = this.tools.get(id);
-      if (tool && sandboxToolOf(tool.name)) continue;
+      const name = this.tools.get(id);
+      if (name && sandboxToolOf(name)) continue;
       const ok = block.is_error !== true;
       const summary = this.redact(truncate(toolResultText(block.content), 2_000));
       this.emit({
         data: { ok, summary: summary || null, toolId: truncate(id, 128) },
         type: 'tool.end',
       });
-      if (!ok || !tool || !FILE_TOOLS.has(tool.name)) continue;
-      const path = str(tool.input.file_path) ?? str(tool.input.notebook_path);
-      const relative = path ? toWorkspaceRelative(this.options.cwd, path) : null;
-      if (!relative) continue;
-      const kind = tool.name === 'Write' && meta.type === 'create' ? 'created' : 'modified';
-      this.emit({ data: { kind, path: relative }, type: 'file.change' });
     }
   }
 
@@ -464,7 +405,7 @@ class ClaudeRun implements RunHandle {
     ) {
       return this.fail(
         'auth',
-        `${NAME} is not signed in, or its sign-in expired. Run \`baios-companion login claude\`. ${text}`,
+        `${NAME} is not signed in, or its sign-in expired. Sign in again from BAIOS. ${text}`,
       );
     }
     if (
@@ -510,17 +451,8 @@ class ClaudeRun implements RunHandle {
     this.events.end();
     if (this.interruptTimer) clearTimeout(this.interruptTimer);
     this.clearSettle();
-    this.denyPending('The run ended before an answer.');
     this.failToolCalls('The run ended before BAIOS returned the tool result.');
     this.child?.stdin?.end();
-  }
-
-  private denyPending(message: string, interrupt = false): void {
-    for (const [id, pending] of this.approvals) {
-      clearTimeout(pending.timer);
-      pending.resolve({ behavior: 'deny', message, ...(interrupt ? { interrupt } : {}) });
-      this.approvals.delete(id);
-    }
   }
 
   private failToolCalls(output: string): void {
@@ -533,7 +465,7 @@ class ClaudeRun implements RunHandle {
 
   private onToolCall(name: string, input: Record<string, unknown>): Promise<ToolCallResult> {
     const refuse = (output: string) => Promise.resolve({ isError: true, output });
-    if (this.finished || this.interruptRequested || !this.options.toolset) {
+    if (this.finished || this.interruptRequested) {
       return refuse('The run has ended.');
     }
     const tool = localAgentSandboxToolSchema.safeParse(name);
@@ -572,82 +504,6 @@ class ClaudeRun implements RunHandle {
     pending.resolve({ ...result, output: truncateToolOutput(result.output) });
   }
 
-  private onApproval(request: ApprovalRequest): Promise<ApprovalResult> {
-    const deny = (message: string) =>
-      Promise.resolve<ApprovalResult>({ behavior: 'deny', message });
-    if (this.finished) return deny('The run has ended.');
-    const { input, toolName } = request;
-    // Sandbox mode pre-approves its own tools; nothing else may run on this machine.
-    if (this.options.toolset)
-      return deny(`Only BAIOS sandbox tools are available; ${toolName} was not run.`);
-    const { cwd, permissionMode } = this.options;
-    // The local ceiling (ADR decision 6): plan is read-only whatever BAIOS would answer.
-    if (permissionMode === 'plan' && !PLAN_TOOLS.has(toolName)) {
-      return deny(
-        `Plan mode on this computer allows read-only tools only; ${toolName} was not run.`,
-      );
-    }
-    if (COMMAND_TOOLS.has(toolName) && (str(input.command) ?? '').length > MAX_DETAIL) {
-      return deny('The command is too long to show in BAIOS for approval, so it was not run.');
-    }
-    const target = str(input.file_path) ?? str(input.notebook_path);
-    if (
-      permissionMode === 'acceptEdits' &&
-      FILE_TOOLS.has(toolName) &&
-      target !== undefined &&
-      isRoutineWrite(cwd, target)
-    ) {
-      return Promise.resolve({ behavior: 'allow', updatedInput: input });
-    }
-    const requestId =
-      request.toolUseId && request.toolUseId.length <= 128 && !this.approvals.has(request.toolUseId)
-        ? request.toolUseId
-        : `approval-${randomUUID()}`;
-    this.emit({ data: { ...this.describe(request), requestId }, type: 'approval.request' });
-    return new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this.approvals.delete(requestId);
-        resolve({ behavior: 'deny', message: 'No answer from BAIOS in time.' });
-      }, LOCAL_AGENT_APPROVAL_TIMEOUT_SECONDS * 1_000);
-      this.approvals.set(requestId, { input: request.input, resolve, timer });
-    });
-  }
-
-  private describe(request: ApprovalRequest): {
-    detail: string;
-    kind: RunApprovalKind;
-    title: string;
-  } {
-    const { toolName } = request;
-    // Cut only at the end, so "(truncated)" in the title reflects what the person cannot see.
-    const input = this.redactFull(request.input);
-    const shown = (detail: string, title: string) => ({
-      detail: truncate(detail, MAX_DETAIL),
-      title: truncate(detail.length > MAX_DETAIL ? `${title} (truncated)` : title, 200),
-    });
-    const json = () => JSON.stringify(input, null, 2);
-    if (COMMAND_TOOLS.has(toolName)) {
-      const command = str(input.command) ?? json();
-      const firstLine = command.split('\n')[0] ?? '';
-      return { ...shown(command, `${toolName}: ${firstLine}`), kind: 'command' };
-    }
-    if (FILE_TOOLS.has(toolName)) {
-      const raw = str(request.input.file_path) ?? str(request.input.notebook_path);
-      const resolved = raw ? resolveWriteTarget(this.options.cwd, raw) : null;
-      const target = raw
-        ? (toWorkspaceRelative(this.options.cwd, raw) ?? `${basename(raw)} (outside the workspace)`)
-        : 'a file';
-      const flag = resolved !== null && isSensitivePath(resolved) ? ' (sensitive path)' : '';
-      const detail =
-        str(input.content) ??
-        (str(input.new_string) !== undefined
-          ? `- ${str(input.old_string) ?? ''}\n+ ${str(input.new_string) ?? ''}`
-          : json());
-      return { ...shown(detail, `${toolName} ${target}${flag}`), kind: 'file_change' };
-    }
-    return { ...shown(json(), `Use ${toolName}`), kind: 'tool' };
-  }
-
   input(text: string): void {
     if (this.finished || !this.child) return;
     this.inputSinceTurnStart = true;
@@ -665,7 +521,6 @@ class ClaudeRun implements RunHandle {
     if (!child) return this.finish({ status: 'interrupted' });
     if (this.interruptRequested) return;
     this.interruptRequested = true;
-    this.denyPending('Interrupted in BAIOS.', true);
     this.failToolCalls('Interrupted in BAIOS.');
     this.write({
       request: { subtype: 'interrupt' },
@@ -677,18 +532,6 @@ class ClaudeRun implements RunHandle {
       void killTree(child);
       this.finish({ status: 'interrupted' });
     }, this.graceMs);
-  }
-
-  respondApproval(requestId: string, decision: RunApprovalDecision, message?: string): void {
-    const pending = this.approvals.get(requestId);
-    if (!pending) return;
-    clearTimeout(pending.timer);
-    this.approvals.delete(requestId);
-    pending.resolve(
-      decision === 'allow'
-        ? { behavior: 'allow', updatedInput: pending.input }
-        : { behavior: 'deny', message: message ?? 'Denied in BAIOS.' },
-    );
   }
 
   private async cleanup(): Promise<void> {
@@ -714,16 +557,16 @@ export function createClaudeAdapter(ctx: AdapterContext): ProviderAdapter {
     id: 'claude',
     async probe() {
       const binary = resolveBinary('claude', ctx.binary);
-      if (!binary) return notInstalled(NAME, 'claude');
+      if (!binary) return notInstalled(NAME);
       let version: string | null;
       try {
         const result = await runCapture(binary, ['--version']);
         version = /(\d+\.\d+\.\d+\S*)/.exec(result.stdout)?.[1] ?? null;
       } catch (error) {
         return {
-          ...notInstalled(NAME, 'claude'),
+          ...notInstalled(NAME),
           message: truncate(
-            `${NAME} could not be started: ${redactPaths(null, Infinity)(scrub(String(error)))}`,
+            `${NAME} could not be started: ${redactPaths(Infinity)(scrub(String(error)))}`,
             500,
           ),
         };
@@ -737,7 +580,7 @@ export function createClaudeAdapter(ctx: AdapterContext): ProviderAdapter {
       }
       const message =
         auth.status === 'unauthenticated'
-          ? 'Not signed in. Run `baios-companion login claude`.'
+          ? 'Not signed in. Sign in to Claude from BAIOS.'
           : auth.status === 'unknown'
             ? 'Could not read the sign-in state from `claude auth status`.'
             : null;

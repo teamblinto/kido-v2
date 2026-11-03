@@ -20,7 +20,6 @@ import {
   type RotatePreviewResponse,
   type RunEventsResponse,
   type RunInputRequest,
-  type RunApprovalDecisionRequest,
   type RunListResponse,
   type RunResponse,
   type SiteResponse,
@@ -44,7 +43,6 @@ import {
   previewResponseSchema,
   removeDomainResponseSchema,
   rotatePreviewResponseSchema,
-  runApprovalDecisionRequestSchema,
   runEventsResponseSchema,
   runInputRequestSchema,
   runListResponseSchema,
@@ -156,24 +154,6 @@ export async function answerRun(
     body: runInputRequestSchema.parse(body),
     signal,
   });
-}
-
-/**
- * Answer a local agent's request for permission (spec 040 § 5). No body back: the run's own
- * `approval.resolved` event is the record, and it arrives on the stream.
- */
-export async function decideApproval(
-  orgId: string,
-  projectId: string,
-  runId: string,
-  requestId: string,
-  body: RunApprovalDecisionRequest,
-): Promise<void> {
-  return apiRequest(
-    'POST',
-    `${runsPath(orgId, projectId)}/${encodeURIComponent(runId)}/approvals/${encodeURIComponent(requestId)}`,
-    { body: runApprovalDecisionRequestSchema.parse(body) },
-  );
 }
 
 export async function getRun(

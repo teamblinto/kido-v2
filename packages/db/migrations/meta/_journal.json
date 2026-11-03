@@ -393,6 +393,13 @@
       "when": 1793653643766,
       "tag": "0055_agent_homes_start_times",
       "breakpoints": true
+    },
+    {
+      "idx": 56,
+      "version": "7",
+      "when": 1793710104152,
+      "tag": "0056_retire_local_agents",
+      "breakpoints": true
     }
   ]
 }

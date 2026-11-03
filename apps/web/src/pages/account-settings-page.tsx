@@ -1,10 +1,9 @@
 import { useEffect } from 'react';
-import { Link, useLocation } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 
 import { ChangePasswordSection } from '@/features/settings/change-password-section';
 import { ConnectedAccountsSection } from '@/features/settings/connected-accounts-section';
 import { SubscriptionCard } from '@/features/settings/subscription/subscription-card';
-import { routes } from '@/lib/routes';
 
 /** The person's own settings (spec 032 US2); not `SettingsNav`, which is organisation-only. */
 export function AccountSettingsPage(): React.JSX.Element {
@@ -24,23 +23,6 @@ export function AccountSettingsPage(): React.JSX.Element {
       </p>
       <ConnectedAccountsSection />
       <SubscriptionCard />
-      <section
-        aria-labelledby="local-agents-link"
-        className="border-line mt-4 rounded-lg border p-4"
-      >
-        <h2 id="local-agents-link" className="text-heading-sm font-semibold">
-          Local agents
-        </h2>
-        <p className="text-body-sm text-subdued mt-1">
-          Run agents on your own computer through Claude Code or Codex, signed in there.
-        </p>
-        <Link
-          to={routes.localAgentsSettings}
-          className="text-label-sm text-brand-text mt-2 inline-block underline-offset-4 hover:underline"
-        >
-          Manage your computers
-        </Link>
-      </section>
       <ChangePasswordSection />
     </main>
   );

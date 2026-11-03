@@ -1,26 +1,15 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { CompanionAuthEvent, CompanionRunEvent, CompanionStatusReport } from '@repo/contracts';
+import type { CompanionAuthEvent, CompanionStatusReport } from '@repo/contracts';
 import { build } from 'tsup';
 
 import tsupConfig from '../tsup.config.ts';
-import { ConfigStore, hostedConfig } from '../src/config.ts';
 import { ClaudeSignIn, findSignInUrl, isAllowedSignInUrl, loadHostedEnv } from '../src/hosted.ts';
 import { log, setLogLevel } from '../src/log.ts';
 import { createService } from '../src/service.ts';
-import {
-  DEVICE_ID,
-  DEVICE_TOKEN,
-  FAKE_CLAUDE,
-  FAKE_CODEX,
-  FakeServer,
-  SELF_SCRIPT,
-  tempDir,
-  waitFor,
-} from './helpers.ts';
+import { DEVICE_TOKEN, FAKE_CLAUDE, FakeServer, SELF_SCRIPT, tempDir, waitFor } from './helpers.ts';
 
 const URL_LINE =
   "If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=c1&state=s1";
@@ -46,7 +35,7 @@ async function withEnv<T>(vars: Record<string, string>, fn: () => Promise<T>): P
   }
 }
 
-describe('hosted config', () => {
+describe('hosted env', () => {
   it('finds the sign-in URL and accepts only Anthropic hosts over https', () => {
     expect(findSignInUrl(URL_LINE)).toBe(
       'https://claude.com/cai/oauth/authorize?code=true&client_id=c1&state=s1',
@@ -113,12 +102,6 @@ describe('hosted config', () => {
     } finally {
       warn.mockRestore();
     }
-  });
-
-  it('keeps Claude only, no workspaces, and touches no file', () => {
-    const config = hostedConfig('https://baios.example');
-    expect(config.providers.codex.enabled).toBe(false);
-    expect(config.workspaces).toEqual([]);
   });
 });
 
@@ -263,13 +246,12 @@ describe('hosted runner', () => {
   });
 
   const startHosted = () => {
-    const config = hostedConfig(server.url);
-    config.providers.claude.binary = FAKE_CLAUDE;
     const service = createService({
-      config,
-      hosted: true,
+      claudeBinary: FAKE_CLAUDE,
       interruptGraceMs: 400,
       selfScript: SELF_SCRIPT,
+      server: server.url,
+      sessionsDir: tempDir(),
       token: DEVICE_TOKEN,
       uplink: { flushMs: 10 },
     });
@@ -289,7 +271,6 @@ describe('hosted runner', () => {
         const { done, service } = startHosted();
         await waitFor(() => server.statuses.length > 0);
         const first = server.statuses[0] as CompanionStatusReport;
-        expect(first.workspaces).toEqual([]);
         expect(first.providers.map((status) => status.provider)).toEqual(['claude']);
         expect(first.providers[0]?.auth.status).toBe('unauthenticated');
 
@@ -313,28 +294,6 @@ describe('hosted runner', () => {
         const reports = () => server.statuses as CompanionStatusReport[];
         await waitFor(() => reports().at(-1)?.providers[0]?.auth.status === 'authenticated');
 
-        // Workspace mode is refused outright.
-        const runId = randomUUID();
-        server.send({
-          model: null,
-          permissionMode: 'default',
-          prompt: 'hi',
-          provider: 'claude',
-          resume: null,
-          runId,
-          turn: 1,
-          type: 'run.start',
-          workspaceId: 'ws_somewhere',
-        });
-        const terminal = (): CompanionRunEvent | undefined =>
-          server.events(runId).find((event) => event.type === 'terminal');
-        await waitFor(() => terminal() !== undefined);
-        expect(terminal()?.data).toMatchObject({
-          failure: { class: 'workspace' },
-          status: 'failed',
-        });
-        expect(JSON.stringify(terminal()?.data)).toContain('only in sandbox tool mode');
-
         service.supervisor.stop();
         expect(await done).toBe('stopped');
       });
@@ -349,24 +308,6 @@ describe('hosted runner', () => {
     expect(logged.join('')).not.toContain('Login successful');
     for (const secret of [CODE, 'pasted-without-hash']) expect(everything).not.toContain(secret);
   }, 20_000);
-
-  it('ignores event: auth frames when not hosted', async () => {
-    const config = new ConfigStore(join(tempDir(), 'home')).load();
-    config.server = server.url;
-    config.deviceId = DEVICE_ID;
-    config.providers.claude.binary = FAKE_CLAUDE;
-    config.providers.codex.binary = FAKE_CODEX;
-    const service = createService({ config, selfScript: SELF_SCRIPT, token: DEVICE_TOKEN });
-    const done = service.run();
-    await waitFor(() => server.statuses.length > 0);
-    expect((server.statuses[0] as CompanionStatusReport).providers).toHaveLength(2);
-    server.sendAuth({ provider: 'claude', type: 'auth.login.start' });
-    server.send({ type: 'status.refresh' });
-    await waitFor(() => server.statuses.length > 1);
-    expect(server.authEvents).toEqual([]);
-    service.supervisor.stop();
-    expect(await done).toBe('stopped');
-  }, 15_000);
 
   it('exits non-zero on 401 so the platform restarts it with a fresh token', async () => {
     server.revoked = true;
@@ -388,6 +329,14 @@ describe('hosted runner', () => {
     });
     expect(missing.status).toBe(1);
     expect(missing.stderr).toContain('needs BAIOS_SERVER_URL and BAIOS_TOKEN_FILE');
+
+    // The API's own invocation needs --hosted; a bare start is refused before reading any env.
+    const bare = spawnSync(process.execPath, [SELF_SCRIPT, 'start'], {
+      encoding: 'utf8',
+      env: { PATH: process.env.PATH },
+    });
+    expect(bare.status).toBe(2);
+    expect(bare.stderr).toContain('start --hosted');
   }, 20_000);
 });
 

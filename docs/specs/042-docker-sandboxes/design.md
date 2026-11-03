@@ -185,7 +185,7 @@ omitted. Unknown endpoints return 404.
   restricted runtime).
 - Agent homes run only trusted binaries: the CLI's tools are limited to `Agent`, `WebSearch`
   (executed server-side by Anthropic), `Task*`, and `mcp__baios__*`, which execute in the project
-  sandbox; no Bash/Edit/Read (`apps/companion/src/providers/claude/index.ts:107-119`). So they use
+  sandbox; no Bash/Edit/Read (`sandboxModeArgs()` in `apps/companion/src/providers/claude/index.ts`). So they use
   `runc` and skip gVisor's per-sandbox memory overhead. Project and build sandboxes run arbitrary
   code and get gVisor.
 - `runsc` is registered with `--overlay2=none` so container writes land in Docker's normal overlay

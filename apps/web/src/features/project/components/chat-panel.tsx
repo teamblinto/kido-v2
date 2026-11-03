@@ -5,15 +5,8 @@ import { useEffect, useMemo, useRef } from 'react';
 import { stateReason } from '@/features/settings/subscription-limit';
 import { cn } from '@/lib/utils';
 import type { SubscriptionRunRequest } from '../lib/pay-with';
-import {
-  type ApprovalResolution,
-  type Connection,
-  type TranscriptItem,
-  type TranscriptSource,
-  approvalResolutions,
-} from '../lib/transcript';
+import type { Connection, TranscriptItem, TranscriptSource } from '../lib/transcript';
 import type { ToolKind, ToolStatus } from '../types';
-import { ApprovalCard } from './approval-card';
 import { ChatComposer } from './chat-composer';
 import { RunStateCard } from './run-state-card';
 import { ToolCallCard } from './tool-call-card';
@@ -33,10 +26,8 @@ interface ChatPanelProps {
   onRetry: () => void;
   onStop: () => void;
   onSubmit: (prompt: string, target?: SubscriptionRunRequest) => void;
-  /** Spec 040: where approvals are answered; absent until the organisation is known. */
-  orgId?: string;
   placeholder: string;
-  /** Spec 040: the project the composer's "Run on" choice is remembered for. */
+  /** The project the composer's "Pay with" choice is remembered for. */
   projectId?: string;
   /**
    * The catalogue's sentence for a refused console action, when there is one.
@@ -71,7 +62,6 @@ export function ChatPanel({
   onRetry,
   onStop,
   onSubmit,
-  orgId,
   placeholder,
   projectId,
   refusal,
@@ -98,8 +88,7 @@ export function ChatPanel({
 
     return ends;
   }, [items]);
-  const approvals = useMemo(() => approvalResolutions(items), [items]);
-  // Spec 040: a local agent's failure names the one command that fixes it; the strip offers it.
+  // The failed `state` event; the strip offers its remedy.
   const failure = useMemo(() => {
     for (const { event } of [...items].reverse()) {
       if (event.type === 'state' && event.data.to === 'failed') return event.data;
@@ -135,14 +124,7 @@ export function ChatPanel({
         )}
 
         {items.map((item) => (
-          <ChatEntry
-            key={item.id}
-            approvals={approvals}
-            event={item.event}
-            orgId={orgId}
-            projectId={projectId}
-            toolEnds={toolEnds}
-          />
+          <ChatEntry key={item.id} event={item.event} toolEnds={toolEnds} />
         ))}
         <div ref={endRef} />
       </div>
@@ -175,7 +157,7 @@ export function ChatPanel({
       />
 
       <ChatComposer
-        // Remounted per project, so the remembered "Run on" choice is that project's.
+        // Remounted per project, so the remembered "Pay with" choice is that project's.
         key={projectId}
         isRunning={isRunning}
         isStopping={isStopping}
@@ -199,10 +181,7 @@ function toolKind(tool: string): ToolKind {
 }
 
 interface ChatEntryProps {
-  approvals: ReadonlyMap<string, ApprovalResolution>;
   event: RunEvent;
-  orgId: string | undefined;
-  projectId: string | undefined;
   toolEnds: ReadonlyMap<string, Extract<RunEvent, { type: 'tool.end' }>>;
 }
 
@@ -212,13 +191,7 @@ interface ChatEntryProps {
  * `tool.end` renders nothing of its own: it is the other half of the `tool.start` above it, and
  * drawing both would show every tool call twice.
  */
-function ChatEntry({
-  approvals,
-  event,
-  orgId,
-  projectId,
-  toolEnds,
-}: ChatEntryProps): React.JSX.Element | null {
+function ChatEntry({ event, toolEnds }: ChatEntryProps): React.JSX.Element | null {
   switch (event.type) {
     case 'checkpoint': {
       return (
@@ -251,17 +224,6 @@ function ChatEntry({
 
     case 'sandbox.preparing': {
       return <p className="text-caption text-faint">Preparing sandbox: {event.data.transition}</p>;
-    }
-
-    case 'approval.request': {
-      return (
-        <ApprovalCard
-          event={event}
-          orgId={orgId}
-          projectId={projectId}
-          resolution={approvals.get(event.data.requestId)}
-        />
-      );
     }
 
     case 'state': {
@@ -306,7 +268,8 @@ function ChatEntry({
 
     // `tool.delta` is a tool's output as it streams; `tool.end`, `usage` and `tool.delta` have no
     // entry of their own — the first two belong to the card above, and usage is on the run record.
-    // `approval.resolved` settles the card above it, as `tool.end` does a tool's.
+    // Approvals are history from retired local-agent runs (spec 040); nothing can answer them now.
+    case 'approval.request':
     case 'approval.resolved':
     case 'tool.delta':
     case 'tool.end':

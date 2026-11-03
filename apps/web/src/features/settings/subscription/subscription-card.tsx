@@ -16,7 +16,6 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useNow } from '@/hooks/use-now';
 import { messageFor } from '@/lib/api/problem';
-import { formatCountdown } from '../local-agents/local-agent-copy';
 import {
   SUBSCRIPTIONS_QUERY_KEY,
   cancelSubscriptionSignIn,
@@ -300,4 +299,11 @@ function SignInSteps({
       )}
     </div>
   );
+}
+
+/** `m:ss` until an instant, floored at zero. */
+function formatCountdown(untilIso: string, now: number): string {
+  const seconds = Math.max(0, Math.floor((Date.parse(untilIso) - now) / 1000));
+
+  return `${String(Math.floor(seconds / 60))}:${String(seconds % 60).padStart(2, '0')}`;
 }

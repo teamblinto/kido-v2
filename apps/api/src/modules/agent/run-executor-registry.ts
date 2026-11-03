@@ -1,29 +1,17 @@
 import { Injectable } from '@nestjs/common';
-import type {
-  LocalAgentRunTarget,
-  LocalAgentToolMode,
-  SubscriptionRunTarget,
-} from '@repo/contracts';
-import { localAgentRuns } from '@repo/db';
+import type { SubscriptionRunTarget } from '@repo/contracts';
+import { type LocalAgentRunRow, localAgentRuns } from '@repo/db';
 import { and, eq } from 'drizzle-orm';
 
 import type { TenantTransaction } from '../../database/database.types';
 import type { RunExecutor, RunOutcome } from './run-executor.port';
 
-/** What a run on the person's own device (spec 040) answers besides `execute`. */
+/** What a subscription run's executor (spec 041, on spec 040's runner bridge) answers besides `execute`. */
 export interface LocalRunExecutor extends RunExecutor {
   /**
-   * Inside the create's tenant transaction, after the run row exists: refuse the target with a
-   * problem (offline, provider unavailable, unknown workspace), or record it with the run.
-   */
-  admit(
-    tx: TenantTransaction,
-    run: { orgId: string; projectId: string; runId: string; userId: string },
-    target: LocalAgentRunTarget,
-  ): Promise<void>;
-  /**
-   * Spec 041: the same for a `subscription` target — the person's cloud agent home, signed in
-   * (else `subscription-not-connected`), recorded as a sandbox-tool-mode run on its device.
+   * Inside the create's tenant transaction, after the run row exists: refuse a `subscription`
+   * target with a problem (no agent home, or not signed in: `subscription-not-connected`), or
+   * record it as a sandbox-tool-mode run on the home's device.
    */
   admitSubscription(
     tx: TenantTransaction,
@@ -32,15 +20,15 @@ export interface LocalRunExecutor extends RunExecutor {
   ): Promise<void>;
   /**
    * After commit, for a run a cancel ended where no attempt held it (waiting on its starter): drop
-   * the per-run state the device side keeps. Best effort; it all expires on its own.
+   * the per-run state the runner side keeps. Best effort; it all expires on its own.
    */
   release(runId: string): Promise<void>;
 }
 
 /**
- * A local run on a process where the local executor is not registered (`LOCAL_AGENT_ENABLED`
+ * A subscription run on a process where its executor is not registered (`LOCAL_AGENT_ENABLED`
  * turned off after it was created): it fails, rather than reaching the cloud executor with a
- * prompt meant for the person's own machine.
+ * prompt meant for the person's own subscription.
  */
 export const LOCAL_AGENT_UNAVAILABLE: RunExecutor = {
   execute: (): Promise<RunOutcome> =>
@@ -48,16 +36,17 @@ export const LOCAL_AGENT_UNAVAILABLE: RunExecutor = {
       failureClass: 'executor',
       kind: 'failed',
       reason:
-        'local-agent disabled: local agents are not enabled on this deployment, so this run cannot reach its device',
+        'local-agent disabled: subscription runs are not enabled on this deployment, so this run cannot reach its agent home',
     }),
 };
 
 /**
  * How a run reaches an executor other than `RUN_EXECUTOR` (spec 040 § 3 decision 4). `agent` never
  * imports the local agent module: that module registers itself here at init, so the edge runs
- * `local-agent → agent` only. Whether a run is local is read from `local_agent_runs` through the
- * shared schema (as checkpoints reads `agent_runs`), so it does not depend on the registration: a
- * local run never falls back to the default executor.
+ * `local-agent → agent` only. Whether a run is local (a subscription run, or one from the retired
+ * own-computer feature) is read from `local_agent_runs` through the shared schema (as checkpoints
+ * reads `agent_runs`), so it does not depend on the registration: a local run never falls back to
+ * the default executor.
  */
 @Injectable()
 export class RunExecutorRegistry {
@@ -77,14 +66,14 @@ export class RunExecutorRegistry {
   }
 
   /**
-   * Spec 041: where a local run's tools act — `sandbox` runs use the project's sandbox as a cloud
-   * run does — or `undefined` for a run with no local target.
+   * Where a local run's tools act — `sandbox` (every run now) uses the project's sandbox as a
+   * cloud run does; `workspace` is a retired own-computer run — or `undefined` for a cloud run.
    */
   async toolMode(
     tx: TenantTransaction,
     orgId: string,
     runId: string,
-  ): Promise<LocalAgentToolMode | undefined> {
+  ): Promise<LocalAgentRunRow['toolMode'] | undefined> {
     return (await this.localRun(tx, orgId, runId))?.toolMode;
   }
 

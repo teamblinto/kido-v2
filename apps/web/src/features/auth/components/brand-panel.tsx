@@ -3,7 +3,7 @@ import { ArrowUp, Check, LayoutGrid, Paperclip, Sparkles } from 'lucide-react';
 const features = [
   'Live preview on a real URL, in seconds',
   'Every turn checkpointed — revert anything',
-  'Your own Claude or Codex subscription',
+  'Your own Claude subscription',
 ] as const;
 
 /**

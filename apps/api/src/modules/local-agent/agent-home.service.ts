@@ -321,7 +321,7 @@ export class AgentHomeService {
    * The executor's wake-up: a run on a home whose runner is away starts the home and waits for the
    * runner, `onlineMs` at most in all, giving up at once on the run's cancel or fence (the start
    * itself carries on, bounded, for whoever asks next). `last_used_at` is bumped first, so an idle
-   * stop deciding meanwhile spares the home. `not-a-home` for a person's own computer.
+   * stop deciding meanwhile spares the home. `not-a-home` for a device that is no agent home.
    */
   async wake(
     deviceId: string,

@@ -91,7 +91,7 @@ module.exports = {
     },
     {
       comment:
-        "spec 040 § 7: the companion runs on the person's machine and holds no server credential, so it imports @repo/contracts and @repo/types and nothing else from packages/.",
+        "spec 041: the companion is the runner BAIOS uploads into a person's agent home; it holds no server credential, so it imports @repo/contracts and @repo/types and nothing else from packages/.",
       from: { path: '^apps/companion/(src|test)/' },
       name: 'companion-imports-contracts-types-only',
       severity: 'error',
@@ -99,7 +99,7 @@ module.exports = {
     },
     {
       comment:
-        "spec 040 § 7: the companion links zod and node builtins at runtime and nothing else, so what ships to a person's machine stays auditable.",
+        'spec 041: the runner bundle links zod and node builtins at runtime and nothing else, so what ships into an agent home stays auditable.',
       from: { path: '^apps/companion/src/', pathNot: TESTS },
       name: 'companion-runtime-deps',
       severity: 'error',
@@ -215,27 +215,18 @@ module.exports = {
     ]),
     moduleEdges('health', ['identity']),
     moduleEdges('identity', ['mail', 'outbox']),
-    // Spec 040 § 3: the local agent bridge registers its executor with `agent` (the run port, the
-    // run store's exported services), owns per-person devices behind session and step-up
-    // (`identity`), checks `project:agent.run` on the approval route (`rbac`, `tenancy`), and audits
-    // pairing and revocation (`audit`, `outbox`). The reverse edge is refused: `agent` selects the
-    // executor through a registry it exports, so it never imports this module and the graph stays
-    // acyclic, as `agent → checkpoints` does. `mail` for the new-pairing notice, sent through the
-    // outbox as the BYOS notice is: the consumer renders the template and calls the mailer port.
+    // Spec 040 § 3 (local devices retired by 041; the runner wire remains): the module registers its
+    // executor with `agent` (the run port, the run store's exported services), sits behind session
+    // and step-up (`identity`, `rbac`, `tenancy`), and audits (`audit`, `outbox`). The reverse edge
+    // is refused: `agent` selects the executor through a registry it exports, so it never imports
+    // this module and the graph stays acyclic, as `agent → checkpoints` does. `mail` is sent
+    // through the outbox as the BYOS notice is. This is an allowlist; edges the API no longer uses
+    // after the local-device removal can be dropped once that work lands.
     // Spec 041 adds `sandbox`: a person's agent home is a Daytona sandbox created from the
     // `agent-home` system template, through `SandboxModule`'s exported `DaytonaAdapter` and
     // `TemplateVersions` (never its repository). The reverse edge is refused: `sandbox` knows
     // nothing of homes, and its reconciler leaves them alone (they carry no `forge.owner` label).
-    moduleEdges('local-agent', [
-      'agent',
-      'audit',
-      'identity',
-      'mail',
-      'outbox',
-      'rbac',
-      'sandbox',
-      'tenancy',
-    ]),
+    moduleEdges('local-agent', ['agent', 'audit', 'identity', 'rbac', 'sandbox', 'tenancy']),
     moduleEdges('mail', []),
     moduleEdges('outbox', []),
     // Spec 017 contract § 9: the four edges the route broker needs; `tenancy → preview` is not

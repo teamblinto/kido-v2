@@ -1,21 +1,15 @@
 import { z } from 'zod';
 
-import { runApprovalDecisionSchema, runApprovalKindSchema } from '../agent/run';
 import {
   companionFailureClassSchema,
   localAgentAuthMethodSchema,
   localAgentModelSchema,
-  localAgentPermissionModeSchema,
   localAgentProviderSchema,
   localAgentProviderSessionIdSchema,
   localAgentProviderStatusSchema,
-  localAgentToolModeSchema,
-  localAgentWorkspaceIdSchema,
-  localAgentWorkspaceSchema,
 } from './provider';
 
-// Defined beside the provider vocabulary (run.ts reads them, and run.ts is imported here), and
-// re-exported so the wire's names stay where the companion looks for them.
+// Defined beside the provider vocabulary (run.ts reads them), and re-exported so the wire's names stay where the companion looks for them.
 export {
   COMPANION_FAILURE_CLASSES,
   type CompanionFailureClass,
@@ -25,10 +19,10 @@ export {
 } from './provider';
 
 /**
- * The companion's wire (spec 040 § 3 decision 2, § 4): commands down an SSE stream whose `id:` is
- * the stream seq (so `Last-Event-ID` resumes it), and status and run events up over HTTPS POST.
- * Both directions are validated on receipt: the companion trusts the server no more than the
- * server trusts the companion.
+ * The runner's wire (spec 040 § 4, spec 041): the companion in hosted mode, inside a person's cloud
+ * agent home, takes commands down an SSE stream whose `id:` is the stream seq (so
+ * `Last-Event-ID` resumes it), and sends status and run events up over HTTPS POST. Both
+ * directions are validated on receipt: the runner trusts the server no more than the reverse.
  */
 
 const runId = z.uuid();
@@ -38,7 +32,7 @@ const runId = z.uuid();
  * server files each turn's events apart, so a late retry of turn 1 cannot land in turn 2.
  */
 const turn = z.number().int().min(1);
-const requestId = z.string().min(1).max(128);
+const toolId = z.string().min(1).max(128);
 
 /** The longest heartbeat interval `hello` may set; the companion's watchdog is three of them. */
 export const LOCAL_AGENT_MAX_HEARTBEAT_SECONDS = 300;
@@ -52,8 +46,7 @@ export const LOCAL_AGENT_MAX_HEARTBEAT_SECONDS = 300;
 export const LOCAL_AGENT_MAX_COMMAND_CHARS = 327_680;
 
 /**
- * The sandbox tool bridge (spec 041): in the `sandbox` tool mode the CLI's own file and shell
- * tools are off, and it calls these — the cloud agent's tools, by wire name — through a tool
+ * The sandbox tool bridge (spec 041): the CLI's own file and shell tools are off, and it calls these — the cloud agent's tools, by wire name — through a tool
  * server the companion runs, which relays each call to the server as a `tool.call` run event and
  * answers the CLI with the `tool.result` command. The companion names that server
  * {@link LOCAL_AGENT_SANDBOX_TOOL_SERVER}, so the CLI reports the tools as `mcp__baios__<name>`.
@@ -115,8 +108,8 @@ export const companionToolDefinitionSchema = z.strictObject({
 export type CompanionToolDefinition = z.output<typeof companionToolDefinitionSchema>;
 
 /**
- * Opaque and stable per BAIOS project (the server derives it; the companion only keys on it): in
- * the `sandbox` mode the companion runs the CLI in one empty directory per key, so the CLI's
+ * Opaque and stable per BAIOS project (the server derives it; the companion only keys on it): the
+ * companion runs the CLI in one empty directory per key, so the CLI's
  * resume finds the sessions it saved there.
  */
 export const localAgentConversationKeySchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
@@ -149,54 +142,27 @@ export const companionCommandSchema = z.discriminatedUnion('type', [
     type: z.literal('hello'),
   }),
   z.strictObject({ type: z.literal('status.refresh') }),
-  z
-    .strictObject({
-      /** Stable per project (see the schema); `null` from a server that sends none. */
-      conversationKey: localAgentConversationKeySchema.nullable().default(null),
-      /** `null` leaves the choice to the CLI's own default. */
-      model: localAgentModelSchema.nullable(),
-      permissionMode: localAgentPermissionModeSchema,
-      prompt: z.string().min(1).max(32_000),
-      provider: localAgentProviderSchema,
-      /** The provider's own session/thread id from an earlier run, as an opaque reference. */
-      resume: z.strictObject({ providerSessionId: localAgentProviderSessionIdSchema }).nullable(),
-      runId,
-      /** Left out by a server older than the bridge, which means `workspace`. */
-      toolMode: localAgentToolModeSchema.default('workspace'),
-      /** `sandbox` only: the tools to offer the CLI, and only these. */
-      toolset: z
-        .array(companionToolDefinitionSchema)
-        .min(1)
-        .max(LOCAL_AGENT_SANDBOX_TOOLS.length)
-        .optional(),
-      turn,
-      type: z.literal('run.start'),
-      /** `workspace` only; `null` in the `sandbox` mode. */
-      workspaceId: localAgentWorkspaceIdSchema.nullable(),
-    })
-    .refine(
-      (start) =>
-        start.toolMode === 'sandbox'
-          ? start.workspaceId === null && start.toolset !== undefined
-          : start.workspaceId !== null && start.toolset === undefined,
-      {
-        error: 'A workspace run names a workspace and no toolset; a sandbox run the reverse.',
-        path: ['toolMode'],
-      },
-    ),
+  z.strictObject({
+    /** Stable per project (see the schema). */
+    conversationKey: localAgentConversationKeySchema,
+    /** `null` leaves the choice to the CLI's own default. */
+    model: localAgentModelSchema.nullable(),
+    prompt: z.string().min(1).max(32_000),
+    provider: localAgentProviderSchema,
+    /** The provider's own session id from an earlier run, as an opaque reference. */
+    resume: z.strictObject({ providerSessionId: localAgentProviderSessionIdSchema }).nullable(),
+    runId,
+    /** The tools to offer the CLI, and only these. */
+    toolset: z.array(companionToolDefinitionSchema).min(1).max(LOCAL_AGENT_SANDBOX_TOOLS.length),
+    turn,
+    type: z.literal('run.start'),
+  }),
   z.strictObject({
     message: z.string().min(1).max(32_000),
     runId,
     type: z.literal('run.input'),
   }),
   z.strictObject({ runId, turn, type: z.literal('run.interrupt') }),
-  z.strictObject({
-    decision: runApprovalDecisionSchema,
-    message: z.string().max(2_000).optional(),
-    requestId,
-    runId,
-    type: z.literal('approval.respond'),
-  }),
   z.strictObject({ type: z.literal('device.revoked') }),
   z.strictObject({
     callId,
@@ -220,22 +186,9 @@ export type CompanionCommandType = CompanionCommand['type'];
 export const companionStatusReportSchema = z.strictObject({
   companionVersion: z.string().trim().min(1).max(64),
   providers: z.array(localAgentProviderStatusSchema).max(10),
-  workspaces: z.array(localAgentWorkspaceSchema).max(100),
 });
 
 export type CompanionStatusReport = z.output<typeof companionStatusReportSchema>;
-
-/**
- * Relative to the workspace root, never absolute and never climbing out of it: a path is shown
- * to people, so one that names somewhere else on the machine is refused rather than displayed.
- */
-const workspaceRelativePath = z
-  .string()
-  .min(1)
-  .max(1_024)
-  .refine((path) => !/^([A-Za-z]:|[\\/])/.test(path) && !path.split(/[\\/]/).includes('..'), {
-    error: 'Must be relative to the workspace.',
-  });
 
 const chunk = z.string().max(65_536);
 
@@ -261,18 +214,18 @@ export const companionRunEventSchema = z.discriminatedUnion('type', [
     data: z.strictObject({
       input: z.unknown(),
       name: z.string().min(1).max(200),
-      toolId: requestId,
+      toolId,
     }),
     seq,
     type: z.literal('tool.start'),
   }),
   z.strictObject({
-    data: z.strictObject({ chunk, toolId: requestId }),
+    data: z.strictObject({ chunk, toolId }),
     seq,
     type: z.literal('tool.output'),
   }),
   z.strictObject({
-    data: z.strictObject({ ok: z.boolean(), summary: chunk.nullable(), toolId: requestId }),
+    data: z.strictObject({ ok: z.boolean(), summary: chunk.nullable(), toolId }),
     seq,
     type: z.literal('tool.end'),
   }),
@@ -292,26 +245,8 @@ export const companionRunEventSchema = z.discriminatedUnion('type', [
       name: localAgentSandboxToolSchema,
     }),
     seq,
-    /** `sandbox` mode: the CLI called a bridged tool; the server answers with `tool.result`. */
+    /** The CLI called a bridged tool; the server answers with `tool.result`. */
     type: z.literal('tool.call'),
-  }),
-  z.strictObject({
-    data: z.strictObject({
-      kind: z.enum(['created', 'modified', 'deleted']),
-      path: workspaceRelativePath,
-    }),
-    seq,
-    type: z.literal('file.change'),
-  }),
-  z.strictObject({
-    data: z.strictObject({
-      detail: chunk,
-      kind: runApprovalKindSchema,
-      requestId,
-      title: z.string().min(1).max(500),
-    }),
-    seq,
-    type: z.literal('approval.request'),
   }),
   z.strictObject({
     data: z.strictObject({

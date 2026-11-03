@@ -1,13 +1,14 @@
 /**
- * `baios-companion` (spec 040 § 7). Dials out to BAIOS and drives the person's own, signed-in CLI
- * on this machine; it never listens on the network and never reads a provider credential.
+ * The BAIOS runner (spec 041): BAIOS uploads this bundle into a person's cloud agent home and runs
+ * `start --hosted`. It dials out to BAIOS and drives the signed-in Claude Code CLI there; it never
+ * listens on the network.
  */
 import { fileURLToPath } from 'node:url';
 
 import { runCli } from './cli.ts';
 import { log } from './log.ts';
 
-// Re-run as `mcp-approval` by Claude Code, so this file must stay the entry point.
+// Re-run as `mcp-tools` by Claude Code, so this file must stay the entry point.
 const selfScript = fileURLToPath(import.meta.url);
 
 runCli(process.argv.slice(2), selfScript).then(

@@ -89,28 +89,8 @@ export const PROBLEM_TYPES = Object.freeze({
   'import-empty-repo': { refines: 'conflict', status: 409, title: 'Repository Has No Commits' },
   'import-repo-too-large': { refines: 'conflict', status: 409, title: 'Repository Too Large' },
   'internal-server-error': { status: 500, title: 'Internal Server Error' },
-  // Spec 040's five refusals, all refinements. Offline and provider-unavailable are 409s: the
-  // request is fine and the device's present state refuses it — not 503, which would claim our
-  // outage over a laptop that is asleep. An unknown workspace is a 404 of the id it named. A dead
-  // pairing code is a 400 for `oauth-state-invalid`'s reason, collapsing unknown, expired and
-  // spent into one. A revoked device token is the 401 the companion re-pairs on (§ 6).
-  'local-agent-offline': { refines: 'conflict', status: 409, title: 'Local Agent Offline' },
-  'local-agent-pairing-invalid': {
-    refines: 'bad-request',
-    status: 400,
-    title: 'Pairing Code Not Recognised',
-  },
-  'local-agent-provider-unavailable': {
-    refines: 'conflict',
-    status: 409,
-    title: 'Local Agent Provider Unavailable',
-  },
+  // Spec 040 § 6: the runner's device token is unknown, malformed or revoked — the 401 it stops on.
   'local-agent-revoked': { refines: 'unauthorized', status: 401, title: 'Local Agent Revoked' },
-  'local-agent-workspace-unknown': {
-    refines: 'not-found',
-    status: 404,
-    title: 'Local Agent Workspace Unknown',
-  },
   'method-not-allowed': { status: 405, title: 'Method Not Allowed' },
   // A 403 refinement, and `forbidden` rather than `unauthorized` for the same reason
   // `current-password-incorrect` is: the caller's session is perfectly good — the guard let them
@@ -204,8 +184,8 @@ export const PROBLEM_TYPES = Object.freeze({
     status: 403,
     title: 'Step-Up Authentication Required',
   },
-  // Spec 041. Not connected is the person's present state refusing a fine request (409, like
-  // `local-agent-offline`); unavailable is the deployment's (feature off, template unpublished).
+  // Spec 041. Not connected is the person's present state refusing a fine request (a 409, not a
+  // 503); unavailable is the deployment's (feature off, template unpublished).
   'subscription-not-connected': {
     refines: 'conflict',
     status: 409,

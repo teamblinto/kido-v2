@@ -25,23 +25,6 @@ const adapter = createClaudeAdapter({
   selfScript: SELF_SCRIPT,
 });
 
-function run(prompt: string, extra: Partial<StartRunOptions> = {}) {
-  const cwd = tempDir('baios-ws-');
-  const handle = adapter.startRun({
-    cwd,
-    model: 'sonnet',
-    permissionMode: 'default',
-    prompt,
-    resume: null,
-    toolset: null,
-    ...extra,
-  });
-  return { cwd, handle };
-}
-
-const ofType = <T extends RunEventBody['type']>(events: RunEventBody[], type: T) =>
-  events.filter((event): event is Extract<RunEventBody, { type: T }> => event.type === type);
-
 const TOOLSET: CompanionToolDefinition[] = [
   {
     description: 'Read a file in the sandbox.',
@@ -50,6 +33,22 @@ const TOOLSET: CompanionToolDefinition[] = [
   },
   { description: 'Run a command in the sandbox.', inputSchema: { type: 'object' }, name: 'exec' },
 ];
+
+function run(prompt: string, extra: Partial<StartRunOptions> = {}) {
+  const cwd = tempDir('baios-cwd-');
+  const handle = adapter.startRun({
+    cwd,
+    model: 'sonnet',
+    prompt,
+    resume: null,
+    toolset: TOOLSET,
+    ...extra,
+  });
+  return { cwd, handle };
+}
+
+const ofType = <T extends RunEventBody['type']>(events: RunEventBody[], type: T) =>
+  events.filter((event): event is Extract<RunEventBody, { type: T }> => event.type === type);
 
 afterEach(() => {
   delete process.env.FAKE_CLAUDE_INFO_FILE;
@@ -75,7 +74,7 @@ describe('Claude adapter', () => {
     process.env.FAKE_CLAUDE_AUTH = 'none';
     const signedOut = await adapter.probe();
     expect(signedOut.auth.status).toBe('unauthenticated');
-    expect(signedOut.message).toContain('baios-companion login claude');
+    expect(signedOut.message).toContain('Sign in to Claude from BAIOS');
   });
 
   it('reports not installed when the binary is missing', async () => {
@@ -109,64 +108,11 @@ describe('Claude adapter', () => {
       ]),
     );
     // Server-derived values ride in the same token as their flag, so none can become a flag.
-    expect(argv).toEqual(
-      expect.arrayContaining(['--permission-mode=manual', '--model=sonnet', '--resume=sess-9']),
-    );
+    expect(argv).toEqual(expect.arrayContaining(['--model=sonnet', '--resume=sess-9']));
     expect(argv).not.toContain('sess-9');
-    expect(argv).toContain('mcp__baios__approve');
-    expect(argv).not.toContain('--setting-sources');
-    expect(argv.join(' ')).not.toMatch(/bypass|dangerously|BAIOS_APPROVAL_TOKEN/i);
+    expect(argv.join(' ')).not.toMatch(/bypass|dangerously|BAIOS_TOOL_TOKEN/i);
     const mcpConfig = argv[argv.indexOf('--mcp-config') + 1] ?? '';
     expect(existsSync(mcpConfig)).toBe(false); // temp files removed on dispose
-  });
-
-  it('round-trips an approval through the real mcp-approval subprocess and IPC (allow)', async () => {
-    const { cwd, handle } = run('please write a file');
-    const events = await collect(handle, (event) => {
-      if (event.type === 'approval.request') handle.respondApproval(event.data.requestId, 'allow');
-    });
-    expect(readFileSync(join(cwd, 'hello.txt'), 'utf8')).toBe('hi');
-    expect(ofType(events, 'approval.request')).toEqual([
-      {
-        data: {
-          detail: 'hi',
-          kind: 'file_change',
-          requestId: 'toolu_write_1',
-          title: 'Write hello.txt',
-        },
-        type: 'approval.request',
-      },
-    ]);
-    expect(ofType(events, 'file.change')).toEqual([
-      { data: { kind: 'created', path: 'hello.txt' }, type: 'file.change' },
-    ]);
-    expect(ofType(events, 'tool.end')[0]?.data).toEqual({
-      ok: true,
-      summary: 'Done in <workspace>',
-      toolId: 'toolu_write_1',
-    });
-    expect(JSON.stringify(events)).not.toContain(JSON.stringify(cwd).slice(1, -1));
-    expect(textOf(events)).toBe('allow');
-    expect(terminalOf(events)).toEqual({ status: 'completed' });
-  });
-
-  it('passes a denial and its message back to the CLI', async () => {
-    const { handle } = run('run bash');
-    const events = await collect(handle, (event) => {
-      if (event.type === 'approval.request') {
-        handle.respondApproval(event.data.requestId, 'deny', 'Not on my machine');
-      }
-    });
-    expect(ofType(events, 'approval.request')[0]?.data).toMatchObject({
-      detail: 'ls <workspace>',
-      kind: 'command',
-      title: 'Bash: ls <workspace>',
-    });
-    expect(ofType(events, 'tool.end')[0]?.data).toMatchObject({
-      ok: false,
-      summary: 'Not on my machine',
-    });
-    expect(textOf(events)).toBe('deny');
   });
 
   it('interrupts with a control request', async () => {
@@ -208,48 +154,6 @@ describe('Claude adapter', () => {
       expect(terminal.failure?.class).toBe('provider');
     }
     expect(existsSync(argvFile)).toBe(false);
-  });
-
-  it('in plan mode denies anything but read-only tools locally, without asking BAIOS (H3)', async () => {
-    const { handle } = run('run bash', { permissionMode: 'plan' });
-    const events = await collect(handle);
-    expect(ofType(events, 'approval.request')).toEqual([]);
-    expect(ofType(events, 'tool.end')[0]?.data).toMatchObject({ ok: false });
-    expect(ofType(events, 'tool.end')[0]?.data.summary).toContain('Plan mode');
-    expect(textOf(events)).toBe('deny');
-  });
-
-  it('denies a command too long to show whole, and marks long file content truncated (M2)', async () => {
-    const command = await collect(run('run long bash').handle);
-    expect(ofType(command, 'approval.request')).toEqual([]);
-    expect(ofType(command, 'tool.end')[0]?.data.summary).toContain('too long');
-
-    const { handle } = run('long write');
-    const events = await collect(handle, (event) => {
-      if (event.type === 'approval.request') handle.respondApproval(event.data.requestId, 'deny');
-    });
-    const request = ofType(events, 'approval.request')[0]?.data;
-    expect(request?.title).toBe('Write hello.txt (truncated)');
-    expect(request?.detail.length).toBe(8_000);
-  });
-
-  it('in acceptEdits writes routine files without asking, but asks for sensitive ones (M3)', async () => {
-    const argvFile = join(tempDir(), 'argv.json');
-    process.env.FAKE_CLAUDE_ARGV_FILE = argvFile;
-    const routine = run('please write', { permissionMode: 'acceptEdits' });
-    const events = await collect(routine.handle);
-    expect(ofType(events, 'approval.request')).toEqual([]);
-    expect(readFileSync(join(routine.cwd, 'hello.txt'), 'utf8')).toBe('hi');
-    // The CLI's own acceptEdits would skip the prompt tool entirely.
-    expect(JSON.parse(readFileSync(argvFile, 'utf8'))).toContain('--permission-mode=manual');
-
-    const sensitive = run('please write:.env', { permissionMode: 'acceptEdits' });
-    const asked = await collect(sensitive.handle, (event) => {
-      if (event.type === 'approval.request')
-        sensitive.handle.respondApproval(event.data.requestId, 'deny');
-    });
-    expect(ofType(asked, 'approval.request')[0]?.data.title).toBe('Write .env (sensitive path)');
-    expect(existsSync(join(sensitive.cwd, '.env'))).toBe(false);
   });
 
   it('removes its temp folder when interrupted before the CLI starts (L1)', async () => {
@@ -298,7 +202,7 @@ describe('Claude adapter', () => {
   it('classifies auth and usage-limit failures', async () => {
     const auth = terminalOf(await collect(run('auth please').handle));
     expect(auth.failure?.class).toBe('auth');
-    expect(auth.failure?.message).toContain('login claude');
+    expect(auth.failure?.message).toContain('Sign in again from BAIOS');
     const limit = terminalOf(await collect(run('limit please').handle));
     expect(limit.failure).toEqual({
       class: 'usage_limit',
@@ -308,7 +212,7 @@ describe('Claude adapter', () => {
   });
 });
 
-describe('Claude adapter, sandbox tool mode', () => {
+describe('Claude adapter, BAIOS tools', () => {
   it('relays a BAIOS tool through the real MCP subprocess, with built-ins off and an empty cwd', async () => {
     const dir = tempDir();
     process.env.FAKE_CLAUDE_ARGV_FILE = join(dir, 'argv.json');
@@ -361,7 +265,7 @@ describe('Claude adapter, sandbox tool mode', () => {
     const done = collect(handle, (event) => {
       if (event.type === 'tool.call') calls.push(event.data.callId);
     });
-    // What the approval bridge calls for each MCP tools/call from the CLI.
+    // What the tool bridge calls for each MCP tools/call from the CLI.
     const bridge = handle as unknown as {
       onToolCall: (name: string, input: object) => Promise<{ isError: boolean; output: string }>;
     };
@@ -393,7 +297,6 @@ describe('Claude adapter, sandbox tool mode', () => {
     const handle = quick.startRun({
       cwd: tempDir(),
       model: null,
-      permissionMode: 'default',
       prompt: 'use tool:exec',
       resume: null,
       toolset: TOOLSET,

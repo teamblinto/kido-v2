@@ -93,8 +93,6 @@ export const server = setupServer(
   http.get(`${API}/orgs/:orgId/settings/personal-accounts`, () =>
     HttpResponse.json({ allowed: true }),
   ),
-  // Spec 040: the composer asks which computers are paired; none unless a test says otherwise.
-  http.get(`${API}/me/local-agents`, () => HttpResponse.json({ devices: [] })),
   // Spec 041: the composer asks whether the person's Claude plan is connected; not unless a test
   // says otherwise.
   http.get(`${API}/me/subscriptions`, () =>

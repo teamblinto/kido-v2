@@ -3,7 +3,6 @@ import type { LocalAgentDeviceRow } from '@repo/db';
 import { describe, expect, it, vi } from 'vitest';
 
 import { FakeClock } from '../../common/clock/fake-clock';
-import type { OutboxWriter } from '../outbox/outbox-writer';
 import { DeviceService } from './device.service';
 import type { LocalAgentRepository } from './local-agent.repository';
 import type { AppendResult, LocalAgentStore } from './local-agent.store';
@@ -16,8 +15,9 @@ const ORG = 'b0400000-0000-4000-8000-0000000000c1';
 const device = {
   companionVersion: '0.1.0',
   id: DEVICE,
+  kind: 'cloud',
   lastSeenAt: null,
-  name: 'Laptop',
+  name: 'Cloud agent home',
   platform: 'linux',
   revokedAt: null,
   userId: USER,
@@ -28,41 +28,29 @@ const batch: CompanionRunEventBatch = {
   turn: 2,
 };
 
-function setup(
-  options: { status?: string; appended?: AppendResult; live?: { runId: string }[] } = {},
-) {
+function setup(options: { status?: string; appended?: AppendResult } = {}) {
   const repository = {
     byId: vi.fn(() => Promise.resolve(device)),
-    create: vi.fn((values: object, also: (tx: unknown, row: unknown) => Promise<void>) =>
-      also('tx', { ...values, id: DEVICE }).then(() => ({ ...values, id: DEVICE })),
-    ),
-    liveRunsOf: vi.fn(() =>
-      Promise.resolve((options.live ?? []).map((run) => ({ ...run, orgId: ORG }))),
-    ),
-    revoke: vi.fn(() => Promise.resolve(device)),
+    byTokenHash: vi.fn(() => Promise.resolve(device)),
     runForDevice: vi.fn(() =>
       Promise.resolve({ orgId: ORG, providerSessionId: null, status: options.status ?? 'running' }),
     ),
     setProviderSession: vi.fn(() => Promise.resolve()),
+    touch: vi.fn(() => Promise.resolve()),
   };
   const store = {
     abortRun: vi.fn(() => Promise.resolve()),
     appendRunEvents: vi.fn(() =>
       Promise.resolve(options.appended ?? { accepted: 1, kind: 'appended' }),
     ),
-    forget: vi.fn(() => Promise.resolve()),
-    publish: vi.fn(() => Promise.resolve()),
   };
-  const outbox = { append: vi.fn(() => Promise.resolve({ eventId: 'e1' })) };
   const service = new DeviceService(
     repository as unknown as LocalAgentRepository,
     store as unknown as LocalAgentStore,
     new FakeClock('2026-11-02T00:00:00Z'),
-    outbox as unknown as OutboxWriter,
-    { get: () => 'deny' } as never,
   );
 
-  return { outbox, repository, service, store };
+  return { repository, service, store };
 }
 
 describe('DeviceService', () => {
@@ -104,31 +92,6 @@ describe('DeviceService', () => {
     });
   });
 
-  it('revokes: tells the device, forgets it, and aborts every run it may be executing', async () => {
-    const { service, store } = setup({ live: [{ runId: RUN }, { runId: 'other-run' }] });
-
-    await service.revoke(USER, DEVICE);
-
-    expect(store.publish).toHaveBeenCalledWith(DEVICE, { type: 'device.revoked' });
-    expect(store.forget).toHaveBeenCalledWith(DEVICE);
-    expect(store.abortRun.mock.calls).toEqual([
-      [RUN, 'revoked'],
-      ['other-run', 'revoked'],
-    ]);
-  });
-
-  it('queues the pairing notice in the insert’s transaction, by id only', async () => {
-    const { outbox, service } = setup();
-
-    await service.create(USER, { companionVersion: '0.1.0', name: 'Laptop', platform: 'linux' });
-
-    expect(outbox.append).toHaveBeenCalledWith('tx', {
-      aggregateId: DEVICE,
-      payload: { deviceId: DEVICE, recipientUserId: USER },
-      type: 'mail.local-agent-paired',
-    });
-  });
-
   it('is live while its row exists unrevoked', async () => {
     const { repository, service } = setup();
 
@@ -137,5 +100,40 @@ describe('DeviceService', () => {
     await expect(service.isLive(DEVICE)).resolves.toBe(false);
     repository.byId.mockResolvedValueOnce(undefined as unknown as LocalAgentDeviceRow);
     await expect(service.isLive(DEVICE)).resolves.toBe(false);
+    // A person's own paired computer (spec 040) is retired: never live, even unrevoked.
+    repository.byId.mockResolvedValueOnce({ ...device, kind: 'local' });
+    await expect(service.isLive(DEVICE)).resolves.toBe(false);
+  });
+
+  describe('authenticate', () => {
+    const token = `bld_${'a'.repeat(43)}`;
+
+    it('takes a live agent home’s token', async () => {
+      const { service } = setup();
+
+      await expect(service.authenticate(token)).resolves.toBe(device);
+    });
+
+    it('refuses a missing, malformed, unknown, revoked or retired-local token as revoked (401)', async () => {
+      const { repository, service } = setup();
+
+      await expect(service.authenticate(undefined)).rejects.toMatchObject({
+        type: 'local-agent-revoked',
+      });
+      await expect(service.authenticate('bld_short')).rejects.toMatchObject({
+        type: 'local-agent-revoked',
+      });
+
+      for (const found of [
+        undefined,
+        { ...device, revokedAt: new Date() },
+        { ...device, kind: 'local' },
+      ]) {
+        repository.byTokenHash.mockResolvedValueOnce(found as LocalAgentDeviceRow);
+        await expect(service.authenticate(token)).rejects.toMatchObject({
+          type: 'local-agent-revoked',
+        });
+      }
+    });
   });
 });

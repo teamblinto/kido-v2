@@ -1,11 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type {
-  LocalAgentPermissionMode,
-  LocalAgentPlatform,
-  LocalAgentProvider,
-  LocalAgentToolMode,
-  RunStatus,
-} from '@repo/contracts';
+import type { LocalAgentProvider, RunStatus } from '@repo/contracts';
 import {
   agentRuns,
   type LocalAgentDeviceRow,
@@ -13,7 +7,7 @@ import {
   type LocalAgentRunRow,
   localAgentRuns as runs,
 } from '@repo/db';
-import { and, asc, eq, getTableColumns, inArray, isNull, sql } from 'drizzle-orm';
+import { and, eq, getTableColumns, inArray, sql } from 'drizzle-orm';
 
 import { APP_DATABASE, BYPASS_DATABASE } from '../../database/database.constants';
 import type { ForgeDatabase, TenantTransaction } from '../../database/database.types';
@@ -27,12 +21,12 @@ export const LIVE_RUN_STATUSES = [
 ] as const satisfies RunStatus[];
 
 /**
- * `local_agent_devices` and `local_agent_runs` (spec 040). Devices are a root table with no RLS
- * (migration 0051), so ownership is this class's to keep: every read a person can reach names
- * `user_id`. The token lookup is the one read without a person — the device token *is* the
- * caller — and it is by digest. Runs are tenant-owned: written in the run's tenant transaction,
- * and read across tenants only by `runForDevice`, through the read-only bypass role, for a device
- * that names no organisation.
+ * `local_agent_devices` and `local_agent_runs` (spec 040's tables; spec 041's runner). Devices are
+ * a root table with no RLS (migration 0051), so ownership is this class's to keep; an agent home's
+ * `cloud` device is created by `AgentHomeRepository`. The token lookup is the one read without a
+ * person — the device token *is* the caller — and it is by digest. Runs are tenant-owned: written
+ * in the run's tenant transaction, and read across tenants only by `runForDevice`, through the
+ * read-only bypass role, for a device that names no organisation.
  */
 @Injectable()
 export class LocalAgentRepository {
@@ -41,27 +35,6 @@ export class LocalAgentRepository {
     @Inject(BYPASS_DATABASE) private readonly bypass: ForgeDatabase,
     @Inject(TenantTransactionRunner) private readonly transactions: TenantTransactionRunner,
   ) {}
-
-  /** `also` runs in the insert's transaction (the pairing notice's outbox row). */
-  async create(
-    values: {
-      userId: string;
-      name: string;
-      platform: LocalAgentPlatform;
-      companionVersion: string;
-      tokenHash: string;
-    },
-    also: (tx: TenantTransaction, row: LocalAgentDeviceRow) => Promise<void> = () =>
-      Promise.resolve(),
-  ): Promise<LocalAgentDeviceRow> {
-    return this.transactions.runInUserTransaction(values.userId, async (tx) => {
-      const [row] = await tx.insert(devices).values(values).returning();
-
-      await also(tx, row!);
-
-      return row!;
-    });
-  }
 
   /** A device by id, whoever owns it: the command stream's per-heartbeat liveness check. */
   async byId(deviceId: string): Promise<LocalAgentDeviceRow | undefined> {
@@ -87,46 +60,6 @@ export class LocalAgentRepository {
       .where(eq(devices.id, deviceId));
   }
 
-  /**
-   * The person's live paired computers, oldest first. Never an agent home's `cloud` device
-   * (spec 041): that one is managed through `/me/subscriptions`, not paired or revoked by hand.
-   */
-  listForUser(userId: string): Promise<LocalAgentDeviceRow[]> {
-    return this.transactions.runInUserTransaction(userId, (tx) =>
-      tx
-        .select()
-        .from(devices)
-        .where(
-          and(eq(devices.userId, userId), isNull(devices.revokedAt), eq(devices.kind, 'local')),
-        )
-        .orderBy(asc(devices.createdAt)),
-    );
-  }
-
-  /** Revokes the person's own live device; `undefined` for anyone else's, or one already revoked. */
-  async revoke(
-    userId: string,
-    deviceId: string,
-    at: Date,
-  ): Promise<LocalAgentDeviceRow | undefined> {
-    const [row] = await this.transactions.runInUserTransaction(userId, (tx) =>
-      tx
-        .update(devices)
-        .set({ revokedAt: at, updatedAt: sql`now()` })
-        .where(
-          and(
-            eq(devices.id, deviceId),
-            eq(devices.userId, userId),
-            isNull(devices.revokedAt),
-            eq(devices.kind, 'local'),
-          ),
-        )
-        .returning(),
-    );
-
-    return row;
-  }
-
   async deviceOn(
     tx: TenantTransaction,
     deviceId: string,
@@ -136,19 +69,14 @@ export class LocalAgentRepository {
     return row;
   }
 
+  /** Always the sandbox tool mode: the CLI's own tools are off and it calls the sandbox's. */
   async insertRun(
     tx: TenantTransaction,
-    values: {
-      orgId: string;
-      runId: string;
-      deviceId: string;
-      provider: LocalAgentProvider;
-      toolMode: LocalAgentToolMode;
-      workspaceId: string | null;
-      permissionMode: LocalAgentPermissionMode;
-    },
+    values: { orgId: string; runId: string; deviceId: string; provider: LocalAgentProvider },
   ): Promise<void> {
-    await tx.insert(runs).values(values);
+    await tx
+      .insert(runs)
+      .values({ ...values, permissionMode: 'default', toolMode: 'sandbox', workspaceId: null });
   }
 
   async runOn(

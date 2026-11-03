@@ -101,12 +101,12 @@ describe('Uplink', () => {
   it('splits an oversized delta into contract-sized chunks and drops invalid events', async () => {
     const { post, posts } = recorder();
     const uplink = new Uplink(post, { flushMs: 1 });
-    uplink.push(RUN, 1, { data: { kind: 'created', path: '/etc/passwd' }, type: 'file.change' });
+    uplink.push(RUN, 1, { data: { input: {}, name: '', toolId: 't1' }, type: 'tool.start' });
     uplink.push(RUN, 1, text('q'.repeat(70_000)));
     uplink.push(RUN, 1, completed);
     expect(await uplink.drain(2_000)).toBe(true);
     const sent = posts.flat();
-    expect(sent.some((event) => event.type === 'file.change')).toBe(false);
+    expect(sent.some((event) => event.type === 'tool.start')).toBe(false);
     expect(sent.filter((event) => event.type === 'text.delta').map((event) => event.seq)).toEqual([
       1, 2,
     ]);

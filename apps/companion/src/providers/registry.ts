@@ -4,19 +4,15 @@ import {
   type LocalAgentProviderStatus,
 } from '@repo/contracts';
 
-import type { CompanionConfig } from '../config.ts';
 import { scrub } from '../log.ts';
 import { redactPaths, truncate } from '../util.ts';
 import { createClaudeAdapter } from './claude/index.ts';
-import { createCodexAdapter } from './codex/index.ts';
 import type { AdapterContext, ProviderAdapter, ProviderProbe } from './types.ts';
 
-const redactHome = redactPaths(null, Infinity);
+const redactHome = redactPaths(Infinity);
 
-/** Adding a CLI: a folder beside `claude/` and `codex/`, plus one entry here. */
 const FACTORIES: Record<LocalAgentProvider, (ctx: AdapterContext) => ProviderAdapter> = {
   claude: createClaudeAdapter,
-  codex: createCodexAdapter,
 };
 
 export type ProbedStatus = Omit<LocalAgentProviderStatus, 'policy'>;
@@ -28,20 +24,12 @@ export class ProviderRegistry {
   private readonly inFlight = new Map<LocalAgentProvider, Promise<ProbedStatus>>();
 
   constructor(
-    config: CompanionConfig,
     selfScript: string,
-    extra: Pick<AdapterContext, 'interruptGraceMs' | 'toolCallTimeoutMs'> = {},
+    extra: Pick<AdapterContext, 'binary' | 'interruptGraceMs' | 'toolCallTimeoutMs'> = {},
   ) {
-    const entries = LOCAL_AGENT_PROVIDERS.map((id) => {
-      const settings = config.providers[id];
-      const ctx: AdapterContext = {
-        ...extra,
-        binary: settings.binary,
-        selfScript,
-        settingSources: settings.settingSources,
-      };
-      return [id, FACTORIES[id](ctx)] as const;
-    });
+    const entries = LOCAL_AGENT_PROVIDERS.map(
+      (id) => [id, FACTORIES[id]({ ...extra, selfScript })] as const,
+    );
     this.adapters = Object.fromEntries(entries) as Record<LocalAgentProvider, ProviderAdapter>;
   }
 
@@ -73,9 +61,5 @@ export class ProviderRegistry {
     const status: ProbedStatus = { ...probe, checkedAt: new Date().toISOString(), provider };
     this.cache.set(provider, { at: Date.now(), status });
     return status;
-  }
-
-  probeAll(maxAgeMs = 0): Promise<ProbedStatus[]> {
-    return Promise.all(LOCAL_AGENT_PROVIDERS.map((provider) => this.probe(provider, maxAgeMs)));
   }
 }

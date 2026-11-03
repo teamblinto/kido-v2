@@ -1,14 +1,7 @@
 import type { RunEvent, RunResponse, StreamResetEvent } from '@repo/contracts';
 import { describe, expect, it } from 'vitest';
 
-import {
-  applyEvent,
-  applyHistory,
-  applyRun,
-  approvalResolutions,
-  emptyTranscript,
-  items,
-} from './transcript';
+import { applyEvent, applyHistory, applyRun, emptyTranscript, items } from './transcript';
 
 const RUN = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
 
@@ -320,52 +313,5 @@ describe('the property SC-002 rests on', () => {
     for (const [delivery, events] of Object.entries(deliveries)) {
       expect(rendered(feed(events)), delivery).toEqual(inOrder);
     }
-  });
-});
-
-/** Spec 040: a local agent's permission requests, and what answered them. */
-describe('approvalResolutions', () => {
-  function approval(seq: number, requestId: string): RunEvent {
-    return {
-      at: '2026-01-01T00:00:00.000Z',
-      data: { detail: 'rm -rf dist', kind: 'command', requestId, title: 'Run rm' },
-      run: RUN,
-      seq,
-      type: 'approval.request',
-    };
-  }
-
-  function resolution(seq: number, requestId: string): RunEvent {
-    return {
-      at: '2026-01-01T00:00:00.000Z',
-      data: { by: 'timeout', decision: 'deny', requestId },
-      run: RUN,
-      seq,
-      type: 'approval.resolved',
-    };
-  }
-
-  it('keeps both events durable and maps only the answered request', () => {
-    const state = [approval(1, 'a'), approval(2, 'b'), resolution(3, 'a')].reduce(
-      applyEvent,
-      emptyTranscript(RUN),
-    );
-
-    const resolved = approvalResolutions(items(state));
-
-    expect(items(state)).toHaveLength(3);
-    expect(resolved.get('a')?.data).toEqual({ by: 'timeout', decision: 'deny', requestId: 'a' });
-    expect(resolved.has('b')).toBe(false);
-  });
-
-  it('settles a request from history as it does from the stream, redelivery included', () => {
-    const state = applyHistory(emptyTranscript(RUN), [
-      approval(1, 'a'),
-      resolution(2, 'a'),
-      resolution(2, 'a'),
-    ]);
-
-    expect(approvalResolutions(items(state)).size).toBe(1);
-    expect(items(state)).toHaveLength(2);
   });
 });

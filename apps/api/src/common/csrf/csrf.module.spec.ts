@@ -156,7 +156,7 @@ describe('CsrfModule', () => {
   });
 });
 
-/** Spec 040 § 5: the companion's device-token routes, and nothing beside or beneath them. */
+/** Spec 040 § 5: the runner's device-token routes, and nothing beside or beneath them. */
 describe('DEVICE_TOKEN_PATHS', () => {
   const RUN = 'b0400000-0000-4000-8000-000000000001';
 
@@ -168,8 +168,6 @@ describe('DEVICE_TOKEN_PATHS', () => {
   });
 
   it.each([
-    '/api/v1/local-agent/pairings',
-    '/api/v1/local-agent/pairings/token',
     '/api/v1/local-agent/status',
     '/api/v1/local-agent/auth',
     `/api/v1/local-agent/runs/${RUN}/events`,
@@ -180,6 +178,9 @@ describe('DEVICE_TOKEN_PATHS', () => {
   });
 
   it.each([
+    // The retired pairing routes (spec 040) are no longer exempt.
+    '/api/v1/local-agent/pairings',
+    '/api/v1/local-agent/pairings/token',
     '/api/v1/local-agent/connect-x',
     '/api/v1/local-agent/status/anything',
     '/api/v1/local-agent/auth/anything',

@@ -6,20 +6,31 @@ import { parseArgs } from './cli.ts';
 import { COMPANION_VERSION } from './version.ts';
 
 const main = fileURLToPath(new URL('main.ts', import.meta.url));
+const run = (...args: string[]) =>
+  spawnSync(process.execPath, [main, ...args], { encoding: 'utf8' });
 
-describe('baios-companion', () => {
+// Each case spawns Node synchronously, several times; under a parallel `turbo test` that outlasts 5 s.
+describe('runner CLI', { timeout: 30_000 }, () => {
   it('prints its usage', () => {
-    const result = spawnSync(process.execPath, [main], { encoding: 'utf8' });
+    const result = run();
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Usage: baios-companion');
+    expect(result.stdout).toContain('start --hosted');
   });
 
   it('exits 2 with usage on an unknown command or option', () => {
-    const result = spawnSync(process.execPath, [main, 'start', '--bogus'], { encoding: 'utf8' });
+    expect(run('start', '--hosted', '--bogus')).toMatchObject({ status: 2 });
+    expect(run('start', '--hosted', '--bogus').stderr).toContain('Unknown option --bogus');
+    for (const command of ['pair', 'login', 'workspace', 'status']) {
+      expect(run(command).stderr).toContain(`Unknown command ${command}`);
+    }
+  });
+
+  it('refuses a plain `start`: it runs only inside an agent home', () => {
+    const result = run('start');
 
     expect(result.status).toBe(2);
-    expect(result.stderr).toContain('Unknown option --bogus');
+    expect(result.stderr).toContain('use `start --hosted`');
   });
 
   it('reports the package version', () => {
@@ -27,17 +38,14 @@ describe('baios-companion', () => {
       version: string;
     };
     expect(COMPANION_VERSION).toBe(pkg.version);
+    expect(run('version').stdout.trim()).toBe(COMPANION_VERSION);
   });
 
-  it('parses flags with spaces or =, and booleans', () => {
-    expect(parseArgs(['pair', '--server=https://a', '--name', 'My PC', '--verbose'])).toEqual({
-      flags: new Map<string, string | true>([
-        ['server', 'https://a'],
-        ['name', 'My PC'],
-        ['verbose', true],
-      ]),
-      positionals: ['pair'],
+  it('parses boolean flags, and nothing else', () => {
+    expect(parseArgs(['start', '--hosted', '--verbose'])).toEqual({
+      flags: new Set(['hosted', 'verbose']),
+      positionals: ['start'],
     });
-    expect(() => parseArgs(['pair', '--server'])).toThrow('needs a value');
+    expect(() => parseArgs(['start', '--hosted=1'])).toThrow('Unknown option');
   });
 });

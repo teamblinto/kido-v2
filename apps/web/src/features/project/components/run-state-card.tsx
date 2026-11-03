@@ -2,8 +2,6 @@ import type { RunEvent, RunResponse } from '@repo/contracts';
 import { RotateCwIcon } from 'lucide-react';
 import { Link } from 'react-router-dom';
 
-import { CopyCommand } from '@/features/settings/local-agents/copy-command';
-import { START_COMMAND, loginCommand } from '@/features/settings/local-agents/local-agent-copy';
 import { routes } from '@/lib/routes';
 import { cn } from '@/lib/utils';
 import { runPhases, statusToPhase, toneDot, toneSurface } from '../lib/run-phase';
@@ -113,40 +111,22 @@ function copy(
   };
 }
 
-/** Fallback for `state` events written before `localAgentFailure`: the reason names the command. */
-const FIX_COMMAND = /baios-companion (?:login (?:claude|codex)|start)(?![\w-])/u;
-
 /**
- * Spec 041: where the failed CLI ran — the person's own `device` or their cloud `subscription`.
- * Events written before `origin` existed keep the earlier rule: a Claude sign-in failure came from
- * the subscription (the composer's Claude runs go there), anything else from a device.
+ * Spec 041: the failed CLI ran on the person's cloud `subscription`. Older events may say `device`
+ * (retired spec 040) or carry no origin — then a Claude sign-in failure was the subscription's, and
+ * anything else gets no remedy beyond the reason in the transcript.
  */
-function failureOrigin(
+function subscriptionFailure(
   failure: RunStateCardProps['failure'],
-): 'device' | 'subscription' | undefined {
+): NonNullable<RunStateCardProps['failure']>['localAgentFailure'] {
   const local = failure?.localAgentFailure;
   if (local === undefined) return undefined;
 
-  return (
+  const origin =
     local.origin ??
-    (local.class === 'auth' && local.provider === 'claude' ? 'subscription' : 'device')
-  );
-}
+    (local.class === 'auth' && local.provider === 'claude' ? 'subscription' : 'device');
 
-/**
- * Spec 040: the command that fixes a local agent's failure — sign in, or start the companion —
- * offered as a copyable command rather than left in a sentence. Never for a cloud subscription,
- * which has no computer to run it on.
- */
-function fixCommand(failure: RunStateCardProps['failure']): string | undefined {
-  const local = failure?.localAgentFailure;
-
-  if (local === undefined) return FIX_COMMAND.exec(failure?.reason ?? '')?.[0];
-  if (failureOrigin(failure) === 'subscription') return undefined;
-  if (local.class === 'auth') return loginCommand(local.provider);
-  if (local.class === 'transport') return START_COMMAND;
-
-  return undefined;
+  return origin === 'subscription' ? local : undefined;
 }
 
 export function RunStateCard({
@@ -163,13 +143,8 @@ export function RunStateCard({
     return null;
   }
 
-  const failed = run?.status === 'failed';
-  const fix = failed ? fixCommand(failure) : undefined;
-  // A cloud subscription's failure is fixed in Settings or by waiting, never by a command.
-  const cloud =
-    failed && failureOrigin(failure) === 'subscription'
-      ? failure?.localAgentFailure?.class
-      : undefined;
+  // A cloud subscription's failure is fixed in Settings or by waiting.
+  const cloud = run?.status === 'failed' ? subscriptionFailure(failure)?.class : undefined;
 
   return (
     <section
@@ -195,11 +170,6 @@ export function RunStateCard({
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <h2 className="text-label-sm text-foreground font-semibold">{card.title}</h2>
         <p className="text-caption text-subdued">{card.body}</p>
-        {fix === undefined ? null : (
-          <p className="text-caption text-subdued flex flex-wrap items-center gap-1.5">
-            On your computer, run <CopyCommand command={fix} />
-          </p>
-        )}
         {cloud === 'auth' ? (
           <p className="text-caption text-subdued">
             <Link

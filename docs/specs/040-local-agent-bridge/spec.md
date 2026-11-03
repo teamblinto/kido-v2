@@ -1,6 +1,12 @@
 # 040 — Local Agent Bridge (run agents on the person's own subscription)
 
-Status: Draft · Owner: platform · Date: 2026-11-02
+Status: Retired (2026-11-03) — superseded by spec 041 · Owner: platform · Date: 2026-11-02
+
+> **Retired.** Local agents (pairing a person's own computer, its workspaces, approvals, Codex,
+> the `localAgent` run target) were removed on 2026-11-03; BAIOS runs agents only on the person's
+> own Claude subscription in their private cloud agent home (spec 041). Only the runner wire and
+> substrate described here remain (the commands, run events and `/local-agent/*` endpoints), used
+> by the agent home's runner. This document is kept as the design record.
 
 ## 1. Problem
 

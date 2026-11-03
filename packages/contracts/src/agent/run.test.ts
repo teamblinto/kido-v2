@@ -5,7 +5,6 @@ import {
   RUN_FAILURE_CLASSES,
   RUN_STATUSES,
   createRunRequestSchema,
-  runApprovalDecisionRequestSchema,
   runEventSchema,
   runStateReasonSchema,
   runEventsQuerySchema,
@@ -261,55 +260,48 @@ describe('spec 032 run fields', () => {
   });
 });
 
-describe('spec 040 run fields', () => {
-  const target = { deviceId: RUN, provider: 'claude', workspaceId: 'ws_1' };
-
-  it('accepts a localAgent target, refuses an unknown provider and refuses it beside credential', () => {
-    expect(createRunRequestSchema.parse({ localAgent: target, prompt: 'hi' }).localAgent).toEqual(
-      target,
+describe('BYOS run fields (spec 041) and retired local-agent history (spec 040)', () => {
+  it('refuses the retired localAgent target, and subscription beside credential', () => {
+    const target = { deviceId: RUN, provider: 'claude' };
+    expect(createRunRequestSchema.safeParse({ localAgent: target, prompt: 'hi' }).success).toBe(
+      false,
     );
-    expect(
-      createRunRequestSchema.safeParse({
-        localAgent: { ...target, permissionMode: 'bypassPermissions' },
-        prompt: 'hi',
-      }).success,
-    ).toBe(false);
-    expect(
-      createRunRequestSchema.safeParse({
-        localAgent: { ...target, provider: 'gemini' },
-        prompt: 'hi',
-      }).success,
-    ).toBe(false);
     expect(
       createRunRequestSchema.safeParse({
         credential: 'organisation',
-        localAgent: target,
         prompt: 'hi',
+        subscription: { provider: 'claude' },
       }).success,
     ).toBe(false);
   });
 
-  it('keeps a local run’s model to an argv-safe token, and leaves other models alone', () => {
+  it('keeps a subscription run’s model to an argv-safe token, and leaves other models alone', () => {
     const parse = (body: Record<string, unknown>) =>
       createRunRequestSchema.safeParse({ prompt: 'hi', ...body });
-    expect(parse({ localAgent: target, model: 'claude-opus-5-5[1m]' }).success).toBe(true);
-    expect(parse({ localAgent: target, model: '--dangerously-skip-permissions' }).success).toBe(
-      false,
-    );
-    expect(parse({ localAgent: target, model: 'a b' })).toMatchObject({
+    const subscription = { provider: 'claude' };
+    expect(parse({ model: 'claude-opus-5-5[1m]', subscription }).success).toBe(true);
+    expect(parse({ model: '--dangerously-skip-permissions', subscription }).success).toBe(false);
+    expect(parse({ model: 'a b', subscription })).toMatchObject({
       error: { issues: [expect.objectContaining({ path: ['model'] })] },
     });
-    // Not argv-bound without a local target: the catalogue decides.
+    // Not argv-bound without a subscription target: the catalogue decides.
     expect(parse({ model: 'a b' }).success).toBe(true);
   });
 
-  it('carries a structured local agent failure on a state event', () => {
+  it('carries a structured CLI failure on a state event, and still parses a stored codex one', () => {
     const state = (data: unknown) =>
       runEventSchema.safeParse({ at: AT, data, run: RUN, seq: 3, type: 'state' }).success;
-    const failure = { class: 'auth', provider: 'codex' };
+    const failure = { class: 'auth', origin: 'subscription', provider: 'claude' };
     expect(state({ from: 'running', localAgentFailure: failure, reason: 'x', to: 'failed' })).toBe(
       true,
     );
+    expect(
+      state({
+        from: 'running',
+        localAgentFailure: { class: 'workspace', origin: 'device', provider: 'codex' },
+        to: 'failed',
+      }),
+    ).toBe(true);
     expect(
       state({ from: 'running', localAgentFailure: { ...failure, class: 'offline' }, to: 'failed' }),
     ).toBe(false);
@@ -318,7 +310,7 @@ describe('spec 040 run fields', () => {
     );
   });
 
-  it('keeps approval.request and approval.resolved durable', () => {
+  it('still parses stored approval.request and approval.resolved events', () => {
     const at = (type: string, data: unknown): unknown => ({ at: AT, data, run: RUN, seq: 2, type });
     expect(DURABLE_RUN_EVENT_TYPES).toEqual(
       expect.arrayContaining(['approval.request', 'approval.resolved']),
@@ -343,12 +335,5 @@ describe('spec 040 run fields', () => {
         at('approval.resolved', { by: 'admin', decision: 'deny', requestId: 'r1' }),
       ).success,
     ).toBe(false);
-  });
-
-  it('parses an approval decision and refuses any other', () => {
-    expect(runApprovalDecisionRequestSchema.parse({ decision: 'allow' })).toEqual({
-      decision: 'allow',
-    });
-    expect(runApprovalDecisionRequestSchema.safeParse({ decision: 'maybe' }).success).toBe(false);
   });
 });

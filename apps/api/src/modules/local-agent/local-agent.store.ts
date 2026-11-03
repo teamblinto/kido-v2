@@ -4,7 +4,6 @@ import type {
   CompanionCommand,
   CompanionRunEvent,
   CompanionStatusReport,
-  RunApprovalDecision,
 } from '@repo/contracts';
 import type { Redis } from 'ioredis';
 import { randomUUID } from 'node:crypto';
@@ -26,18 +25,11 @@ export interface RunCursor {
   readonly control: string;
 }
 
-export interface ApprovalDecision {
-  readonly requestId: string;
-  readonly decision: RunApprovalDecision;
-  readonly message?: string;
-}
-
 /** Why a run must end now, whatever the device says: its device was revoked, or it overspent. */
 export type RunAbortReason = 'revoked' | 'over-budget';
 
 export interface RunRead {
   readonly events: { id: string; event: CompanionRunEvent }[];
-  readonly decisions: { id: string; decision: ApprovalDecision }[];
   readonly aborts: { id: string; reason: RunAbortReason }[];
 }
 
@@ -65,7 +57,7 @@ export interface RunChannel {
   publish(deviceId: string, command: CompanionCommand): Promise<void>;
   status(deviceId: string): Promise<CompanionStatusReport | undefined>;
   /**
-   * A fresh turn: the previous turn's decisions, approvals and cursor are dropped, and `turn`
+   * A fresh turn: the previous turn's control entries and cursor are dropped, and `turn`
    * becomes the one the uplink accepts. Called before `run.start` goes out.
    */
   beginTurn(runId: string, turn: number, startedAt: number): Promise<void>;
@@ -77,14 +69,6 @@ export interface RunChannel {
   reader(): RunReader;
   cursor(runId: string): Promise<RunCursor>;
   saveCursor(runId: string, cursor: RunCursor): Promise<void>;
-  addApproval(runId: string, requestId: string, deadline: number): Promise<void>;
-  approvals(runId: string): Promise<Map<string, number>>;
-  hasApproval(runId: string, requestId: string): Promise<boolean>;
-  /**
-   * Drops a resolved request — only once its `approval.resolved` is durable under the fence, so a
-   * stale worker that never got it written leaves the request for the attempt that replaces it.
-   */
-  resolveApproval(runId: string, requestId: string): Promise<boolean>;
 }
 
 /** Where a home's sign-in stands (spec 041). Never the code: only that one was sent. */
@@ -121,7 +105,7 @@ const RELEASE = `if redis.call('get', KEYS[1]) == ARGV[1] then
 /**
  * Everything ephemeral the bridge holds, on the stream Redis instance (spec 040 § 5): presence,
  * the latest status report, the per-device command stream, and per run the companion's events
- * (per turn), approval decisions and aborts, the active turn and the executor's cursor. All of it
+ * (per turn) and aborts, the active turn and the executor's cursor. All of it
  * is rebuilt by the companion reconnecting and re-reporting; the run's record is Postgres.
  */
 @Injectable()
@@ -372,16 +356,6 @@ export class LocalAgentStore implements RunChannel {
     return { accepted, kind: 'appended' };
   }
 
-  async decide(runId: string, decision: ApprovalDecision): Promise<void> {
-    const key = keys.runControl(runId);
-
-    await this.redis
-      .multi()
-      .xadd(key, '*', 'decision', JSON.stringify(decision))
-      .expire(key, STREAM_TTL_SECONDS)
-      .exec();
-  }
-
   /** Tells the executor to end the run now: it interrupts the device and fails the run. */
   async abortRun(runId: string, reason: RunAbortReason): Promise<void> {
     const key = keys.runControl(runId);
@@ -398,7 +372,6 @@ export class LocalAgentStore implements RunChannel {
         keys.runEvents(runId, turn),
         keys.runBytes(runId, turn),
         keys.runControl(runId),
-        keys.runApprovals(runId),
         keys.runCursor(runId),
       )
       .hset(marker, { startedAt: String(startedAt), turn: String(turn) })
@@ -428,14 +401,9 @@ export class LocalAgentStore implements RunChannel {
     await this.redis.del(keys.runTurn(runId));
   }
 
-  /** A run over with no attempt to clean up after it: its turn, control, approvals and cursor. */
+  /** A run over with no attempt to clean up after it: its turn, control and cursor. */
   async clearRun(runId: string): Promise<void> {
-    await this.redis.del(
-      keys.runTurn(runId),
-      keys.runControl(runId),
-      keys.runApprovals(runId),
-      keys.runCursor(runId),
-    );
+    await this.redis.del(keys.runTurn(runId), keys.runControl(runId), keys.runCursor(runId));
   }
 
   reader(): RunReader {
@@ -456,7 +424,7 @@ export class LocalAgentStore implements RunChannel {
           cursor.events,
           cursor.control,
         );
-        const read: RunRead = { aborts: [], decisions: [], events: [] };
+        const read: RunRead = { aborts: [], events: [] };
 
         for (const [key, entries] of reply ?? []) {
           for (const [id, [field, raw = 'null']] of entries) {
@@ -464,8 +432,6 @@ export class LocalAgentStore implements RunChannel {
               read.events.push({ event: JSON.parse(raw) as CompanionRunEvent, id });
             } else if (field === 'abort') {
               read.aborts.push({ id, reason: raw as RunAbortReason });
-            } else {
-              read.decisions.push({ decision: JSON.parse(raw) as ApprovalDecision, id });
             }
           }
         }
@@ -489,32 +455,6 @@ export class LocalAgentStore implements RunChannel {
       .hset(key, { control: cursor.control, events: cursor.events })
       .expire(key, STREAM_TTL_SECONDS)
       .exec();
-  }
-
-  // Approvals -----------------------------------------------------------------------------------
-
-  async addApproval(runId: string, requestId: string, deadline: number): Promise<void> {
-    const key = keys.runApprovals(runId);
-
-    await this.redis
-      .multi()
-      .hset(key, requestId, String(deadline))
-      .expire(key, STREAM_TTL_SECONDS)
-      .exec();
-  }
-
-  async hasApproval(runId: string, requestId: string): Promise<boolean> {
-    return (await this.redis.hexists(keys.runApprovals(runId), requestId)) === 1;
-  }
-
-  async approvals(runId: string): Promise<Map<string, number>> {
-    const stored = await this.redis.hgetall(keys.runApprovals(runId));
-
-    return new Map(Object.entries(stored).map(([id, deadline]) => [id, Number(deadline)]));
-  }
-
-  async resolveApproval(runId: string, requestId: string): Promise<boolean> {
-    return (await this.redis.hdel(keys.runApprovals(runId), requestId)) === 1;
   }
 }
 

@@ -1,21 +1,18 @@
 import { createHash } from 'node:crypto';
-import { chmodSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { chmod, mkdir, readdir, rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import {
-  type CompanionCommand,
-  type CompanionPolicy,
-  type CompanionFailureClass,
-  LOCAL_AGENT_PERMISSION_MODES,
-  type LocalAgentAuthMethod,
-  type LocalAgentPermissionMode,
-  type LocalAgentPolicy,
-  type LocalAgentProvider,
+import type {
+  CompanionCommand,
+  CompanionFailureClass,
+  CompanionPolicy,
+  LocalAgentAuthMethod,
+  LocalAgentPolicy,
+  LocalAgentProvider,
 } from '@repo/contracts';
 
-import { type CompanionConfig, companionHome, isProviderEnabled } from './config.ts';
 import { log } from './log.ts';
 import type { ProviderRegistry } from './providers/registry.ts';
 import type { RunHandle } from './providers/types.ts';
@@ -23,16 +20,15 @@ import type { Uplink } from './uplink.ts';
 import { sleep } from './util.ts';
 
 /**
- * Turns run commands into CLI runs (spec 040 § 3 decisions 5, 6, 10): the workspace must be one
- * registered here, the mode is clamped to the local ceiling, and the provider must be enabled here
- * and allowed by the server's policy for the auth method the CLI is signed in with *now*.
+ * Turns run commands into CLI runs (spec 041, sandbox tool mode): each conversation gets its own
+ * empty cwd, a resume must name a session that conversation's CLI reported, and the provider must
+ * be allowed by the server's policy for the auth method the CLI is signed in with *now*.
  */
 
 export const PROBE_MAX_AGE_MS = 60_000;
 
 const PROVIDER_NAMES: Record<LocalAgentProvider, string> = {
   claude: 'Claude Code',
-  codex: 'Codex',
 };
 const METHOD_NAMES: Record<LocalAgentAuthMethod, string> = {
   api_key: 'an API key',
@@ -41,16 +37,7 @@ const METHOD_NAMES: Record<LocalAgentAuthMethod, string> = {
   unknown: 'an unrecognised method',
 };
 
-/** The lower of the requested mode and the local ceiling (modes are ordered least → most). */
-export function clampPermissionMode(
-  requested: LocalAgentPermissionMode,
-  ceiling: LocalAgentPermissionMode,
-): LocalAgentPermissionMode {
-  const rank = (mode: LocalAgentPermissionMode) => LOCAL_AGENT_PERMISSION_MODES.indexOf(mode);
-  return rank(requested) <= rank(ceiling) ? requested : ceiling;
-}
-
-/** The companion's own check of the server's policy against the current sign-in (decision 10). */
+/** The runner's own check of the server's policy against the current sign-in (decision 10). */
 export function policyVerdict(
   policy: CompanionPolicy | null,
   provider: LocalAgentProvider,
@@ -72,19 +59,11 @@ export function policyVerdict(
   return { allowed: true, reason: null };
 }
 
-function isDirectory(path: string): boolean {
-  try {
-    return statSync(path).isDirectory();
-  } catch {
-    return false;
-  }
-}
-
 const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
 
 /**
- * Where sandbox cwds live: per user and outside companionHome(), which holds credentials.json.
- * Windows' and macOS's temp folders are per user; elsewhere /tmp is shared, so the XDG cache.
+ * Where sandbox cwds live: per user. Windows' and macOS's temp folders are per user; elsewhere
+ * /tmp is shared, so the XDG cache.
  */
 export function sandboxRoot(
   env: NodeJS.ProcessEnv = process.env,
@@ -97,10 +76,10 @@ export function sandboxRoot(
 }
 
 /**
- * A sandbox run's cwd: empty and private (0700), and the same for every turn of a conversation,
- * because Claude files sessions by cwd. Nothing is ever written into it; anything found there is
- * cleared rather than shown to the CLI. It does not isolate sessions (`--resume` finds one from
- * any cwd): the session ledger below does.
+ * A run's cwd: empty and private (0700), and the same for every turn of a conversation, because
+ * Claude files sessions by cwd. Nothing is ever written into it; anything found there is cleared
+ * rather than shown to the CLI. It does not isolate sessions (`--resume` finds one from any cwd):
+ * the session ledger below does.
  */
 export async function sandboxCwd(key: string): Promise<string> {
   const root = sandboxRoot();
@@ -116,12 +95,11 @@ export async function sandboxCwd(key: string): Promise<string> {
 export const SESSIONS_KEPT = 50;
 
 /**
- * The companion's own record of the session ids each sandbox conversation's CLI reported in
- * `system/init`, kept outside the (wiped) cwd: hosted, in the container home; else in
- * companionHome().
+ * The runner's own record of the session ids each conversation's CLI reported in `system/init`,
+ * kept outside the (wiped) cwd, in the agent home's home directory.
  */
-export function sessionsDir(hosted = false): string {
-  return hosted ? join(homedir(), '.baios-runner', 'sessions') : join(companionHome(), 'sessions');
+export function sessionsDir(): string {
+  return join(homedir(), '.baios-runner', 'sessions');
 }
 
 /** Unreadable or missing means none, so a resume is refused rather than trusted. */
@@ -155,11 +133,12 @@ interface ActiveRun {
 }
 
 export interface RunManagerDeps {
-  config: CompanionConfig;
-  /** Hosted runner (spec 041): sandbox tool mode only. */
-  hosted?: boolean;
+  /** Runs at once; a further `run.start` is refused rather than queued. */
+  maxConcurrentRuns: number;
   policy: () => CompanionPolicy | null;
   providers: ProviderRegistry;
+  /** `sessionsDir()` unless given. */
+  sessionsDir?: string;
   uplink: Uplink;
 }
 
@@ -195,17 +174,12 @@ export class RunManager {
           run.interrupted = true;
           run.handle?.interrupt();
         } else if (!this.recent.has(turnKey(runId, turn))) {
-          // Not running here (e.g. the companion restarted): end it now rather than let it idle out.
+          // Not running here (e.g. the runner restarted): end it now rather than let it idle out.
           this.remember(turnKey(runId, turn));
           this.deps.uplink.push(runId, turn, { data: { status: 'interrupted' }, type: 'terminal' });
         }
         return;
       }
-      case 'approval.respond':
-        this.active
-          .get(command.runId)
-          ?.handle?.respondApproval(command.requestId, command.decision, command.message);
-        return;
       case 'tool.result': {
         const run = this.active.get(command.runId);
         // A result for another turn answers a call that turn's handle no longer holds.
@@ -240,21 +214,21 @@ export class RunManager {
 
   private begin(command: RunStart): void {
     const { runId, turn } = command;
-    const limit = this.deps.config.maxConcurrentRuns;
+    const limit = this.deps.maxConcurrentRuns;
     if (this.active.size >= limit) {
       return this.fail(
         runId,
         turn,
         'provider',
-        `This computer is already running ${limit} agent run${limit === 1 ? '' : 's'}, its limit. Try again when one finishes (or raise it with \`baios-companion config set maxConcurrentRuns <n>\`).`,
+        `This agent home is already running ${limit} agent run${limit === 1 ? '' : 's'}, its limit. Try again when one finishes.`,
       );
     }
     const run: ActiveRun = { done: Promise.resolve(), handle: null, interrupted: false, turn };
     this.active.set(runId, run);
     run.done = this.execute(command, run)
       .catch((error: unknown) => {
-        log.error(`Run ${runId} failed inside the companion: ${String(error)}`);
-        this.fail(runId, turn, 'crash', 'The companion hit an internal error running this.');
+        log.error(`Run ${runId} failed inside the runner: ${String(error)}`);
+        this.fail(runId, turn, 'crash', 'The runner hit an internal error running this.');
       })
       .finally(() => {
         if (this.active.get(runId) === run) this.active.delete(runId);
@@ -283,54 +257,15 @@ export class RunManager {
   }
 
   private async execute(command: RunStart, run: ActiveRun): Promise<void> {
-    const { config, providers, uplink } = this.deps;
-    const { provider, runId, turn } = command;
+    const { providers, uplink } = this.deps;
+    const { conversationKey, provider, runId, turn } = command;
     const name = PROVIDER_NAMES[provider];
 
-    const sandbox = command.toolMode === 'sandbox';
-    if (this.deps.hosted && !sandbox) {
-      return this.fail(
-        runId,
-        turn,
-        'workspace',
-        'This cloud agent runs only in sandbox tool mode; it has no local workspaces.',
-      );
-    }
-    if (sandbox && !this.deps.hosted && !config.sandboxRuns) {
-      return this.fail(
-        runId,
-        turn,
-        'workspace',
-        'Sandbox runs are turned off on this computer. Turn them on with `baios-companion config set sandboxRuns true`.',
-      );
-    }
-    // shortcut: without a conversationKey the run id keys the cwd, so a resume across runs misses.
-    const conversation = command.conversationKey ?? runId;
-    const sessions = sandbox ? sessionsDir(this.deps.hosted) : null;
+    const sessions = this.deps.sessionsDir ?? sessionsDir();
     const resume = command.resume?.providerSessionId ?? null;
     // `--resume` finds a session from any cwd: only one this conversation was given may continue.
-    if (sessions && resume !== null && !knownSessions(sessions, conversation).includes(resume)) {
+    if (resume !== null && !knownSessions(sessions, conversationKey).includes(resume)) {
       return this.fail(runId, turn, 'provider', 'Unknown conversation session');
-    }
-    const workspace = config.workspaces.find((entry) => entry.id === command.workspaceId);
-    if (!sandbox && !workspace) {
-      return this.fail(
-        runId,
-        turn,
-        'workspace',
-        'That workspace is not registered on this computer (see `baios-companion workspace list`).',
-      );
-    }
-    if (workspace && !isDirectory(workspace.path)) {
-      return this.fail(
-        runId,
-        turn,
-        'workspace',
-        `The folder for workspace "${workspace.label}" is gone.`,
-      );
-    }
-    if (!isProviderEnabled(config, provider)) {
-      return this.fail(runId, turn, 'policy', `${name} is turned off on this computer.`);
     }
 
     // Re-check the sign-in before every spawn: it may have changed since the last report.
@@ -347,28 +282,19 @@ export class RunManager {
         runId,
         turn,
         'auth',
-        status.message ?? `${name} is not signed in. Run \`baios-companion login ${provider}\`.`,
+        status.message ?? `${name} is not signed in. Sign in again from BAIOS.`,
       );
     }
     const verdict = policyVerdict(this.deps.policy(), provider, status.auth.method);
     if (!verdict.allowed) return this.fail(runId, turn, 'policy', verdict.reason ?? 'Not allowed.');
 
-    const permissionMode = clampPermissionMode(command.permissionMode, config.maxPermissionMode);
-    if (permissionMode !== command.permissionMode) {
-      log.info(
-        `Run ${runId}: ${command.permissionMode} lowered to ${permissionMode} (local ceiling).`,
-      );
-    }
-    const where = workspace ? `"${workspace.label}"` : 'sandbox tool mode';
-    log.info(`Run ${runId}: starting ${name} in ${where} (${permissionMode}).`);
-    const sandboxDir = sandbox ? await sandboxCwd(conversation) : null;
+    log.info(`Run ${runId}: starting ${name}.`);
     const handle = providers.adapters[provider].startRun({
-      cwd: sandboxDir ?? workspace?.path ?? '',
+      cwd: await sandboxCwd(conversationKey),
       model: command.model,
-      permissionMode,
       prompt: command.prompt,
       resume,
-      toolset: sandbox ? (command.toolset ?? []) : null,
+      toolset: command.toolset,
     });
     run.handle = handle;
     if (run.interrupted) handle.interrupt();
@@ -376,9 +302,9 @@ export class RunManager {
     let ended = false;
     try {
       for await (const event of handle.events) {
-        if (sessions && event.type === 'session') {
+        if (event.type === 'session') {
           try {
-            recordSession(sessions, conversation, event.data.providerSessionId);
+            recordSession(sessions, conversationKey, event.data.providerSessionId);
           } catch (error) {
             // The run goes on; only a later resume of this session is refused.
             log.warn(`Run ${runId}: could not record its session: ${String(error)}`);

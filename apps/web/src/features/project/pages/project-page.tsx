@@ -349,7 +349,6 @@ export function ProjectPage(): React.JSX.Element {
           onSubmit={(prompt, plan) => {
             startRun(prompt, undefined, undefined, plan);
           }}
-          orgId={orgId}
           placeholder="Ask for a change to this project"
           projectId={projectId}
           refusal={refusal}

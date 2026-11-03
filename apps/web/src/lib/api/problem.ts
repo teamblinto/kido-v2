@@ -113,15 +113,7 @@ const MESSAGES: Readonly<Record<ProblemTypeSlug, string>> = {
     'That repository has no commits yet. Push something to it first, then import it.',
   'import-repo-too-large': 'That repository is too large to import.',
   'internal-server-error': 'Something went wrong on our side. Please try again.',
-  'local-agent-offline':
-    'Your computer is not connected. Run baios-companion start on it, then try again.',
-  'local-agent-pairing-invalid':
-    'That pairing code is not valid or has expired. Run baios-companion pair again for a new one.',
-  'local-agent-provider-unavailable':
-    'That agent is not ready on your computer. Check it is installed and signed in, then try again.',
-  'local-agent-revoked': 'That computer was disconnected. Pair it again to use it.',
-  'local-agent-workspace-unknown':
-    'Your computer does not have that workspace any more. Add it again with baios-companion workspace add.',
+  'local-agent-revoked': 'That computer is no longer connected.',
   'method-not-allowed': 'That action is not available here.',
   'mfa-code-incorrect': 'That code is incorrect. Check your authenticator app and try again.',
   'not-acceptable': 'That response format is not supported.',

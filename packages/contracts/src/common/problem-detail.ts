@@ -50,14 +50,8 @@ export const PROBLEM_TYPE_SLUGS = [
   'import-empty-repo',
   'import-repo-too-large',
   'internal-server-error',
-  // Spec 040 § 4: five ways a run on the person's own machine is refused, five because each has a
-  // different remedy only that person can apply — start the companion, sign the CLI in (or install
-  // it), register the workspace again, pair again, or re-pair a revoked device.
-  'local-agent-offline',
-  'local-agent-pairing-invalid',
-  'local-agent-provider-unavailable',
+  // Spec 040 § 6: the runner's device token is unknown, malformed or revoked; it stops.
   'local-agent-revoked',
-  'local-agent-workspace-unknown',
   'method-not-allowed',
   // The second factor was presented and was wrong, on a route whose caller already holds a good
   // session — confirming an enrolment (T20), or stepping up (T21). Deliberately not `unauthorized`,

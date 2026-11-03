@@ -1171,22 +1171,16 @@ describe('validateEnvironment', () => {
       OPENBAO_TOKEN: 'placeholder-token',
     };
 
-    it('is on under local and off elsewhere unless set, and denies ChatGPT-plan Codex by default', () => {
-      const local = validateEnvironment(validEnvironment());
-
-      expect(local.LOCAL_AGENT_ENABLED).toBe(true);
-      expect(local.LOCAL_AGENT_CODEX_CHATGPT_AUTH).toBe('deny');
+    it('is on under local and off elsewhere unless set', () => {
+      expect(validateEnvironment(validEnvironment()).LOCAL_AGENT_ENABLED).toBe(true);
       expect(validateEnvironment(validEnvironment(staging)).LOCAL_AGENT_ENABLED).toBe(false);
       expect(
         validateEnvironment(validEnvironment({ ...staging, LOCAL_AGENT_ENABLED: 'true' }))
           .LOCAL_AGENT_ENABLED,
       ).toBe(true);
-      expect(() =>
-        validateEnvironment(validEnvironment({ LOCAL_AGENT_CODEX_CHATGPT_AUTH: 'yes' })),
-      ).toThrow(/LOCAL_AGENT_CODEX_CHATGPT_AUTH/);
     });
 
-    it('caps one local turn at six hours unless set, and refuses less than a minute', () => {
+    it('caps one subscription turn at six hours unless set, and refuses less than a minute', () => {
       expect(validateEnvironment(validEnvironment()).LOCAL_AGENT_MAX_RUN_SECONDS).toBe(21_600);
       expect(
         validateEnvironment(validEnvironment({ LOCAL_AGENT_MAX_RUN_SECONDS: '3600' }))

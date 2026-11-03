@@ -1,13 +1,12 @@
 import type { z } from 'zod';
 
 /**
- * The companion's only network client: outbound HTTPS to `${server}/api/v1`, bearer device token,
- * RFC 9457 problem bodies on errors. A 401 on an authenticated call means the device was revoked
- * or is unknown, and is raised as its own error so every caller stops the same way.
+ * The runner's only network client: outbound HTTPS to `${server}/api/v1`, bearer device token,
+ * RFC 9457 problem bodies on errors. A 401 means the device token was revoked or is unknown, and
+ * is raised as its own error so every caller stops the same way.
  */
 
-export const REVOKED_MESSAGE =
-  'This computer is no longer paired (device revoked) — run `baios-companion pair` again.';
+export const REVOKED_MESSAGE = 'BAIOS no longer accepts this runner’s device token.';
 
 export class HttpError extends Error {
   readonly status: number;
@@ -36,8 +35,8 @@ export function isLoopbackHost(hostname: string): boolean {
 }
 
 /**
- * `https:`, or `http:` only on a loopback host (anywhere with `allowInsecureHttp`: the hosted
- * runner's `BAIOS_ALLOW_INSECURE_HTTP=1`, for a local stack); returned without a trailing slash.
+ * `https:`, or `http:` only on a loopback host (anywhere with `allowInsecureHttp`:
+ * `BAIOS_ALLOW_INSECURE_HTTP=1`, for a local stack); returned without a trailing slash.
  */
 export function normalizeServerUrl(input: string, allowInsecureHttp = false): string {
   let url: URL;
@@ -68,20 +67,20 @@ async function problemMessage(response: Response): Promise<string> {
 
 export class ApiClient {
   readonly base: string;
-  private readonly token: string | null;
+  private readonly token: string;
 
-  constructor(server: string, token: string | null, allowInsecureHttp = false) {
+  constructor(server: string, token: string, allowInsecureHttp = false) {
     this.base = `${normalizeServerUrl(server, allowInsecureHttp)}/api/v1`;
     this.token = token;
   }
 
   private headers(extra: Record<string, string> = {}): Record<string, string> {
-    return this.token ? { ...extra, authorization: `Bearer ${this.token}` } : extra;
+    return { ...extra, authorization: `Bearer ${this.token}` };
   }
 
   private async check(response: Response): Promise<Response> {
     if (response.ok) return response;
-    if (response.status === 401 && this.token) {
+    if (response.status === 401) {
       await response.body?.cancel().catch(() => undefined);
       throw new DeviceRevokedError();
     }
@@ -100,7 +99,7 @@ export class ApiClient {
         body: JSON.stringify(body),
         headers: this.headers({ accept: 'application/json', 'content-type': 'application/json' }),
         method: 'POST',
-        // A redirect could carry the bearer token or the device code somewhere else; never follow one.
+        // A redirect could carry the bearer token somewhere else; never follow one.
         redirect: 'error',
         signal,
       }),

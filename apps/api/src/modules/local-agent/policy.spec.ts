@@ -1,10 +1,9 @@
 import type { LocalAgentProviderStatus } from '@repo/contracts';
 import { describe, expect, it } from 'vitest';
 
-import { companionPolicy, providerPolicy, runnable, withPolicy } from './policy';
+import { COMPANION_POLICY, providerPolicy, withPolicy } from './policy';
 
 function status(
-  provider: 'claude' | 'codex',
   method: LocalAgentProviderStatus['auth']['method'],
   overrides: Partial<LocalAgentProviderStatus> = {},
 ): LocalAgentProviderStatus {
@@ -14,82 +13,53 @@ function status(
     installed: true,
     message: null,
     models: [],
-    // What the companion claims; the server never trusts it.
+    // What the runner claims; the server never trusts it.
     policy: { allowed: true, reason: null },
-    provider,
+    provider: 'claude',
     version: '1.0.0',
     ...overrides,
   };
 }
 
-describe('companionPolicy', () => {
-  it('lets Claude Code run on any of its own sign-ins', () => {
-    expect(companionPolicy(false).claude?.allowedAuthMethods).toEqual([
-      'subscription',
-      'api_key',
-      'cloud_provider',
-    ]);
-  });
-
-  it('denies Codex on a ChatGPT plan by default and allows it only when configured', () => {
-    expect(companionPolicy(false).codex?.allowedAuthMethods).toEqual(['api_key', 'cloud_provider']);
-    expect(companionPolicy(true).codex?.allowedAuthMethods).toContain('subscription');
-  });
-});
-
-describe('providerPolicy', () => {
-  const deny = companionPolicy(false);
-
-  it.each([
-    ['claude', 'subscription', true],
-    ['claude', 'api_key', true],
-    ['codex', 'api_key', true],
-    ['codex', 'cloud_provider', true],
-    ['codex', 'subscription', false],
-  ] as const)('%s on %s is allowed: %s', (provider, method, allowed) => {
-    expect(providerPolicy(status(provider, method), deny).allowed).toBe(allowed);
-  });
-
-  it('says why Codex on a ChatGPT plan is blocked', () => {
-    expect(providerPolicy(status('codex', 'subscription'), deny).reason).toMatch(/ChatGPT plan/);
-  });
-
-  it('blocks a sign-in it cannot identify', () => {
-    expect(providerPolicy(status('claude', null), deny).allowed).toBe(false);
-    expect(providerPolicy(status('claude', 'unknown'), deny).allowed).toBe(false);
-  });
-
-  it('allows Codex on a ChatGPT plan where the operator allowed it', () => {
-    expect(providerPolicy(status('codex', 'subscription'), companionPolicy(true))).toEqual({
-      allowed: true,
-      reason: null,
+describe('COMPANION_POLICY', () => {
+  it('lets Claude Code run on any of its own sign-ins, and names no other CLI', () => {
+    expect(COMPANION_POLICY).toEqual({
+      claude: { allowedAuthMethods: ['subscription', 'api_key', 'cloud_provider'] },
     });
   });
 });
 
-describe('withPolicy and runnable', () => {
-  const deny = companionPolicy(false);
+describe('providerPolicy', () => {
+  it.each(['subscription', 'api_key', 'cloud_provider'] as const)(
+    'allows Claude on %s',
+    (method) => {
+      expect(providerPolicy(status(method), COMPANION_POLICY)).toEqual({
+        allowed: true,
+        reason: null,
+      });
+    },
+  );
 
+  it('blocks a sign-in it cannot identify', () => {
+    expect(providerPolicy(status(null), COMPANION_POLICY).allowed).toBe(false);
+    expect(providerPolicy(status('unknown'), COMPANION_POLICY).allowed).toBe(false);
+  });
+
+  it('blocks a provider the policy does not name', () => {
+    expect(providerPolicy(status('subscription'), {}).allowed).toBe(false);
+  });
+});
+
+describe('withPolicy', () => {
   it('recomputes every reported policy rather than trusting the report', () => {
     const report = withPolicy(
-      { companionVersion: '0.1.0', providers: [status('codex', 'subscription')], workspaces: [] },
-      deny,
+      {
+        companionVersion: '0.1.0',
+        providers: [status('unknown', { policy: { allowed: true, reason: null } })],
+      },
+      COMPANION_POLICY,
     );
 
     expect(report.providers[0]!.policy.allowed).toBe(false);
-  });
-
-  it('needs the CLI installed, signed in and allowed', () => {
-    expect(runnable(status('claude', 'subscription'), deny)).toBe(true);
-    expect(runnable(status('claude', 'subscription', { installed: false }), deny)).toBe(false);
-    expect(
-      runnable(
-        status('claude', 'subscription', {
-          auth: { method: 'subscription', plan: null, status: 'unauthenticated' },
-        }),
-        deny,
-      ),
-    ).toBe(false);
-    expect(runnable(status('codex', 'subscription'), deny)).toBe(false);
   });
 });

@@ -122,17 +122,9 @@ const TENANT_PARAMETERS: Readonly<Record<string, (target: Tenant, world: SweepWo
  * and not about isolation; the org-scoped routes it sits on are still swept through `:orgId`. It
  * is listed rather than ignored so that the next parameter of this kind has to be looked at by a
  * person.
- *
- * Spec 040: `:requestId` is a local agent's own approval id inside a run, which the route still
- * reaches through `:orgId` and `:runId`; `:deviceId` and `:userCode` name a person's own paired
- * device and pairing, never an organisation's (`local-agent.e2e-spec.ts` proves another person is
- * refused both).
  */
 const NON_TENANT_PARAMETERS: Readonly<Record<string, string>> = {
-  deviceId: '00000000-0000-4000-8000-0000000000d1',
   provider: 'anthropic',
-  requestId: 'probe-request',
-  userCode: 'BCDF-GHJK',
 };
 
 /**
@@ -216,23 +208,13 @@ const ROUTES_WITH_NO_TENANT_RESOURCE = new Set([
   // installation advance independently; a third is untouched") proves a delivery naming another
   // tenant's installation changes nothing in this one.
   'POST /api/v1/webhooks/github',
-  // The local agent bridge (spec 040). A person's own devices and pairings: no `:orgId`, every read
-  // and write names the session's own user id, as `/me/linked-accounts` does. The companion's own
-  // routes are reached with a device token (or, while pairing, nothing), never a session, and name
-  // no organisation; the run-events route takes `:runId` and so is swept above, where a session
-  // without a device token is refused. `local-agent.e2e-spec.ts` proves another person can neither
-  // run on, post for, nor revoke someone else's device.
-  'GET /api/v1/me/local-agents',
-  'GET /api/v1/me/local-agents/pairings/:userCode',
-  'POST /api/v1/me/local-agents/pairings/approve',
-  'POST /api/v1/me/local-agents/pairings/deny',
-  'DELETE /api/v1/me/local-agents/:deviceId',
-  'POST /api/v1/local-agent/pairings',
-  'POST /api/v1/local-agent/pairings/token',
+  // The agent home's runner (spec 041, on spec 040's bridge): its routes are reached with the
+  // home's device token, never a session, and name no organisation; the run-events route takes
+  // `:runId` and so is swept above, where a session without a device token is refused.
+  // `agent-home.e2e-spec.ts` proves another person's token cannot post for someone else's run.
   'GET /api/v1/local-agent/connect',
   'POST /api/v1/local-agent/status',
-  // Spec 041, the agent home: the runner's sign-in report is a companion route like `status`,
-  // reached with the home's device token and naming no organisation (cloud devices only).
+  // The runner's sign-in report, a device-token route like `status`.
   'POST /api/v1/local-agent/auth',
   // Spec 041, a person's own subscription (`subscription.controller.ts`): no `:orgId`, no
   // parameter at all, and every read and write names the session's own user id, as

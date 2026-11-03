@@ -86,7 +86,7 @@ export type RunOutcome =
       reason: string;
       /** 032 T046: when a subscription's limit resets; the `state` event carries it. */
       resetsAt?: Date;
-      /** 040: a local run's failure in the companion's vocabulary; the `state` event carries it. */
+      /** A subscription run's failure in the runner's vocabulary; the `state` event carries it. */
       localAgentFailure?: {
         class: CompanionFailureClass;
         origin?: 'device' | 'subscription';

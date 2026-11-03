@@ -9,7 +9,6 @@ import {
   domainReleaseWarningMail,
   domainReleasedMail,
   invitationMail,
-  localAgentPairedMail,
   passwordResetMail,
   projectInvitationMail,
   verificationMail,
@@ -75,7 +74,6 @@ const INFORMATIONAL: readonly MailMessage[] = [
   domainFailedMail({ ...DOMAIN_NOTICE, reason: 'verification-timeout' }),
   domainReleaseWarningMail({ ...DOMAIN_NOTICE, releaseInDays: 7 }),
   domainReleasedMail(DOMAIN_NOTICE),
-  localAgentPairedMail({ appUrl: APP_URL, deviceName: 'Laptop', platform: 'linux', to: TO }),
   webhookPausedMail({
     appUrl: APP_URL,
     endpointUrl: 'https://hooks.acme.example/in',

@@ -1,10 +1,6 @@
-import { lstatSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 import { scrubTokens } from './log.ts';
-
-export const WORKSPACE_TOKEN = '<workspace>';
 
 /** A push-driven async iterable: adapters push normalized events, the run manager iterates. */
 export class AsyncQueue<T> implements AsyncIterable<T> {
@@ -68,68 +64,6 @@ export function truncate(text: string, max: number): string {
   return text.length <= max ? text : `${text.slice(0, max - 1)}…`;
 }
 
-/**
- * A path inside the workspace as forward-slash relative text, or null when it is the root itself
- * or lies outside it — absolute paths never leave the machine (ADR decision 5).
- */
-export function toWorkspaceRelative(root: string, path: string): string | null {
-  const rel = relative(root, isAbsolute(path) ? path : resolve(root, path));
-  if (!rel || isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) return null;
-  return rel.split(sep).join('/');
-}
-
-/**
- * Writes here can run code, or change what a tool does the next time someone opens the folder (git
- * hooks and config, editor and agent settings, CI, env files, package scripts), so they always need
- * an explicit approval, even in `acceptEdits`. Matched against the workspace-relative path.
- */
-export const SENSITIVE_PATHS: readonly RegExp[] = [
-  /(?:^|\/)\.(?:git|claude|codex|vscode|idea|husky)(?:\/|$)/i,
-  /(?:^|\/)\.github\/workflows(?:\/|$)/i,
-  /(?:^|\/)\.env[^/]*$/i,
-  /(?:^|\/)(?:package\.json|\.npmrc|\.mcp\.json|\.gitmodules)$/i,
-];
-
-export const isSensitivePath = (relativePath: string): boolean =>
-  SENSITIVE_PATHS.some((pattern) => pattern.test(relativePath));
-
-/**
- * Where a write to `path` really lands, workspace-relative, or null when that is outside the
- * workspace or cannot be told safely. Symlink-safe: the nearest existing ancestor is resolved by the
- * OS and the missing rest appended. Hard-linked files and Windows names the OS would alias (trailing
- * dot or space, `:` streams) count as unsafe.
- */
-export function resolveWriteTarget(root: string, path: string): string | null {
-  const full = resolve(root, path);
-  if (process.platform === 'win32' && /:|[. ](?:[\\/]|$)/.test(full.slice(2))) return null;
-  try {
-    let existing = full;
-    const rest: string[] = [];
-    for (;;) {
-      try {
-        const stat = lstatSync(existing);
-        if (rest.length === 0 && stat.isFile() && stat.nlink > 1) return null;
-        break;
-      } catch {
-        const parent = dirname(existing);
-        if (parent === existing) return null;
-        rest.unshift(basename(existing));
-        existing = parent;
-      }
-    }
-    const target = join(realpathSync.native(existing), ...rest);
-    return toWorkspaceRelative(realpathSync.native(root), target);
-  } catch {
-    return null; // e.g. a dangling symlink
-  }
-}
-
-/** True when an edit may be applied without asking: inside the workspace and not sensitive. */
-export function isRoutineWrite(root: string, path: string): boolean {
-  const target = resolveWriteTarget(root, path);
-  return target !== null && !isSensitivePath(target);
-}
-
 const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 function pathPattern(path: string): RegExp | null {
@@ -141,22 +75,13 @@ function pathPattern(path: string): RegExp | null {
 }
 
 /**
- * Prepares tool input or output for the server: the workspace root becomes `<workspace>` (visible,
- * unlike `.`, so `rm -rf <workspace>` reads as what it is), the home directory `~`, credential-shaped
- * strings are removed, and long strings are cut, at any depth. A null root rewrites only home.
+ * Prepares tool input or output for the server: the home directory becomes `~`, credential-shaped
+ * strings are removed, and long strings are cut, at any depth.
  */
-export function redactPaths(root: string | null, maxString = 8_000): <T>(value: T) => T {
-  const patterns: [RegExp | null, string][] = [
-    [root ? pathPattern(root) : null, WORKSPACE_TOKEN],
-    [pathPattern(homedir()), '~'],
-  ];
-  const text = (value: string) => {
-    let out = value;
-    for (const [pattern, replacement] of patterns) {
-      if (pattern) out = out.replace(pattern, replacement);
-    }
-    return truncate(scrubTokens(out), maxString);
-  };
+export function redactPaths(maxString = 8_000): <T>(value: T) => T {
+  const home = pathPattern(homedir());
+  const text = (value: string) =>
+    truncate(scrubTokens(home ? value.replace(home, '~') : value), maxString);
   const walk = (value: unknown, depth: number): unknown => {
     if (typeof value === 'string') return text(value);
     if (depth > 8 || value === null || typeof value !== 'object') return value;

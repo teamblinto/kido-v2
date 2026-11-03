@@ -1,6 +1,5 @@
 import type { CompanionPolicy } from '@repo/contracts';
 
-import type { CompanionConfig } from './config.ts';
 import { ClaudeSignIn } from './hosted.ts';
 import { ApiClient, DeviceRevokedError } from './http.ts';
 import { ProviderRegistry } from './providers/registry.ts';
@@ -8,17 +7,21 @@ import { RunManager } from './runs.ts';
 import { Supervisor, type SupervisorOutcome } from './supervisor.ts';
 import { Uplink, type UplinkOptions } from './uplink.ts';
 
-/** `start` wired up: connection, runs and uplink sharing one config and one API client. */
+/** `start --hosted` wired up: connection, runs, sign-in and uplink sharing one API client. */
 
 export interface ServiceOptions {
-  /** Hosted runner only: `http:` to a non-loopback server (`BAIOS_ALLOW_INSECURE_HTTP=1`). */
+  /** `http:` to a non-loopback server (`BAIOS_ALLOW_INSECURE_HTTP=1`). */
   allowInsecureHttp?: boolean;
-  config: CompanionConfig;
-  /** The hosted runner (spec 041): sandbox runs only, and sign-in commands. */
-  hosted?: boolean;
+  /** Config override for the Claude Code binary (tests); PATH lookup otherwise. */
+  claudeBinary?: string;
   interruptGraceMs?: number;
+  /** Runs at once; a further `run.start` is refused rather than queued. Default 2. */
+  maxConcurrentRuns?: number;
   selfScript: string;
-  /** Hosted sign-in timeout; 10 minutes by default. */
+  server: string;
+  /** Where conversation session ids are kept; `sessionsDir()` by default. */
+  sessionsDir?: string;
+  /** Sign-in timeout; 10 minutes by default. */
   signInTimeoutMs?: number;
   statusIntervalMs?: number;
   token: string;
@@ -34,10 +37,9 @@ export interface Service {
 }
 
 export function createService(options: ServiceOptions): Service {
-  const { config } = options;
-  if (!config.server) throw new Error('Not paired.');
-  const api = new ApiClient(config.server, options.token, options.allowInsecureHttp);
-  const providers = new ProviderRegistry(config, options.selfScript, {
+  const api = new ApiClient(options.server, options.token, options.allowInsecureHttp);
+  const providers = new ProviderRegistry(options.selfScript, {
+    binary: options.claudeBinary,
     interruptGraceMs: options.interruptGraceMs,
   });
   const uplink = new Uplink(
@@ -46,28 +48,25 @@ export function createService(options: ServiceOptions): Service {
     { ...options.uplink, onRevoked: () => supervisor.stop('unauthorized') },
   );
   const runs: RunManager = new RunManager({
-    config,
-    hosted: options.hosted,
+    maxConcurrentRuns: options.maxConcurrentRuns ?? 2,
     policy: (): CompanionPolicy | null => supervisor.policy,
     providers,
+    sessionsDir: options.sessionsDir,
     uplink,
   });
-  const signIn = options.hosted
-    ? new ClaudeSignIn({
-        binary: config.providers.claude.binary,
-        post: (event) =>
-          api.post('/local-agent/auth', event).catch((error: unknown) => {
-            if (error instanceof DeviceRevokedError) supervisor.stop('unauthorized');
-            throw error;
-          }),
-        refreshStatus: () => supervisor.refreshStatus(),
-        timeoutMs: options.signInTimeoutMs,
-      })
-    : null;
+  const signIn = new ClaudeSignIn({
+    binary: options.claudeBinary,
+    post: (event) =>
+      api.post('/local-agent/auth', event).catch((error: unknown) => {
+        if (error instanceof DeviceRevokedError) supervisor.stop('unauthorized');
+        throw error;
+      }),
+    refreshStatus: () => supervisor.refreshStatus(),
+    timeoutMs: options.signInTimeoutMs,
+  });
   const supervisor: Supervisor = new Supervisor({
     api,
-    config,
-    onAuth: signIn ? (data) => signIn.handle(data) : undefined,
+    onAuth: (data) => signIn.handle(data),
     providers,
     runs,
     statusIntervalMs: options.statusIntervalMs,
@@ -75,7 +74,7 @@ export function createService(options: ServiceOptions): Service {
   return {
     async run() {
       const outcome = await supervisor.run();
-      signIn?.stop();
+      signIn.stop();
       await runs.interruptAll(8_000);
       if (outcome === 'stopped') await uplink.drain(5_000);
       uplink.stop();

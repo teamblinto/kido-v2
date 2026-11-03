@@ -1,16 +1,21 @@
 # 041 — Cloud subscription agent
 
+> **2026-11-03: local devices retired.** Spec 040's local agents (a person's own computer paired
+> through the companion, its workspaces, the `workspace` tool mode, approvals, Codex, and the
+> `localAgent` run target) were removed. BAIOS runs agents only on a person's own Claude
+> subscription inside their agent home, below. What remains of 040 is the runner wire
+> (`local-agent/companion.ts`) and the `local-agent` substrate the agent home uses; the companion
+> package (`apps/companion`) is now only the runner, `start --hosted`. Text below that still
+> describes local devices records the design as it was built.
+
 ## Sandbox tool bridge
 
-A local run (spec 040) can run in one of two **tool modes**, fixed when the run is created and
-stored as `local_agent_runs.tool_mode`:
+Every local run is in the `sandbox` **tool mode** (`local_agent_runs.tool_mode`): its tools act on
+the project's sandbox, through the same broker the cloud agent uses. The `workspace` mode (the
+CLI's own tools on a folder registered on a person's computer, spec 040) was removed with local
+devices; rows written before then keep `workspace`.
 
-| Mode        | Where tools act                                                      | Created with                      |
-| ----------- | -------------------------------------------------------------------- | --------------------------------- |
-| `workspace` | The CLI's own tools on a folder the companion registered (spec 040). | `localAgent.workspaceId` set      |
-| `sandbox`   | The project's sandbox, through the same broker the cloud agent uses. | `localAgent.workspaceId` left out |
-
-In `sandbox` mode the CLI still does the thinking, on the person's own subscription, but its
+The CLI still does the thinking, on the person's own subscription, but its
 built-in file and shell tools are switched off. The companion runs a tool server (MCP) named
 `baios` (`LOCAL_AGENT_SANDBOX_TOOL_SERVER`) offering exactly the tools `run.start` lists. Each
 call is relayed to the API, which runs it the way the cloud agent does and sends the answer back.
@@ -18,21 +23,20 @@ Web tools the CLI keeps (WebSearch, say) are its own business: they are not on t
 
 ### Admission
 
-`POST /orgs/:orgId/projects/:projectId/runs` with `localAgent: { deviceId, provider }` and no
-`workspaceId` creates a `sandbox` run. The device checks are the same as in spec 040 (the caller's
-own live, online device, with the CLI ready), and the workspace check is skipped. The sandbox
-needs nothing more at creation than a cloud run needs, which is nothing: the attempt makes it ready.
-Constraint `local_agent_runs_workspace_check`: `(tool_mode = 'workspace') = (workspace_id is not null)`.
+Removed: a run could once be created with `localAgent: { deviceId, provider }` naming a person's
+own device. A `sandbox` run is now created only through the `subscription` target (§ Runs below).
+The sandbox needs nothing more at creation than a cloud run needs, which is nothing: the attempt
+makes it ready.
 
 ### Attempt (API)
 
 1. The consumer treats a `sandbox` local run like a cloud run for the sandbox. Its heartbeat
-   touches the sandbox, which a `workspace` local run's heartbeat does not.
+   touches the sandbox.
 2. On every attempt, before `run.start`, the executor runs `SandboxTools.prepare`. This is the
    cloud agent's pre-flight, now shared code: `ensureReady` (with `sandbox.preparing` while it
    waits), a probe, and the checkpoint baseline (`ensureRepository`). A failure fails the run as
    it would a cloud run (`no-sandbox`, `sandbox unavailable: …`, `checkpoint`).
-3. The command is `run.start` with `toolMode: 'sandbox'`, `workspaceId: null`, and `toolset`: the
+3. The command is `run.start` with `conversationKey` and `toolset`: the
    seven tools as `{ name, description, inputSchema }`. Each `inputSchema` is the tool's JSON
    Schema flattened to a root `type: "object"`.
 4. Each `tool.call` is checked against the tool's own input schema and dispatched through
@@ -44,7 +48,7 @@ Constraint `local_agent_runs_workspace_check`: `(tool_mode = 'workspace') = (wor
    `tool.result`.
 5. A tool call counts as activity for the idle check, both when it arrives and once it is
    answered. The cursor is saved after each answered call, so a successor attempt does not run it
-   again. A call that arrives while the run is stopping, or on a `workspace` run, gets an
+   again. A call that arrives while the run is stopping gets an
    `ok: false` refusal. Events after `terminal` are never read, so a late call is ignored.
 6. The CLI's own `tool.start`, `tool.output` and `tool.end` events for a bridged tool
    (`mcp__baios__<tool>`) are dropped, because the server's events are the record. Other CLI
@@ -52,19 +56,18 @@ Constraint `local_agent_runs_workspace_check`: `(tool_mode = 'workspace') = (wor
 7. When the companion's `terminal` says `completed`, the executor saves the assistant text, then
    runs `SandboxTools.checkpoint`, which commits the turn as `Turn <n>` (n is the run's turn) and
    emits `checkpoint`. A commit failure fails the run with `checkpoint`.
-8. Approvals are not used. A companion `approval.request` on a `sandbox` run is denied straight
-   away and nobody is asked. The approval machinery stays as it is for `workspace` runs.
+8. Approvals are not used. The approval machinery (`approval.request`, `approval.respond`) was
+   removed with local devices.
 
 ### Wire (contracts `local-agent/companion.ts`)
 
-`run.start` (downlink) gains these fields. Each has a default, so an older command still parses.
+`run.start` (downlink) is strict. Since local devices were removed it carries no
+`permissionMode`, `toolMode` or `workspaceId`, and these fields are required:
 
 ```ts
-conversationKey: string /^[A-Za-z0-9_-]{1,128}$/ | null   // default null; always set by this server
-toolMode: 'workspace' | 'sandbox'                         // default 'workspace'
-toolset?: { name: SandboxTool; description: string (1..2000);
-            inputSchema: { type: 'object', ... } }[]       // 1..7; sandbox only
-workspaceId: string | null                                 // null exactly in sandbox mode
+conversationKey: string /^[A-Za-z0-9_-]{1,128}$/
+toolset: { name: SandboxTool; description: string (1..2000);
+           inputSchema: { type: 'object', ... } }[]        // 1..7
 ```
 
 `conversationKey` is the first 32 hex characters of `sha256("<orgId>:<projectId>")`. It is
@@ -200,7 +203,7 @@ agent-home` (`all` still means the four project templates). The catalogue loads 
   than the current sandbox.
 - `auth.login.result ok:true` only moves the sign-in to `verifying`. Connected is the next status
   report's `authenticated`, which also clears the sign-in. The status message never repeats the
-  runner's own provider message, which names a companion command.
+  runner's own provider message.
 
 ### Status
 
@@ -233,9 +236,8 @@ verdict → `connected` with the plan; otherwise `signed-out` with a failed sign
 `subscription: {provider:'claude'}` is admitted by `LocalAgentExecutor.admitSubscription`: the
 person's home exists, is not in `error`, and its verdict is `authenticated`, else
 `subscription-not-connected`. It is recorded as a `sandbox` local run on the home's device. The
-sandbox tool mode is Claude only: a `localAgent` with no workspace and `provider:'codex'` is
-`validation-failed` at `/localAgent/provider`, and a `localAgent` naming a `cloud` device (an agent
-home) is `validation-failed` at `/localAgent/deviceId` with nothing of the device in it. On every
+sandbox tool mode is Claude only. (The `localAgent` target, which named a person's own device, was
+removed with local devices.) On every
 attempt the executor re-authorises first (device, starter's `project:agent.run`), so a run that
 may no longer run never wakes a home; then `AgentHomeService.wake` bumps `last_used_at` and starts
 a stopped home, waiting at most 120 s in all (else the run fails `transport`). The wait ends at

@@ -10,7 +10,6 @@ import { type CompanionRunEvent, companionRunEventBatchSchema } from '@repo/cont
 import type { RunEventBody, RunHandle } from '../src/providers/types.ts';
 
 export const FAKE_CLAUDE = fileURLToPath(new URL('fixtures/fake-claude.mjs', import.meta.url));
-export const FAKE_CODEX = fileURLToPath(new URL('fixtures/fake-codex.mjs', import.meta.url));
 export const SELF_SCRIPT = fileURLToPath(new URL('../src/main.ts', import.meta.url));
 
 export const DEVICE_ID = '0b6f6e5e-1c1a-4c55-9a8f-2b7a7f1d9e01';
@@ -65,21 +64,19 @@ export interface FakeServerOptions {
   hello?: Record<string, unknown> | null;
 }
 
-/** A minimal BAIOS: pairing, the SSE command stream, status and run-event ingest. */
+/** A minimal BAIOS: the SSE command stream, status, sign-in and run-event ingest. */
 export class FakeServer {
   url = '';
   readonly connects: { authorization?: string; lastEventId?: string }[] = [];
   readonly statuses: unknown[] = [];
   /** `POST /local-agent/auth` bodies (hosted sign-in). */
   readonly authEvents: Record<string, unknown>[] = [];
-  /** Every request body as sent, to check what never leaves the companion. */
+  /** Every request body as sent, to check what never leaves the runner. */
   readonly bodies: string[] = [];
   readonly runEvents = new Map<string, CompanionRunEvent[]>();
   eventPosts = 0;
   failEventPosts = 0;
   revoked = false;
-  pairingPolls = 0;
-  approveAfterPolls = 1;
   private readonly history: { data: string; id: number }[] = [];
   private readonly streams = new Set<ServerResponse>();
   private readonly server = createServer((request, response) => void this.route(request, response));
@@ -93,7 +90,6 @@ export class FakeServer {
             heartbeatSeconds: 15,
             policy: {
               claude: { allowedAuthMethods: ['subscription', 'api_key', 'cloud_provider'] },
-              codex: { allowedAuthMethods: ['api_key'] },
             },
             type: 'hello',
           }
@@ -151,26 +147,6 @@ export class FakeServer {
 
   private async route(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const path = request.url ?? '';
-    const json = (status: number, value: unknown) => {
-      response.writeHead(status, { 'content-type': 'application/json' });
-      response.end(JSON.stringify(value));
-    };
-    if (request.method === 'POST' && path === '/api/v1/local-agent/pairings') {
-      await body(request, this.bodies);
-      return json(200, {
-        deviceCode: 'D'.repeat(43),
-        expiresAt: new Date(Date.now() + 60_000).toISOString(),
-        intervalSeconds: 1,
-        userCode: 'BCDF-GHJK',
-        verificationUri: `${this.url}/settings/local-agents/pair`,
-      });
-    }
-    if (request.method === 'POST' && path === '/api/v1/local-agent/pairings/token') {
-      await body(request, this.bodies);
-      this.pairingPolls += 1;
-      if (this.pairingPolls <= this.approveAfterPolls) return json(200, { status: 'pending' });
-      return json(200, { deviceId: DEVICE_ID, deviceToken: DEVICE_TOKEN, status: 'approved' });
-    }
     if (request.method === 'GET' && path === '/api/v1/local-agent/connect') {
       if (this.unauthorized(request, response)) return;
       const lastEventId = request.headers['last-event-id'];

@@ -3,6 +3,14 @@
 Status: Draft · Date: 2026-11-03 · Builds on 040 (local agent bridge) and the sandbox tool
 bridge in `spec.md` (same folder).
 
+> **2026-11-03: local devices retired.** Spec 040's local agents (a person's own computer paired
+> through the companion, its workspaces, the `workspace` tool mode, approvals, Codex, and the
+> `localAgent` run target) were removed. BAIOS runs agents only on a person's own Claude
+> subscription inside their agent home, below. What remains of 040 is the runner wire
+> (`local-agent/companion.ts`) and the `local-agent` substrate the agent home uses; the companion
+> package (`apps/companion`) is now only the runner, `start --hosted`. Text below that still
+> describes local devices records the design as it was built.
+
 ## Goal
 
 A person runs BAIOS's agent on **their own Claude subscription**, entirely in the cloud: nothing
@@ -49,9 +57,10 @@ Browser ─▶ BAIOS API ─▶ Agent home (Daytona sandbox, one per person)    
   7 days. Disk persists across stop/start/archive, so the login survives.
 - **Runner**: the companion in hosted mode (`node /opt/baios/runner.js start --hosted`). The
   runner bundle (`apps/companion/dist/main.js`) is uploaded on every start, so it is always
-  current. Config by env + a 0600 token file: `BAIOS_SERVER_URL`, `BAIOS_TOKEN_FILE`. Hosted
-  mode: sandbox tool mode only (refuses workspace mode), Claude only, no local workspaces, no
-  pairing, never runs `login` interactively.
+  current. Config by env + a 0600 token file: `BAIOS_SERVER_URL`, `BAIOS_TOKEN_FILE`. Sandbox
+  tool mode only, Claude only, never runs `login` interactively. Since local devices were retired
+  this is the companion's only mode: `start --hosted` is its only command (a bare `start` is
+  refused), and pairing, workspaces, approvals and Codex are gone from it.
 - **Device identity**: each home has a `local_agent_devices` row (kind `cloud`). A fresh device
   token is minted on every home start, written to the token file through the toolbox, and the
   previous token is revoked. The runner connects out over the existing SSE + POST protocol.
@@ -85,7 +94,7 @@ signIn: { url: string, expiresAt: iso } | null, message: string|null, updatedAt:
 server-side) and is shown to the person verbatim.
 
 Runs: `createRunRequestSchema` gains `subscription?: { provider: 'claude' }` (mutually exclusive
-with `credential` and `localAgent`). `model` is a Claude alias/name validated by
+with `credential`; the `localAgent` target was later removed with local devices). `model` is a Claude alias/name validated by
 `localAgentModelSchema` (null → CLI default). Admission: the person's home exists and its last
 status is `connected`, else problem `subscription-not-connected` (409). The run is a
 sandbox-tool-mode local-agent run targeting the home's device with
@@ -119,7 +128,8 @@ kills the process after 10 min or on cancel, never logs the code, and re-probes
   password or tokens."
 - Composer: "Pay with: BAIOS · My Claude subscription" (disabled with reason when not
   connected). Preview, checkpoints, transcript unchanged.
-- The 040 local-device "Run on" picker is removed from the composer (backend kept).
+- The 040 local-device "Run on" picker is removed from the composer, and (2026-11-03) its
+  backend with it: pairing, devices, workspaces and approvals are gone.
 
 ## Deviations (as built; see spec.md § Cloud subscription agent)
 
@@ -146,5 +156,6 @@ kills the process after 10 min or on cancel, never logs the code, and re-probes
   snapshots (current and previous kept). No plan gate: `canConnectSubscription` is the hook.
 - Disconnect of an offline home starts it (≤ 45 s) to sign out; if it cannot, the home is deleted
   anyway and the status tells the person to end the session in their Claude account settings.
-- An agent home cannot be named as a `localAgent` target; it runs `subscription` runs only.
+- An agent home runs `subscription` runs only (the `localAgent` target was removed with local
+  devices).
 - `AGENT_HOME_CLAUDE_VERSION` must be an exact version outside `local` (when homes are on).

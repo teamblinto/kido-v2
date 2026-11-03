@@ -165,8 +165,3 @@ export function webhooksSettingsUrl(appUrl: string): string {
 export function accountSettingsUrl(appUrl: string): string {
   return new URL('settings/account', `${appUrl.replace(/\/+$/, '')}/`).toString();
 }
-
-/** A person's paired computers (spec 040): where one they do not recognise is revoked. */
-export function localAgentsSettingsUrl(appUrl: string): string {
-  return new URL('settings/local-agents', `${appUrl.replace(/\/+$/, '')}/`).toString();
-}

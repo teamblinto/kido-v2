@@ -90,30 +90,6 @@ describe('App', () => {
     expect(await screen.findByRole('heading', { name: /does not exist/i })).toBeInTheDocument();
   });
 
-  it("keeps the companion's ?code= through sign-in to the local agents page (spec 040)", async () => {
-    server.use(
-      http.post(`${API}/auth/login`, () => HttpResponse.json({ user: aUser })),
-      http.get(`${API}/me/local-agents`, () => HttpResponse.json({ devices: [] })),
-      http.get(`${API}/me/local-agents/pairings/:userCode`, () =>
-        HttpResponse.json({
-          companionVersion: '0.1.0',
-          expiresAt: new Date(Date.now() + 60_000).toISOString(),
-          name: 'Studio PC',
-          platform: 'macos',
-        }),
-      ),
-    );
-    renderAt(`${routes.localAgentsSettings}?code=BCDF-GHJK`, null);
-
-    const user = userEvent.setup();
-    await user.type(await screen.findByLabelText('Work email'), 'a@example.com');
-    await user.type(screen.getByLabelText('Password'), 'correct horse battery staple');
-    await user.click(screen.getByRole('button', { name: 'Sign in' }));
-
-    expect(await screen.findByRole('heading', { name: 'Local agents' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Pairing code')).toHaveValue('BCDF-GHJK');
-  });
-
   it('falls back to the not-found screen', async () => {
     renderAt('/nope', null);
 

@@ -409,15 +409,12 @@ export const environmentSchema = z
       })
       .optional(),
     KEK_PROVIDER: z.enum(['env', 'openbao']).default('env'),
-    // Spec 040 § 2: a Codex CLI signed in with a ChatGPT plan may run only where the operator is
-    // permitted to offer it (local/open-source, or after provider partner approval). Default deny;
-    // a Codex CLI on its own API key is unaffected.
-    LOCAL_AGENT_CODEX_CHATGPT_AUTH: z.enum(['allow', 'deny']).default('deny'),
-    // Spec 040: the local agent bridge. Defaulted below to on under `local` and off elsewhere, so a
-    // deployment opts in deliberately after accepting the providers' terms.
+    // Spec 040's runner bridge, which spec 041's agent homes run on (their command stream, uplink and
+    // executor). Defaulted below to on under `local` and off elsewhere, so a deployment opts in
+    // deliberately after accepting the provider's terms.
     LOCAL_AGENT_ENABLED: booleanString.optional(),
-    // Spec 040 § 6: the longest one turn of a local run may take before it is failed, however busy
-    // the device is. Six hours by default; a turn that legitimately runs longer is rare.
+    // Spec 040 § 6: the longest one turn of a subscription run may take before it is failed, however
+    // busy the agent home is. Six hours by default; a turn that legitimately runs longer is rare.
     LOCAL_AGENT_MAX_RUN_SECONDS: z.coerce.number().int().min(60).default(21_600),
     LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace']).default('info'),
     // The login throttle (§11, criterion 16). Two buckets, one progression: the account bucket is

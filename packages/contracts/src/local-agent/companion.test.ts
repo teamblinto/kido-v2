@@ -28,51 +28,50 @@ const TOOLSET = [
 ];
 
 const START = {
+  conversationKey: 'p_1',
   model: null,
-  permissionMode: 'default',
   prompt: 'fix the build',
   provider: 'claude',
   resume: null,
   runId: RUN,
+  toolset: TOOLSET,
   turn: 1,
   type: 'run.start',
 };
 
+const without = (key: keyof typeof START) =>
+  Object.fromEntries(Object.entries(START).filter(([name]) => name !== key));
+
 describe('sandbox tool bridge', () => {
-  it('reads a run.start without toolMode or conversationKey as a workspace run', () => {
-    expect(companionCommandSchema.parse({ ...START, workspaceId: 'ws_1' })).toMatchObject({
-      conversationKey: null,
-      toolMode: 'workspace',
-      workspaceId: 'ws_1',
-    });
+  it('requires a conversationKey and a toolset on every run.start, and nothing retired', () => {
+    expect(companionCommandSchema.parse(START)).toEqual(START);
+    expect(companionCommandSchema.safeParse(without('conversationKey')).success).toBe(false);
+    expect(companionCommandSchema.safeParse(without('toolset')).success).toBe(false);
+    // The retired local-device fields (spec 040) are refused, not ignored.
+    for (const extra of [
+      { permissionMode: 'default' },
+      { toolMode: 'sandbox' },
+      { workspaceId: null },
+      { workspaceId: 'ws_1' },
+    ]) {
+      expect(
+        companionCommandSchema.safeParse({ ...START, ...extra }).success,
+        Object.keys(extra)[0],
+      ).toBe(false);
+    }
   });
 
-  it('ties a sandbox run.start to a toolset and no workspace, and a workspace one the reverse', () => {
+  it('bounds the toolset and the conversation key', () => {
     const start = (extra: Record<string, unknown>) =>
-      companionCommandSchema.safeParse({ ...START, conversationKey: 'p_1', ...extra }).success;
-    expect(start({ toolMode: 'sandbox', toolset: TOOLSET, workspaceId: null })).toBe(true);
-    expect(start({ toolMode: 'sandbox', workspaceId: null })).toBe(false);
-    expect(start({ toolMode: 'sandbox', toolset: TOOLSET, workspaceId: 'ws_1' })).toBe(false);
-    expect(start({ toolMode: 'workspace', toolset: TOOLSET, workspaceId: 'ws_1' })).toBe(false);
-    expect(start({ toolMode: 'workspace', workspaceId: null })).toBe(false);
-    expect(start({ toolMode: 'sandbox', toolset: [], workspaceId: null })).toBe(false);
-    expect(
-      start({
-        toolMode: 'sandbox',
-        toolset: [{ ...TOOLSET[0], name: 'WebFetch' }],
-        workspaceId: null,
-      }),
-    ).toBe(false);
-    expect(
-      start({
-        toolMode: 'sandbox',
-        toolset: [{ ...TOOLSET[0], inputSchema: { anyOf: [] } }],
-        workspaceId: null,
-      }),
-    ).toBe(false);
+      companionCommandSchema.safeParse({ ...START, ...extra }).success;
+    expect(start({ toolset: [] })).toBe(false);
+    expect(start({ toolset: Array.from({ length: 8 }, () => TOOLSET[0]) })).toBe(false);
+    expect(start({ toolset: [{ ...TOOLSET[0], name: 'WebFetch' }] })).toBe(false);
+    expect(start({ toolset: [{ ...TOOLSET[0], inputSchema: { anyOf: [] } }] })).toBe(false);
     for (const key of ['', 'a/b', '../x', 'x'.repeat(129)]) {
-      expect(start({ conversationKey: key, workspaceId: 'ws_1' }), key).toBe(false);
+      expect(start({ conversationKey: key }), key).toBe(false);
     }
+    expect(start({ conversationKey: 'x'.repeat(128) })).toBe(true);
   });
 
   it('bounds a tool.call: a known tool, a plain call id, a JSON object input of capped size', () => {
@@ -144,27 +143,13 @@ describe('companion commands', () => {
       {
         deviceId: RUN,
         heartbeatSeconds: 15,
-        policy: {
-          claude: { allowedAuthMethods: ['subscription', 'api_key'] },
-          codex: { allowedAuthMethods: ['api_key'] },
-        },
+        policy: { claude: { allowedAuthMethods: ['subscription', 'api_key'] } },
         type: 'hello',
       },
       { type: 'status.refresh' },
-      {
-        model: null,
-        permissionMode: 'default',
-        prompt: 'fix the build',
-        provider: 'claude',
-        resume: { providerSessionId: 's-1' },
-        runId: RUN,
-        turn: 1,
-        type: 'run.start',
-        workspaceId: 'ws_1',
-      },
+      { ...START, resume: { providerSessionId: 's-1' } },
       { message: 'go on', runId: RUN, type: 'run.input' },
       { runId: RUN, turn: 2, type: 'run.interrupt' },
-      { decision: 'deny', message: 'no', requestId: 'r1', runId: RUN, type: 'approval.respond' },
       { type: 'device.revoked' },
       {
         callId: 'c1',
@@ -182,6 +167,15 @@ describe('companion commands', () => {
         success: true,
       });
     }
+    // Retired with local devices: approvals.
+    expect(
+      companionCommandSchema.safeParse({
+        decision: 'deny',
+        requestId: 'r1',
+        runId: RUN,
+        type: 'approval.respond',
+      }).success,
+    ).toBe(false);
   });
 
   it('accepts a hello that leaves a provider out (not allowed), and caps its heartbeat', () => {
@@ -196,20 +190,15 @@ describe('companion commands', () => {
     expect(hello({})).toBe(true);
     expect(hello({ heartbeatSeconds: 300 })).toBe(true);
     expect(hello({ heartbeatSeconds: 301 })).toBe(false);
+    expect(hello({ policy: { codex: { allowedAuthMethods: ['api_key'] } } })).toBe(false);
   });
 
   it('keeps argv-bound run.start fields to plain tokens', () => {
     const start = (model: string | null, providerSessionId: string | null) =>
       companionCommandSchema.safeParse({
+        ...START,
         model,
-        permissionMode: 'default',
-        prompt: 'x',
-        provider: 'claude',
         resume: providerSessionId === null ? null : { providerSessionId },
-        runId: RUN,
-        turn: 1,
-        type: 'run.start',
-        workspaceId: 'ws_1',
       }).success;
     for (const model of ['sonnet', 'claude-opus-5-5[1m]', 'gpt-5.1-codex', 'openai/gpt-oss:20b']) {
       expect(start(model, null), model).toBe(true);
@@ -238,21 +227,9 @@ describe('companion commands', () => {
     ).toBe(false);
   });
 
-  it('refuses a run.start carrying a path', () => {
-    expect(
-      companionCommandSchema.safeParse({
-        cwd: '/home/ada',
-        model: null,
-        permissionMode: 'default',
-        prompt: 'x',
-        provider: 'claude',
-        resume: null,
-        runId: RUN,
-        turn: 1,
-        type: 'run.start',
-        workspaceId: 'ws_1',
-      }).success,
-    ).toBe(false);
+  it('refuses a run.start carrying a path or another provider', () => {
+    expect(companionCommandSchema.safeParse({ ...START, cwd: '/home/ada' }).success).toBe(false);
+    expect(companionCommandSchema.safeParse({ ...START, provider: 'codex' }).success).toBe(false);
   });
 });
 
@@ -262,9 +239,16 @@ describe('companion uplink', () => {
       companionStatusReportSchema.safeParse({
         companionVersion: '0.1.0',
         providers: [],
-        workspaces: [{ id: 'ws_1', label: 'app' }],
       }).success,
     ).toBe(true);
+    // Workspaces went with local devices; a report naming any is refused.
+    expect(
+      companionStatusReportSchema.safeParse({
+        companionVersion: '0.1.0',
+        providers: [],
+        workspaces: [{ id: 'ws_1', label: 'app' }],
+      }).success,
+    ).toBe(false);
   });
 
   it('accepts one well-formed run event per type', () => {
@@ -275,11 +259,6 @@ describe('companion uplink', () => {
       { data: { input: { cmd: 'ls' }, name: 'Bash', toolId: 't1' }, type: 'tool.start' },
       { data: { chunk: 'a.txt', toolId: 't1' }, type: 'tool.output' },
       { data: { ok: true, summary: null, toolId: 't1' }, type: 'tool.end' },
-      { data: { kind: 'modified', path: 'src/a.ts' }, type: 'file.change' },
-      {
-        data: { detail: 'rm x', kind: 'command', requestId: 'r1', title: 'Run a command' },
-        type: 'approval.request',
-      },
       { data: { inputTokens: 1, outputTokens: 2 }, type: 'usage' },
       { data: { callId: 'c1', input: { command: 'ls' }, name: 'exec' }, type: 'tool.call' },
       { data: { status: 'completed' }, type: 'terminal' },
@@ -300,16 +279,17 @@ describe('companion uplink', () => {
     });
   });
 
-  it('refuses a path outside the workspace', () => {
-    for (const path of ['/etc/passwd', 'C:\\Users\\ada', '..\\x', 'src/../../x', '\\\\host\\s']) {
-      expect(
-        companionRunEventSchema.safeParse({
-          data: { kind: 'created', path },
-          seq: 1,
-          type: 'file.change',
-        }).success,
-        path,
-      ).toBe(false);
+  it('refuses the retired file.change and approval.request events', () => {
+    for (const event of [
+      { data: { kind: 'modified', path: 'src/a.ts' }, type: 'file.change' },
+      {
+        data: { detail: 'rm x', kind: 'command', requestId: 'r1', title: 'Run a command' },
+        type: 'approval.request',
+      },
+    ]) {
+      expect(companionRunEventSchema.safeParse({ ...event, seq: 1 }).success, event.type).toBe(
+        false,
+      );
     }
   });
 
@@ -340,17 +320,7 @@ describe('companion uplink', () => {
     expect(companionCommandSchema.safeParse({ runId: RUN, type: 'run.interrupt' }).success).toBe(
       false,
     );
-    expect(
-      companionCommandSchema.safeParse({
-        model: null,
-        permissionMode: 'default',
-        prompt: 'x',
-        provider: 'claude',
-        resume: null,
-        runId: RUN,
-        type: 'run.start',
-        workspaceId: 'ws_1',
-      }).success,
-    ).toBe(false);
+    expect(companionCommandSchema.safeParse(without('turn')).success).toBe(false);
+    expect(companionCommandSchema.safeParse({ ...START, turn: 0 }).success).toBe(false);
   });
 });

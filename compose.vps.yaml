@@ -36,7 +36,7 @@ services:
     profiles: [unused-on-vps]
 
   # The agent-home egress proxy lets homes reach exactly this host (plus Anthropic's): the api the
-  # companion calls is AGENT_HOME_SERVER_URL below, https://APP_HOST.
+  # runner calls is AGENT_HOME_SERVER_URL below, https://APP_HOST.
   sandboxd:
     image: ${FORGE_SANDBOXD_IMAGE:-forge-sandboxd}
     environment:
@@ -113,7 +113,7 @@ services:
       redis-stream:
         condition: service_healthy
     # AGENT_HOME_CLAUDE_VERSION: an exact Claude Code version, never `stable`: what runs is what
-    # we chose. AGENT_HOME_SERVER_URL: the api as a home's companion reaches it, through the
+    # we chose. AGENT_HOME_SERVER_URL: the api as a home's runner reaches it, through the
     # egress proxy and Caddy (DEPLOY_ENV=local would default it to host.docker.internal:3000,
     # which the proxy refuses). DAYTONA_*: the preview broker in this process asks sandboxd for
     # each route's signed upstream, so the api needs sandboxd and its key too (read like the
