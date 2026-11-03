@@ -4,7 +4,9 @@ import { Admission } from './admission.ts';
 import { loadConfig } from './config.ts';
 import { router, sendJson } from './http.ts';
 import { DockerodePort } from './docker.ts';
+import { startEgressProxy } from './egress.ts';
 import { watchEvents } from './events.ts';
+import { createIpMap } from './ip-map.ts';
 import { log } from './log.ts';
 import { createPreviewServer, registerPreviewRoutes } from './preview.ts';
 import { registerSandboxRoutes } from './sandboxes.ts';
@@ -49,7 +51,21 @@ const previewServer = createPreviewServer({ cfg: config, store, docker }).listen
   },
 );
 
+if (config.apiHost === '') log('warn', 'SANDBOXD_API_HOST is empty: agent homes cannot reach the BAIOS API');
+const ipMap = await createIpMap(store, docker);
+const egressServer = startEgressProxy(config, ipMap);
+// The bridge address only exists once networks are created; tolerate its absence until then.
+egressServer.once('error', (e: NodeJS.ErrnoException) => {
+  if (e.code !== 'EADDRNOTAVAIL') throw e;
+  log('warn', 'egress proxy not listening: bind address unavailable', { ...config.egressListen });
+});
+egressServer.listen(config.egressListen.port, config.egressListen.host, () => {
+  log('info', 'egress proxy listening', { ...config.egressListen });
+});
+
 const shutdown = () => {
+  ipMap.stop();
+  egressServer.close();
   clearInterval(timer);
   unwatch();
   server.close();
