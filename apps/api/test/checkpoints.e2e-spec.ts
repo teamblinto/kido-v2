@@ -263,7 +263,7 @@ describe('Checkpoints (e2e)', () => {
           // run's model calls (spec 011): the edit was call 1, the answer that ended it call 2.
           expect(first).toMatchObject({
             gitSha: git.head(),
-            label: 'Turn 2',
+            label: 'Edit README.md (turn 2)',
             parentId: baseline.id,
             runId: run.id,
             turn: 2,
@@ -277,7 +277,7 @@ describe('Checkpoints (e2e)', () => {
           ]);
           expect(first.id).toMatch(UUID);
           expect(await checkpointEvents(run.id)).toEqual([
-            { checkpointId: first.id, label: 'Turn 2' },
+            { checkpointId: first.id, label: 'Edit README.md (turn 2)' },
           ]);
         },
         RUN_TIMEOUT_MS + 5_000,

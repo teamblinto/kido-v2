@@ -25,6 +25,8 @@ const operation = {
   requestedBy: { id: UUID, name: 'Ada' },
   startedAt: null,
   state: 'queued',
+  targetBranch: null,
+  trigger: 'manual',
   toSha: null,
 };
 
@@ -57,6 +59,11 @@ describe('sync enums', () => {
       'repo-too-large',
       'branch-not-found',
       'import-checkout-failed',
+      'branch-protected',
+      'push-rejected',
+      'workflow-permission',
+      'repo-gone',
+      'account-mismatch',
     ]);
   });
 

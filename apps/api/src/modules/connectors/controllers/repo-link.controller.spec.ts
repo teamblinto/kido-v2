@@ -31,7 +31,16 @@ describe('RepoLinkController', () => {
     expect(permissionOf('read')).toBe('project:read');
     expect(PROJECT_ROLE_PERMISSIONS.viewer).toContain('project:read');
 
-    for (const handler of ['link', 'unlink'] as const) {
+    expect(permissionOf('branches')).toBe('project:read');
+
+    for (const handler of [
+      'authorize',
+      'completeCreate',
+      'createBranch',
+      'link',
+      'unlink',
+      'update',
+    ] as const) {
       expect(permissionOf(handler)).toBe('project:files.write');
     }
     expect(PROJECT_ROLE_PERMISSIONS.viewer).not.toContain('project:files.write');
@@ -50,6 +59,30 @@ describe('RepoLinkController', () => {
       controller.link(CALLER, ORG, PROJECT, { existing: { repoId: 7 } }),
     ).resolves.toEqual({ id: 'link' });
     expect(link).toHaveBeenCalledWith(TX, REF, USER, { existing: { repoId: 7 } });
+  });
+
+  it('the spec 044 routes delegate with the project ref, the caller and the body', async () => {
+    const update = vi.fn().mockResolvedValue({ id: 'link' });
+    const branches = vi.fn().mockResolvedValue({ branches: [] });
+    const createBranch = vi.fn().mockResolvedValue({ id: 'link' });
+    const authorize = vi.fn().mockResolvedValue({ authorizeUrl: 'https://github.example/x' });
+    const completeCreate = vi.fn().mockResolvedValue({ id: 'link' });
+    const controller = build({ authorize, branches, completeCreate, createBranch, update });
+
+    await controller.update(CALLER, ORG, PROJECT, { autoSync: false });
+    expect(update).toHaveBeenCalledWith(TX, REF, USER, { autoSync: false });
+
+    await expect(controller.branches(ORG, PROJECT)).resolves.toEqual({ branches: [] });
+    expect(branches).toHaveBeenCalledWith(TX, REF);
+
+    await controller.createBranch(CALLER, ORG, PROJECT, { name: 'dev' });
+    expect(createBranch).toHaveBeenCalledWith(TX, REF, USER, { name: 'dev' });
+
+    await controller.authorize(CALLER, ORG, PROJECT, { name: 'blog', private: true });
+    expect(authorize).toHaveBeenCalledWith(TX, REF, USER, { name: 'blog', private: true });
+
+    await controller.completeCreate(CALLER, ORG, PROJECT, { code: 'c', state: 's' });
+    expect(completeCreate).toHaveBeenCalledWith(TX, REF, USER, { code: 'c', state: 's' });
   });
 
   it('no such project is the service’s not-found, untouched', async () => {

@@ -10,6 +10,7 @@ import {
 const UUID = '4d7c5d8a-2f3b-4c1e-9a6f-0b1c2d3e4f5a';
 
 const link = {
+  autoSync: true,
   branch: 'main',
   connectionId: UUID,
   id: UUID,
@@ -19,6 +20,7 @@ const link = {
   position: 'unknown',
   remoteHeadSha: null,
   repository: { fullName: 'acme/app', id: 7, name: 'app', owner: 'acme' },
+  sideBranch: null,
   state: 'linked',
 };
 

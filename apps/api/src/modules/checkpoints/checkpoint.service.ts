@@ -21,6 +21,7 @@ import { SANDBOX_LIFECYCLE, type SandboxLifecycle } from '../sandbox/sandbox-lif
 import { type CheckpointPage, CheckpointRepository } from './checkpoint.repository';
 import {
   type DiffFile,
+  filesLabel,
   gitAdd,
   gitCommit,
   gitDiff,
@@ -37,7 +38,9 @@ import {
   parseLsTree,
   parseNameStatus,
   parseSha,
+  sanitiseLabel,
   splitDiff,
+  turnLabel,
 } from './git-commands';
 
 /** A binary row carries its size at the checkpoint (contracts § 1); a text row its patch. */
@@ -153,7 +156,7 @@ export class CheckpointService {
   async commitTurn(
     ref: SandboxRef,
     ctx: MutationContext,
-    origin: { readonly runId: string; readonly turn: number },
+    origin: { readonly runId: string; readonly summary?: string; readonly turn: number },
     tx: TenantTransaction,
   ): Promise<{ id: string; label: string }> {
     await this.repository.lockProject(tx, ref.projectId);
@@ -162,7 +165,7 @@ export class CheckpointService {
 
     if (isClean(await this.exec(ref, gitStatus(), ctx))) return { id: head.id, label: head.label };
 
-    const label = `Turn ${String(origin.turn)}`;
+    const label = turnLabel(origin.summary, origin.turn);
     await this.exec(ref, gitAdd(), ctx);
     await this.exec(ref, gitCommit(label), ctx);
     const gitSha = parseSha(await this.exec(ref, gitRevParse(), ctx));
@@ -182,6 +185,17 @@ export class CheckpointService {
     });
 
     return { id: row.id, label: row.label };
+  }
+
+  /**
+   * Spec 044: asks a hibernated workspace to wake. Its own transaction, given by the caller: inside
+   * the request's, the "still waking" refusal would roll the wake back and it would never happen.
+   */
+  async wake(tx: TenantTransaction, ref: SandboxRef): Promise<void> {
+    await this.lifecycle.ensureReady(tx, ref, {
+      leaseEpoch: 0,
+      operationId: `wake/${ref.projectId}`,
+    });
   }
 
   /** No such project is the same `not-found` as a foreign org's (contracts � 3, SC-008). */
@@ -457,6 +471,82 @@ export class CheckpointService {
     });
 
     return { checkpoint: row, saved: true };
+  }
+
+  /**
+   * Spec 044 decision 8: whatever is dirty, committed as a member's `edit` — the guards and the row
+   * of {@link save} with no file written. `null` on a clean tree: the caller still pushes the head.
+   * Same reason for each guard as there; `activeRunExists` under the lock above all (FR-015).
+   */
+  async commitWorkspace(
+    ref: SandboxRef,
+    actorId: string,
+    input: { readonly message?: string },
+    tx: TenantTransaction,
+  ): Promise<Checkpoint | null> {
+    await this.repository.lockProject(tx, ref.projectId);
+
+    if (await this.repository.activeRunExists(tx, ref.orgId, ref.projectId)) {
+      throw new ConflictError('A run is active; wait for it to finish, then try again.', {
+        reason: 'run-active',
+      });
+    }
+
+    const head = await this.repository.head(tx, ref.orgId, ref.projectId);
+    if (head === null) {
+      throw new ConflictError('The project has no checkpoint to commit over.', {
+        reason: 'nothing-to-push',
+      });
+    }
+
+    // A member's write, not a run's: no lease to fence, the operation named after the base.
+    const ctx: MutationContext = { leaseEpoch: 0, operationId: `commit/${head.id}` };
+    const readiness = await this.lifecycle.ensureReady(tx, ref, ctx);
+    if (!readiness.ready) {
+      throw new ServiceUnavailableError(
+        'The workspace is waking; try again shortly.',
+        WAKING_RETRY_AFTER_SECONDS,
+      );
+    }
+
+    const status = await this.exec(ref, gitStatus(), ctx);
+    const dirty = !isClean(status);
+    let label = sanitiseLabel(input.message ?? filesLabel(status)).slice(0, 200);
+
+    if (dirty) {
+      await this.exec(ref, gitAdd(), ctx);
+      await this.exec(ref, gitCommit(label), ctx);
+    }
+
+    const gitSha = parseSha(await this.exec(ref, gitRevParse(), ctx));
+    if (gitSha === head.gitSha) return null;
+
+    // A clean tree ahead of the head: an attempt that committed and then rolled its row back, or a
+    // commit made in the terminal. Either way it is work with no row, so it gets one.
+    if (!dirty) label = sanitiseLabel((await this.exec(ref, gitLogSubject(gitSha), ctx)).trim());
+
+    const files = await this.summary(ref, head.gitSha, gitSha, ctx);
+
+    const row = await this.record(tx, ref, {
+      actorId,
+      createdAt: this.clock.now(),
+      files,
+      gitSha,
+      kind: 'edit',
+      label,
+      orgId: ref.orgId,
+      parentId: head.id,
+      projectId: ref.projectId,
+    });
+    await this.audit.record(tx, {
+      action: 'checkpoint.edited',
+      actorId,
+      metadata: { files: files.length, projectId: ref.projectId },
+      orgId: ref.orgId,
+      target: row.id,
+    });
+
+    return row;
   }
 
   /**

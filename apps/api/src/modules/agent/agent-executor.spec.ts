@@ -795,7 +795,7 @@ describe('AgentExecutor', () => {
         [
           { orgId: 'org_1', projectId: 'proj_1' },
           { leaseEpoch: 1, operationId: `${RUN}/checkpoint-1` },
-          { runId: RUN, turn: 1 },
+          { runId: RUN, summary: 'fix the bug', turn: 1 },
           TX,
         ],
       ]);

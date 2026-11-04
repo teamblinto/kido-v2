@@ -71,6 +71,15 @@ describe('SyncService', () => {
       );
     }
 
+    // Spec 044's first automatic push on link has its own suite; these drive operations by hand.
+    // In `beforeEach`: the config's `restoreMocks` undoes a spy set once.
+    beforeEach(() => {
+      vi.spyOn(
+        harness.moduleRef.get(SyncService, { strict: false }),
+        'requestAuto',
+      ).mockResolvedValue(null);
+    });
+
     beforeAll(async () => {
       harness = await startConnectorsHarness();
       service = harness.moduleRef.get(SyncService, { strict: false });
@@ -250,6 +259,20 @@ describe('SyncService', () => {
       const rows = await operations();
 
       expect(rows.map((row) => row.id)).toEqual([first.id]);
+    });
+
+    it('spec 044: requestPush on a taken slot is null, and the transaction lives on', async () => {
+      await linked();
+
+      const first = await request('push');
+      const [second, after] = await harness.inTenant(async (tx) => [
+        await service.requestPush(tx, ref(), { actorId: harness.userId, trigger: 'auto' }),
+        await service.byId(tx, ref(), first.id),
+      ]);
+
+      expect(second).toBeNull();
+      expect(after).toMatchObject({ id: first.id, trigger: 'manual' });
+      expect((await operations()).map((row) => row.id)).toEqual([first.id]);
     });
 
     it('byId of another project’s operation is not-found; list refuses a foreign cursor', async () => {

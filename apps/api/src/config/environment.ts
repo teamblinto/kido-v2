@@ -371,6 +371,9 @@ export const environmentSchema = z
     // "no connector"; the URLs exist so a test can point the one client at the fixture server.
     GITHUB_API_URL: z.url().default('https://api.github.com'),
     GITHUB_APP_CLIENT_ID: z.string().trim().min(1).optional(),
+    // Spec 044: optional and outside the four. Without it a personal account cannot create a
+    // repository (the one-shot user token needs it); everything else works.
+    GITHUB_APP_CLIENT_SECRET: z.string().trim().min(1).optional(),
     GITHUB_APP_ID: z.coerce.number().int().positive().optional(),
     // A PEM; a literal backslash-n is accepted for the shells that cannot export a newline.
     GITHUB_APP_PRIVATE_KEY: z

@@ -1,8 +1,9 @@
 import type { Connection } from '@repo/contracts';
 import { screen, waitFor } from '@testing-library/react';
 import { HttpResponse, http } from 'msw';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { GITHUB_RETURN_KEY } from '@/features/project/lib/github-sync';
 import { routes } from '@/lib/routes';
 import { problemResponse, renderScreen } from '@/test/render';
 import { API, server } from '@/test/server';
@@ -95,5 +96,51 @@ describe('GithubCallbackPage', () => {
     await waitFor(() => {
       expect(called).toBe(false);
     });
+  });
+
+  describe('coming back to the project that began the install (spec 044)', () => {
+    afterEach(() => {
+      window.sessionStorage.clear();
+    });
+
+    function connected() {
+      server.use(
+        http.post(`${API}/orgs/${ORG_ID}/connectors/github/complete`, () =>
+          HttpResponse.json(aConnection),
+        ),
+      );
+    }
+
+    function renderWithProject() {
+      return renderScreen(<GithubCallbackPage />, {
+        path: PATH,
+        routes: {
+          [routes.connectorsSettings]: <p>Connectors settings</p>,
+          '/projects/:projectId': <p>The project</p>,
+        },
+      });
+    }
+
+    it('returns to the remembered path and forgets it', async () => {
+      connected();
+      window.sessionStorage.setItem(GITHUB_RETURN_KEY, '/projects/p1?panel=github');
+
+      renderWithProject();
+
+      expect(await screen.findByText('The project')).toBeInTheDocument();
+      expect(window.sessionStorage.getItem(GITHUB_RETURN_KEY)).toBeNull();
+    });
+
+    it.each(['//evil.com', '/\\evil.com', '/\t/evil.com', 'https://evil.com/projects/p1'])(
+      'refuses %j and returns to settings',
+      async (stored) => {
+        connected();
+        window.sessionStorage.setItem(GITHUB_RETURN_KEY, stored);
+
+        renderWithProject();
+
+        expect(await screen.findByText('Connectors settings')).toBeInTheDocument();
+      },
+    );
   });
 });

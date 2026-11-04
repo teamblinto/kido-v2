@@ -1,3 +1,5 @@
+import type { SyncFailureReason } from '@repo/contracts';
+
 /**
  * The pure decisions of a push and a pull (contracts § 5–6). The consumer supplies the heads and
  * `isAncestor(a, b)` — git's `merge-base --is-ancestor a b`, true when `a` is reachable from `b`.
@@ -19,6 +21,36 @@ export function pushDecision({ isAncestor, localHead, remoteHead }: SyncHeads): 
   if (remoteHead === localHead) return 'nothing-to-push';
 
   return isAncestor(remoteHead, localHead) ? 'push' : 'remote-ahead';
+}
+
+/** Spec 044 decision 4: where an automatic push lands when the linked branch cannot take it. */
+export const SIDE_BRANCH = 'kido-sync';
+
+export type PushRejection = Extract<
+  SyncFailureReason,
+  'branch-protected' | 'push-rejected' | 'remote-ahead' | 'workflow-permission'
+>;
+
+/**
+ * Spec 044: what `git push`'s stderr says GitHub refused, as the closed vocabulary; stderr itself
+ * goes no further. `undefined` is any other failure (`git-failed`). The order carries meaning:
+ * GH013 covers rulesets and secret scanning alike, so the secrets are read first.
+ */
+export function classifyPushRejection(stderr: string): PushRejection | undefined {
+  if (/refusing to allow a GitHub App to create or update workflow/i.test(stderr)) {
+    return 'workflow-permission';
+  }
+  if (
+    /push cannot contain secrets|push protection|GH001|exceeds GitHub's file size limit/i.test(
+      stderr,
+    )
+  ) {
+    return 'push-rejected';
+  }
+  if (/GH006|GH013|protected branch/i.test(stderr)) return 'branch-protected';
+  if (/non-fast-forward|fetch first|stale info/i.test(stderr)) return 'remote-ahead';
+
+  return undefined;
 }
 
 /** A pull is a fast-forward of the local head or nothing; anything else is `diverged`. */

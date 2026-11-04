@@ -69,7 +69,9 @@ const queued: SyncOperation = {
   requestedBy: { id: ORG_ID, name: 'Rakibul' },
   startedAt: null,
   state: 'queued',
+  targetBranch: null,
   toSha: HEAD,
+  trigger: 'manual',
 };
 
 const inspectPath = `${API}/orgs/${ORG_ID}/workspaces/${WORKSPACE_ID}/imports/inspect`;

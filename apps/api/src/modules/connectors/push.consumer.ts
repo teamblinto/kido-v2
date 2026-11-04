@@ -7,6 +7,7 @@ import type { Checkpoint } from '@repo/db';
 import { sql } from 'drizzle-orm';
 
 import { CLOCK, type ClockPort } from '../../common/clock/clock.port';
+import type { Plaintext } from '../../common/crypto/branded';
 import { ConflictError, ServiceUnavailableError } from '../../common/errors/domain-error';
 import type { TenantTransaction } from '../../database/database.types';
 import { TenantTransactionRunner } from '../../database/tenant-transaction';
@@ -16,10 +17,22 @@ import { EventConsumer, RetryableFailure } from '../outbox/consumer';
 import type { Envelope } from '../outbox/envelope';
 import type { MutationContext } from '../sandbox/sandbox.port';
 import { ConnectionService } from './connection.service';
+import {
+  GITHUB_APP_CLIENT,
+  GithubApiError,
+  type GithubAppClient,
+  type GithubRepository,
+} from './github-app.client';
 import { LOCAL_GIT, type LocalGit, LocalGitError } from './local-git';
 import { type RepoLinkRecord, RepoLinkRepository } from './repo-link.repository';
-import { pushDecision } from './sync-guards';
+import {
+  classifyPushRejection,
+  type PushRejection,
+  pushDecision,
+  SIDE_BRANCH,
+} from './sync-guards';
 import { type SyncRecord, SyncRepository } from './sync.repository';
+import { SyncService } from './sync.service';
 
 export const SYNC_QUEUE = 'connector.sync';
 
@@ -71,7 +84,27 @@ interface Outcome {
   /** What the remote branch was at, for the link's `remote_head_sha` (contracts § 5). */
   readonly remoteHead?: string | null;
   readonly state: 'failed' | 'succeeded';
+  /** Spec 044: where the head landed; anything but the linked branch is a side push. */
+  readonly targetBranch?: string;
   readonly toSha?: string | null;
+}
+
+/** One push's remote, for what happens after the linked branch's own check. */
+interface Target {
+  readonly auth: { readonly auth: Plaintext };
+  readonly cwd: string;
+  readonly head: Checkpoint;
+  readonly link: RepoLinkRecord;
+  readonly remote: string;
+  /** The linked branch, as the link will record it. */
+  readonly remoteHead: string | null;
+}
+
+/** What GitHub refused, read off a push that ran to its end; a timeout said nothing of the kind. */
+function rejectionOf(error: unknown): PushRejection | undefined {
+  return error instanceof LocalGitError && error.reason === 'git-failed'
+    ? classifyPushRejection(error.stderr)
+    : undefined;
 }
 
 /**
@@ -84,7 +117,14 @@ interface Outcome {
  * Retry: a sandbox still waking, a provider 5xx at the mint, a git timeout — `RetryableFailure`;
  * on the last attempt the row closes as `provider-unavailable` / `timed-out`. A refused mint
  * closes the row as `needs-reauth` (the service audited the health change). Every other failure is `git-failed`.
- * A push holds no writer lock (R7): it reads a bundle and never touches the workspace.
+ * A push holds the writer lock only while it bundles (see `push`): git itself runs with none (R7).
+ *
+ * Spec 044: the repository is resolved by its id first (decision 10), and what GitHub refuses is
+ * read from git's stderr into the closed vocabulary. An `auto` operation the linked branch cannot
+ * take goes to `kido-sync` by fast-forward (decision 4); a manual one keeps spec 018's refusal.
+ * Settling compares the head with what this job pushed and asks for one more if it moved (decision
+ * 3). That cannot loop: a follow-up needs a checkpoint newer than the job before it, and only a
+ * person or a run makes one; a job that finds the head where it started asks for nothing.
  */
 @Injectable()
 export class SyncConsumer extends EventConsumer<'sync.requested', SyncJob> {
@@ -108,6 +148,8 @@ export class SyncConsumer extends EventConsumer<'sync.requested', SyncJob> {
     @Inject(CLOCK) private readonly clock: ClockPort,
     @Inject(PULL_RUNNER) private readonly pull: PullRunner,
     @Inject(IMPORT_RUNNER) private readonly imports: PullRunner,
+    @Inject(GITHUB_APP_CLIENT) private readonly github: GithubAppClient,
+    @Inject(SyncService) private readonly syncs: SyncService,
   ) {
     super();
   }
@@ -185,27 +227,35 @@ export class SyncConsumer extends EventConsumer<'sync.requested', SyncJob> {
     const { orgId, projectId } = operation;
     const ref = { orgId, projectId };
     const ctx: MutationContext = { leaseEpoch: 0, operationId: `push/${operation.id}` };
-    const prepared = await this.transactions.runInTenantScope(
-      { orgId, userId: null },
-      async (tx) => {
-        const bundle = await this.bundler.current(tx, ref, ctx);
+    const scope = { orgId, userId: null };
+    // Its own short transaction: the mint locks the connection row, which every token call in the
+    // organisation needs, and the bundle below can take a while.
+    const token = await this.transactions.runInTenantScope(scope, async (tx) => {
+      try {
+        return await this.connections.repositoryToken(tx, orgId, link.repoId);
+      } catch (error) {
+        // `needs-reauth`: the service already moved the connection; that write must commit.
+        const reason = error instanceof ConflictError ? error.extensions.reason : undefined;
 
-        try {
-          return { bundle, token: await this.connections.repositoryToken(tx, orgId, link.repoId) };
-        } catch (error) {
-          // The service already moved the connection to `needs_reauth`; that write must commit.
-          if (error instanceof ConflictError && error.extensions.reason === 'needs-reauth') {
-            return null;
-          }
-          throw error;
-        }
-      },
-    );
+        if (reason === 'needs-reauth' || reason === 'repo-gone') return reason;
+        throw error;
+      }
+    });
 
-    if (prepared === null) return { reason: 'needs-reauth', state: 'failed' };
+    if (typeof token === 'string') return { reason: token, state: 'failed' };
 
-    const { bundle, token } = prepared;
-    const remote = this.git.remoteUrl(link.owner, link.name);
+    // Spec 044: every auto push now races the mirror to `git bundle create`, which takes a lockfile
+    // and fails the loser. The lock serialises the two, and usually hands the mirror back as current.
+    const bundle = await this.transactions.runInTenantScope(scope, async (tx) => {
+      await this.checkpoints.lockProject(tx, ref);
+
+      return this.bundler.current(tx, ref, ctx);
+    });
+    const repository = await this.resolve(link, token);
+
+    if (repository === null) return { reason: 'repo-gone', state: 'failed' };
+
+    const remote = this.git.remoteUrl(repository.owner, repository.name);
     const branch = `refs/heads/${link.branch}`;
     const auth = { auth: token };
 
@@ -216,10 +266,7 @@ export class SyncConsumer extends EventConsumer<'sync.requested', SyncJob> {
       await writeFile(bundlePath, bundle.body);
       await this.git.run(['clone', '--quiet', '--bare', bundlePath, cwd], { cwd: dir });
 
-      // `ls-remote` answers nothing for a branch that does not exist yet (an empty remote is fine).
-      const listed = await this.git.run(['ls-remote', remote, branch], { cwd, ...auth });
-      const [first] = listed.stdout.trim().split(/\s+/);
-      const remoteHead = first === undefined || first === '' ? null : first;
+      const remoteHead = await this.remoteSha(cwd, remote, branch, auth);
 
       if (remoteHead !== null) {
         await this.git.run(
@@ -240,6 +287,8 @@ export class SyncConsumer extends EventConsumer<'sync.requested', SyncJob> {
         localHead: head.gitSha,
         remoteHead,
       });
+      const target: Target = { auth, cwd, head, link, remote, remoteHead };
+      const auto = operation.trigger === 'auto' || link.autoSync;
 
       // SC-012: a remote already at the head (a relinked level project) is a success that adds nothing.
       if (decision === 'nothing-to-push') {
@@ -249,13 +298,34 @@ export class SyncConsumer extends EventConsumer<'sync.requested', SyncJob> {
           reason: null,
           remoteHead: head.gitSha,
           state: 'succeeded',
+          targetBranch: link.branch,
           toSha: head.gitSha,
         };
       }
 
-      if (decision !== 'push') return { reason: decision, remoteHead, state: 'failed' };
+      if (decision !== 'push') {
+        return auto
+          ? this.pushSide(target, decision)
+          : { reason: decision, remoteHead, state: 'failed' };
+      }
 
-      await this.git.run(['push', '--quiet', remote, `${head.gitSha}:${branch}`], { cwd, ...auth });
+      try {
+        await this.git.run(['push', '--quiet', remote, `${head.gitSha}:${branch}`], {
+          cwd,
+          ...auth,
+        });
+      } catch (error) {
+        const rejection = rejectionOf(error);
+
+        if (rejection === undefined) throw error;
+
+        // A commit may have landed since the check: the link records where the branch is now.
+        const moved = await this.remoteSha(cwd, remote, branch, auth);
+
+        return auto && (rejection === 'remote-ahead' || rejection === 'branch-protected')
+          ? this.pushSide({ ...target, remoteHead: moved }, rejection)
+          : { reason: rejection, remoteHead: moved, state: 'failed' };
+      }
 
       const counted = await this.git.run(
         [
@@ -272,9 +342,104 @@ export class SyncConsumer extends EventConsumer<'sync.requested', SyncJob> {
         reason: null,
         remoteHead: head.gitSha,
         state: 'succeeded',
+        targetBranch: link.branch,
         toSha: head.gitSha,
       };
     });
+  }
+
+  /** Decision 10: the id is the repository; owner and name are only what it is called today. */
+  private async resolve(link: RepoLinkRecord, token: Plaintext): Promise<GithubRepository | null> {
+    let repository: GithubRepository;
+
+    try {
+      repository = await this.github.repository(token, link.repoId);
+    } catch (error) {
+      if (error instanceof GithubApiError && error.category === 'not-found') return null;
+      throw error;
+    }
+
+    if (repository.owner !== link.owner || repository.name !== link.name) {
+      await this.transactions.runInTenantTransaction(link.orgId, (tx) =>
+        this.links.setRepository(tx, link.orgId, link.id, repository),
+      );
+    }
+
+    return repository;
+  }
+
+  /** `ls-remote` answers nothing for a branch that does not exist yet (an empty remote is fine). */
+  private async remoteSha(
+    cwd: string,
+    remote: string,
+    ref: string,
+    auth: Target['auth'],
+  ): Promise<string | null> {
+    const listed = await this.git.run(['ls-remote', remote, ref], { cwd, ...auth });
+    const [first] = listed.stdout.trim().split(/\s+/);
+
+    return first === undefined || first === '' ? null : first;
+  }
+
+  /**
+   * Decision 4: the linked branch refused an automatic push, for `reason`. The head goes to
+   * `kido-sync` by fast-forward or not at all, and a side branch someone else moved is `diverged`.
+   * The linked branch being `kido-sync` leaves nowhere to go.
+   */
+  private async pushSide(
+    { auth, cwd, head, link, remote, remoteHead }: Target,
+    reason: SyncFailureReason,
+  ): Promise<Outcome> {
+    if (link.branch === SIDE_BRANCH) return { reason, remoteHead, state: 'failed' };
+
+    const ref = `refs/heads/${SIDE_BRANCH}`;
+    const side = await this.remoteSha(cwd, remote, ref, auth);
+
+    if (side !== null && side !== head.gitSha) {
+      await this.git.run(
+        ['fetch', '--quiet', remote, `+${ref}:refs/remotes/origin/${SIDE_BRANCH}`],
+        {
+          cwd,
+          ...auth,
+        },
+      );
+
+      if (!(await this.git.isAncestor(cwd, side, head.gitSha))) {
+        return { reason: 'diverged', remoteHead, state: 'failed' };
+      }
+    }
+
+    if (side !== head.gitSha) {
+      try {
+        await this.git.run(['push', '--quiet', remote, `${head.gitSha}:${ref}`], { cwd, ...auth });
+      } catch (error) {
+        const rejection = rejectionOf(error);
+
+        if (rejection === undefined) throw error;
+
+        // Past the check above, a fast-forward refused means the side branch just moved.
+        return {
+          reason: rejection === 'remote-ahead' ? 'diverged' : rejection,
+          remoteHead,
+          state: 'failed',
+        };
+      }
+    }
+
+    // `--remotes` is what was fetched here: the linked branch and the side branch.
+    const counted = await this.git.run(['rev-list', '--count', head.gitSha, '--not', '--remotes'], {
+      cwd,
+    });
+
+    return {
+      commits: Number(counted.stdout.trim()),
+      fromSha: side,
+      reason: null,
+      remoteHead,
+      state: 'succeeded',
+      targetBranch: SIDE_BRANCH,
+      toSha: head.gitSha,
+    };
   }
 
   /** Transient → `RetryableFailure` while attempts remain; terminal → the row's reason. */
@@ -289,6 +454,17 @@ export class SyncConsumer extends EventConsumer<'sync.requested', SyncJob> {
         ? { reason: 'provider-unavailable', state: 'failed' }
         : new RetryableFailure('upstream-5xx', error);
     }
+    if (
+      error instanceof GithubApiError &&
+      (error.category === 'rate-limited' || error.category === 'unavailable')
+    ) {
+      return last
+        ? { reason: 'provider-unavailable', state: 'failed' }
+        : new RetryableFailure(
+            error.category === 'rate-limited' ? 'throttled' : 'upstream-5xx',
+            error,
+          );
+    }
     if (error instanceof LocalGitError && error.reason === 'timed-out') {
       return last
         ? { reason: 'timed-out', state: 'failed' }
@@ -298,9 +474,10 @@ export class SyncConsumer extends EventConsumer<'sync.requested', SyncJob> {
     return { reason: 'git-failed', state: 'failed' };
   }
 
-  /** One tenant transaction: the row and the link's pointers. */
+  /** One tenant transaction: the row, the link's pointers, and the trailing edge (decision 3). */
   private async settle({ head, link, operation }: PushJob, outcome: Outcome): Promise<void> {
-    const { orgId } = operation;
+    const { orgId, projectId } = operation;
+    const ref = { orgId, projectId };
     const { remoteHead, ...done } = outcome;
 
     await this.transactions.runInTenantTransaction(orgId, async (tx) => {
@@ -315,11 +492,29 @@ export class SyncConsumer extends EventConsumer<'sync.requested', SyncJob> {
         return;
       }
 
-      if (outcome.state === 'succeeded') {
+      const moved = (await this.links.forProject(tx, orgId, projectId))?.branch !== link.branch;
+
+      if (moved) {
+        this.logger.warn(
+          `push ${operation.id} finished after a branch switch; pointers left alone`,
+        );
+      } else if (outcome.state === 'succeeded' && outcome.targetBranch === link.branch) {
         await this.links.setPushed(tx, orgId, link.id, head.id, head.gitSha);
+        await this.links.setSideBranch(tx, orgId, link.id, null);
+      } else if (outcome.state === 'succeeded') {
+        // The linked branch has not moved: the head is not pushed, it is waiting on the side.
+        await this.links.setSideBranch(tx, orgId, link.id, SIDE_BRANCH);
+        await this.links.setRemoteHead(tx, orgId, link.id, remoteHead ?? null);
       } else if (remoteHead !== undefined) {
         await this.links.setRemoteHead(tx, orgId, link.id, remoteHead);
       }
+
+      // No follow-up for what only a person can repair; every other failure may not repeat.
+      if (outcome.reason === 'needs-reauth' || outcome.reason === 'repo-gone') return;
+
+      const current = await this.checkpoints.head(tx, ref);
+
+      if (current !== null && current.id !== head.id) await this.syncs.requestAuto(tx, ref);
     });
   }
 }

@@ -527,7 +527,10 @@ describe('Cloud subscription agent (e2e)', () => {
                 .expect(200)
             ).body,
           );
-          expect(checkpoints.items[0]).toMatchObject({ gitSha: git.head(), label: 'Turn 1' });
+          expect(checkpoints.items[0]).toMatchObject({
+            gitSha: git.head(),
+            label: 'edit the readme',
+          });
 
           // The retired "your computers" list (spec 040) is no longer served.
           await http(app).get('/api/v1/me/local-agents').set('Cookie', cookie()).expect(404);

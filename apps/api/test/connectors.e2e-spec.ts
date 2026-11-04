@@ -7,6 +7,7 @@ import {
   operationSchema,
   repoLinkSchema,
   type SyncOperation,
+  syncOperationPageSchema,
   syncOperationSchema,
 } from '@repo/contracts';
 import { schema } from '@repo/db';
@@ -15,7 +16,7 @@ import { execFileSync } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, inject, it, vi } from 'vitest';
 
 import { AppModule } from '../src/app.module';
 import { configureApplication } from '../src/bootstrap';
@@ -25,6 +26,7 @@ import { APP_DATABASE } from '../src/database/database.constants';
 import type { ForgeDatabase } from '../src/database/database.types';
 import { TenantTransactionRunner } from '../src/database/tenant-transaction';
 import { mirrorKey } from '../src/modules/checkpoints/repo-bundler';
+import { SyncService } from '../src/modules/connectors/sync.service';
 import { SandboxService } from '../src/modules/sandbox/sandbox.service';
 import { type GithubFixture, startGithubFixture } from './fixtures/github-fixture';
 import { unsafe } from './support/csrf-client';
@@ -133,6 +135,11 @@ describe('Connectors (e2e)', () => {
     const realWrite = process.stdout.write.bind(process.stdout);
 
     const connectors = (orgId: string) => `/api/v1/orgs/${orgId}/connectors`;
+
+    // Spec 018's flows are driven by hand; spec 044's first automatic push has its own test below.
+    beforeEach(() => {
+      vi.spyOn(app.get(SyncService, { strict: false }), 'requestAuto').mockResolvedValue(null);
+    });
 
     beforeAll(async () => {
       suiteLock = await holdOutboxSuiteLock(process.env.DATABASE_URL ?? '');
@@ -700,6 +707,38 @@ describe('Connectors (e2e)', () => {
           toSha: head,
         });
         expect(git(remote(), 'rev-list', '--count', 'refs/heads/main')).toBe('2');
+      });
+
+      it('spec 044: linking pushes the project with no click, through the real outbox', async () => {
+        vi.spyOn(app.get(SyncService, { strict: false }), 'requestAuto').mockRestore();
+
+        const head = await commit(1);
+
+        await unsafe(http(app).delete(links()), [cookie()]).expect(204);
+        await unsafe(http(app).put(links()), [cookie()])
+          .send({ existing: { branch: 'main', repoId } })
+          .expect(200);
+
+        let newest: SyncOperation | undefined;
+
+        expect(
+          await until(async () => {
+            const page = await http(app).get(sync()).set('Cookie', cookie());
+
+            newest = syncOperationPageSchema.parse(page.body).operations[0];
+
+            return newest?.state === 'succeeded' || newest?.state === 'failed';
+          }, SYNC_TIMEOUT_MS),
+        ).toBe(true);
+        expect(newest).toMatchObject({
+          state: 'succeeded',
+          targetBranch: 'main',
+          toSha: head,
+          trigger: 'auto',
+        });
+        expect(git(remote(), 'rev-parse', 'refs/heads/main')).toBe(head);
+        // The next block links in its `beforeAll`, ahead of the `beforeEach` that stubs this.
+        vi.spyOn(app.get(SyncService, { strict: false }), 'requestAuto').mockResolvedValue(null);
       });
     });
 

@@ -17,6 +17,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { StepUpDialog } from '@/features/auth/components/two-factor-dialog';
 import { PersonalAccountsPolicySwitch } from '@/features/settings/personal-accounts-policy';
+import { GITHUB_RETURN_KEY } from '@/features/project/lib/github-sync';
 import { PasteTokenDialog } from '@/features/settings/paste-token-dialog';
 import { ProviderKeysSection } from '@/features/settings/provider-keys-section';
 import { SettingsNav } from '@/features/settings/settings-nav';
@@ -83,8 +84,11 @@ export function ConnectorsSettingsPage(): React.JSX.Element {
   });
 
   const install = useMutation({
-    mutationFn: async (provider: 'github' | 'supabase') =>
-      provider === 'github'
+    mutationFn: async (provider: 'github' | 'supabase') => {
+      // A connect abandoned from a project must not carry this one back there.
+      window.sessionStorage.removeItem(GITHUB_RETURN_KEY);
+
+      return provider === 'github'
         ? (
             await apiRequest('POST', connectorsPath(orgId, '/github/install'), {
               schema: installResponseSchema,
@@ -94,7 +98,8 @@ export function ConnectorsSettingsPage(): React.JSX.Element {
             await apiRequest('POST', connectorsPath(orgId, '/supabase/install'), {
               schema: supabaseInstallResponseSchema,
             })
-          ).url,
+          ).url;
+    },
     onSuccess: (url) => {
       window.location.assign(url);
     },

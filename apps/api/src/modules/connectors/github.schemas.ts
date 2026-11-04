@@ -59,3 +59,13 @@ export const branchSchema = z.looseObject({
   commit: z.looseObject({ sha: z.string().regex(/^[0-9a-f]{40}$/) }),
   name: z.string().min(1),
 });
+
+/** `GET /repositories/{id}/branches`: one page. */
+export const branchPageSchema = z.array(
+  z.looseObject({ name: z.string().min(1), protected: z.boolean() }),
+);
+
+/** Spec 044: `POST /login/oauth/access_token`. A refused code is a 200 with `error` and no token. */
+export const userTokenSchema = z.looseObject({ access_token: z.string().min(1) });
+
+export const userSchema = z.looseObject({ login: z.string().min(1) });

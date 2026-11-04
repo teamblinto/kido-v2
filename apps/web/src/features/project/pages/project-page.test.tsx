@@ -196,6 +196,10 @@ function stageTab(name: RegExp): HTMLElement {
 
 describe('ProjectPage', () => {
   beforeEach(() => {
+    server.use(
+      http.get(`${API}/orgs/:orgId/connectors`, () => HttpResponse.json({ connections: [] })),
+      http.get(`${API}/orgs/:orgId/projects/:projectId/repo-link`, () => HttpResponse.json(null)),
+    );
     // The model picker remembers its choice per project (spec 043); every test starts unpicked.
     window.localStorage.removeItem(`baios.model.${PROJECT_ID}`);
     // The topbar reads the project name from the API; everything else on this screen is still
@@ -395,6 +399,40 @@ describe('ProjectPage', () => {
    * surfaces is filled in by the screen (FR-003), which is what the transcript's emptiness in the
    * last case is proving.
    */
+  describe('the GitHub panel (spec 044)', () => {
+    beforeEach(() => {
+      server.use(
+        http.get(`${API}/orgs/:orgId/projects/:projectId/checkpoints`, () =>
+          HttpResponse.json({ items: [], nextCursor: null }),
+        ),
+      );
+    });
+
+    it('opens from the topbar icon, in place, with one way to connect', async () => {
+      const user = userEvent.setup();
+
+      renderPage();
+
+      await user.click(
+        await screen.findByRole('button', { name: 'Set up GitHub for this project' }),
+      );
+
+      expect(await screen.findByRole('button', { name: 'Connect GitHub' })).toBeVisible();
+      await waitFor(() => {
+        expect(screen.getByRole('heading', { name: 'GitHub' })).toHaveFocus();
+      });
+    });
+
+    it('is where a trip to GitHub comes back to', async () => {
+      renderScreen(<ProjectPage />, {
+        path: `/projects/${PROJECT_ID}?panel=github`,
+        route: '/projects/:projectId',
+      });
+
+      expect(await screen.findByRole('button', { name: 'Connect GitHub' })).toBeVisible();
+    });
+  });
+
   describe('a real run', () => {
     it('starts a run from the composer and renders what the run reports', async () => {
       const user = userEvent.setup();
@@ -457,6 +495,37 @@ describe('ProjectPage', () => {
       );
 
       await waitFor(() => expect(document.querySelector('iframe')).not.toBe(before));
+    });
+
+    it('rereads the GitHub state the moment a checkpoint lands (spec 044)', async () => {
+      const user = userEvent.setup();
+      const live = liveStream();
+      let reads = 0;
+
+      server.use(
+        ...runHandlers(live.response),
+        http.get(`${API}/orgs/:orgId/projects/:projectId/repo-link`, () => {
+          reads += 1;
+
+          return HttpResponse.json(null);
+        }),
+      );
+
+      renderPage();
+      await ask(user, 'add a swap button');
+      await waitFor(() => expect(reads).toBe(1));
+
+      live.send(
+        frame({
+          at: '2026-08-18T10:00:00.000Z',
+          data: { checkpointId: 'c1', label: 'add a swap button' },
+          run: RUN_ID,
+          seq: 1,
+          type: 'checkpoint',
+        }),
+      );
+
+      await waitFor(() => expect(reads).toBe(2));
     });
 
     it('loads the preview once on open: a checkpoint the stream replays reloads nothing', async () => {

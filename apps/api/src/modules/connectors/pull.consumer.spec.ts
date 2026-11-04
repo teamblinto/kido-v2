@@ -243,6 +243,11 @@ describe('SyncConsumer (pull)', () => {
       sandbox.failOn = null;
       sandbox.commands.length = 0;
       vi.restoreAllMocks();
+      // Spec 044's first automatic push on link has its own suite; these drive operations by hand.
+      vi.spyOn(
+        harness.moduleRef.get(SyncService, { strict: false }),
+        'requestAuto',
+      ).mockResolvedValue(null);
       for (const dir of [work, other]) {
         if (dir !== undefined) await rm(dir, { force: true, recursive: true });
       }

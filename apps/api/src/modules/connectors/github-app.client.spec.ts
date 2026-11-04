@@ -7,6 +7,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { revealPlaintext } from '../../common/crypto/branded';
 import type { Environment } from '../../config/environment';
+import { OauthExchangeError } from '../identity/services/oauth.service';
 import { GITHUB_TIMEOUT_MS, githubFetch } from './github-fetch';
 import { GithubApiError, GithubAppClient } from './github-app.client';
 import { type GithubFixture, startGithubFixture } from '../../../test/fixtures/github-fixture';
@@ -31,9 +32,11 @@ function clientWith(values: Partial<Environment> = {}): GithubAppClient {
     configOf({
       GITHUB_API_URL: fixture.url,
       GITHUB_APP_CLIENT_ID: 'Iv1.app',
+      GITHUB_APP_CLIENT_SECRET: 'client-secret',
       GITHUB_APP_ID: APP_ID,
       GITHUB_APP_PRIVATE_KEY: PEM,
       GITHUB_APP_SLUG: 'forge-test',
+      GITHUB_INSTALL_URL: fixture.url,
       ...values,
     }),
   );
@@ -66,6 +69,7 @@ beforeEach(() => {
   fixture.repositories.clear();
   fixture.tokens.clear();
   fixture.requests.length = 0;
+  fixture.user.login = 'jane';
   fixture.installations.set(INSTALLATION_ID, {
     account: { id: 9, login: 'acme', type: 'Organization' },
     id: INSTALLATION_ID,
@@ -205,6 +209,158 @@ describe('the seven endpoints', () => {
     await expect(client.deleteInstallation(INSTALLATION_ID)).resolves.toBeUndefined();
     fixture.override.status = 500;
     expect(await category(client.deleteInstallation(INSTALLATION_ID))).toBe('unavailable');
+  });
+});
+
+describe('branches (spec 044)', () => {
+  it('listBranches pages until a short page and reports protection', async () => {
+    const branches = Object.fromEntries(
+      Array.from({ length: 150 }, (_, index) => [`b${String(index)}`, 'a'.repeat(40)]),
+    );
+
+    fixture.repositories.set(2, {
+      ...fixture.repositories.get(1)!,
+      branches,
+      id: 2,
+      protected: ['b0'],
+    });
+
+    const { token } = await client.mintToken(INSTALLATION_ID, { permissions: {} });
+    const listed = await client.listBranches(token, 2);
+
+    expect(listed).toHaveLength(150);
+    expect(listed[0]).toEqual({ name: 'b0', protected: true });
+    expect(listed[149]).toEqual({ name: 'b149', protected: false });
+    expect(fixture.requests.filter((request) => request.path.endsWith('/branches'))).toHaveLength(
+      2,
+    );
+  });
+
+  it('listBranches stops at 300 however many there are', async () => {
+    const branches = Object.fromEntries(
+      Array.from({ length: 450 }, (_, index) => [`b${String(index)}`, 'a'.repeat(40)]),
+    );
+
+    fixture.repositories.set(2, { ...fixture.repositories.get(1)!, branches, id: 2 });
+
+    const { token } = await client.mintToken(INSTALLATION_ID, { permissions: {} });
+
+    await expect(client.listBranches(token, 2)).resolves.toHaveLength(300);
+    expect(fixture.requests.filter((request) => request.path.endsWith('/branches'))).toHaveLength(
+      3,
+    );
+  });
+
+  it('createRef posts refs/heads/<name>; a taken name is validation', async () => {
+    const { token } = await client.mintToken(INSTALLATION_ID, { permissions: {} });
+
+    await client.createRef(token, 'acme', 'site', 'feature/x', 'a'.repeat(40));
+
+    expect(fixture.requests[1]).toMatchObject({
+      body: { ref: 'refs/heads/feature/x', sha: 'a'.repeat(40) },
+      method: 'POST',
+      path: '/repos/acme/site/git/refs',
+    });
+    expect(await category(client.createRef(token, 'acme', 'site', 'main', 'a'.repeat(40)))).toBe(
+      'validation',
+    );
+  });
+});
+
+describe('the one-shot user token (spec 044)', () => {
+  it('canAuthorizeUsers needs both the client id and the secret; isConfigured does not move', () => {
+    const noSecret = clientWith({ GITHUB_APP_CLIENT_SECRET: undefined });
+
+    expect(client.canAuthorizeUsers()).toBe(true);
+    expect(noSecret.canAuthorizeUsers()).toBe(false);
+    expect(noSecret.isConfigured()).toBe(true);
+    expect(clientWith({ GITHUB_APP_CLIENT_ID: undefined }).canAuthorizeUsers()).toBe(false);
+  });
+
+  it('authorizeUrl names the client and the state and asks for no scope', () => {
+    const url = new URL(client.authorizeUrl('st ate'));
+
+    expect(`${url.origin}${url.pathname}`).toBe(`${fixture.url}/login/oauth/authorize`);
+    expect(Object.fromEntries(url.searchParams)).toEqual({ client_id: 'Iv1.app', state: 'st ate' });
+  });
+
+  it('exchangeUserCode sends the client pair and the code in the body, and answers a Plaintext', async () => {
+    const token = await client.exchangeUserCode('good');
+
+    expect(revealPlaintext(token).toString('utf8')).toMatch(/^ghu_/u);
+    expect(fixture.requests[0]).toMatchObject({
+      authorization: undefined,
+      body: { client_id: 'Iv1.app', client_secret: 'client-secret', code: 'good' },
+      method: 'POST',
+      path: '/login/oauth/access_token',
+    });
+  });
+
+  it('a 200 with `error` is an OauthExchangeError that quotes nothing, and no log line carries the code', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+    await expect(client.exchangeUserCode('bad')).rejects.toBeInstanceOf(OauthExchangeError);
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('bad_verification_code');
+  });
+
+  it('a failed exchange logs neither the secret nor the code', async () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+
+    fixture.override.status = 500;
+
+    expect(await category(client.exchangeUserCode('sensitive-code'))).toBe('unavailable');
+
+    const logged = JSON.stringify(warn.mock.calls);
+
+    expect(logged).not.toContain('client-secret');
+    expect(logged).not.toContain('sensitive-code');
+  });
+
+  it('exchangeUserCode without the secret never reaches GitHub', async () => {
+    const noSecret = clientWith({ GITHUB_APP_CLIENT_SECRET: undefined });
+
+    expect(await category(noSecret.exchangeUserCode('good'))).toBe('not-configured');
+    expect(fixture.requests).toHaveLength(0);
+  });
+
+  it('userLogin reads /user under the user token', async () => {
+    const token = await client.exchangeUserCode('good');
+
+    await expect(client.userLogin(token)).resolves.toBe('jane');
+    expect(fixture.requests[1]?.authorization).toBe(
+      `Bearer ${revealPlaintext(token).toString('utf8')}`,
+    );
+  });
+
+  it('createUserRepository posts name and private; a taken name is validation', async () => {
+    const token = await client.exchangeUserCode('good');
+
+    await expect(client.createUserRepository(token, 'blog', true)).resolves.toMatchObject({
+      fullName: 'jane/blog',
+      owner: 'jane',
+      private: true,
+    });
+    expect(fixture.requests[1]).toMatchObject({
+      body: { name: 'blog', private: true },
+      method: 'POST',
+      path: '/user/repos',
+    });
+    expect(await category(client.createUserRepository(token, 'blog', true))).toBe('validation');
+  });
+
+  it('addRepositoryToInstallation puts the repository; a failure keeps its category', async () => {
+    const token = await client.exchangeUserCode('good');
+
+    await expect(
+      client.addRepositoryToInstallation(token, INSTALLATION_ID, 1),
+    ).resolves.toBeUndefined();
+    expect(fixture.requests[1]).toMatchObject({
+      method: 'PUT',
+      path: `/user/installations/${String(INSTALLATION_ID)}/repositories/1`,
+    });
+    expect(await category(client.addRepositoryToInstallation(token, INSTALLATION_ID, 99))).toBe(
+      'not-found',
+    );
   });
 });
 

@@ -84,7 +84,9 @@ describe('ImportController', () => {
       requestedBy: { id: USER, name: 'owner@example.test' },
       startedAt: null,
       state: 'queued',
+      targetBranch: null,
       toSha: 'b'.repeat(40),
+      trigger: 'manual',
     });
     const body = {
       branch: 'main',

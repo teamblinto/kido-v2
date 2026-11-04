@@ -124,6 +124,17 @@ pnpm --filter @repo/api test -- --watch
 pnpm --filter @repo/web preview
 ```
 
+## GitHub sync
+
+Projects can link to a repository and push after every agent turn (spec 044,
+[docs/specs/044-github-sync/spec.md](docs/specs/044-github-sync/spec.md)). To turn it on, create a GitHub App with:
+
+- **Repository permissions:** Administration (write), Contents (write), Metadata (read), Workflows (write).
+- **Events:** `push`, with the webhook secret as `GITHUB_WEBHOOK_SECRET`.
+- **Setup URL:** `<web origin>/connectors/github/callback`. **Callback URL:** `<web origin>/connectors/github/authorized`.
+
+Then set the four `GITHUB_APP_*` values. `GITHUB_APP_CLIENT_SECRET` is optional and lets a personal account create a repository; without it, a personal account can only link an existing one.
+
 ## Testing
 
 `pnpm test` runs everything. The API's suite is three layers in one command — unit, integration against real Postgres and Redis, and e2e through the full Nest pipeline — and how it behaves depends on whether those services are up.

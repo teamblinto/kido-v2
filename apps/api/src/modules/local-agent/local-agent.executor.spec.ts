@@ -783,7 +783,7 @@ describe('LocalAgentExecutor', () => {
       expect(checkpoints.commitTurn).toHaveBeenCalledWith(
         { orgId: ORG, projectId: 'project' },
         { leaseEpoch: 1, operationId: `${RUN}/checkpoint-1` },
-        { runId: RUN, turn: 1 },
+        { runId: RUN, summary: 'fix the tests', turn: 1 },
         {},
       );
     });

@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { type NewRepoLink, type RepoLink, schema } from '@repo/db';
-import { and, eq, getTableColumns, isNull, sql } from 'drizzle-orm';
+import { and, eq, getTableColumns, isNull, lt, notInArray, sql } from 'drizzle-orm';
+import { alias } from 'drizzle-orm/pg-core';
 
 import type { TenantTransaction } from '../../database/database.types';
 
@@ -104,6 +105,95 @@ export class RepoLinkRepository {
       .where(and(eq(schema.repoLinks.orgId, orgId), eq(schema.repoLinks.id, id)));
   }
 
+  async setAutoSync(
+    tx: TenantTransaction,
+    orgId: string,
+    id: string,
+    autoSync: boolean,
+  ): Promise<void> {
+    await tx
+      .update(schema.repoLinks)
+      .set({ autoSync })
+      .where(and(eq(schema.repoLinks.orgId, orgId), eq(schema.repoLinks.id, id)));
+  }
+
+  /** Spec 044: pushes go to `branch` from now on; what waited on the side branch is no longer owed. */
+  async setBranch(
+    tx: TenantTransaction,
+    orgId: string,
+    id: string,
+    move: { branch: string; lastPushedCheckpointId: string | null; remoteHeadSha: string },
+  ): Promise<void> {
+    await tx
+      .update(schema.repoLinks)
+      .set({ ...move, sideBranch: null })
+      .where(and(eq(schema.repoLinks.orgId, orgId), eq(schema.repoLinks.id, id)));
+  }
+
+  /** The project's checkpoint at a sha, if any (`checkpoints_org_id_project_id_git_sha_key`: one). */
+  async checkpointAt(
+    tx: TenantTransaction,
+    orgId: string,
+    projectId: string,
+    gitSha: string,
+  ): Promise<string | undefined> {
+    const [row] = await tx
+      .select({ id: schema.checkpoints.id })
+      .from(schema.checkpoints)
+      .where(
+        and(
+          eq(schema.checkpoints.orgId, orgId),
+          eq(schema.checkpoints.projectId, projectId),
+          eq(schema.checkpoints.gitSha, gitSha),
+        ),
+      );
+
+    return row?.id;
+  }
+
+  /** Spec 044: where the project's work waits; null once the linked branch has caught up. */
+  async setSideBranch(
+    tx: TenantTransaction,
+    orgId: string,
+    id: string,
+    sideBranch: string | null,
+  ): Promise<void> {
+    await tx
+      .update(schema.repoLinks)
+      .set({ sideBranch })
+      .where(and(eq(schema.repoLinks.orgId, orgId), eq(schema.repoLinks.id, id)));
+  }
+
+  /** Spec 044 decision 10: a rename or transfer, healed from what the numeric id resolved to. */
+  async setRepository(
+    tx: TenantTransaction,
+    orgId: string,
+    id: string,
+    repository: { name: string; owner: string },
+  ): Promise<void> {
+    await tx
+      .update(schema.repoLinks)
+      .set({ name: repository.name, owner: repository.owner })
+      .where(and(eq(schema.repoLinks.orgId, orgId), eq(schema.repoLinks.id, id)));
+  }
+
+  /** Spec 044: the links the reconcile tick looks after. */
+  async autoSyncLinks(
+    tx: TenantTransaction,
+    orgId: string,
+  ): Promise<{ id: string; projectId: string }[]> {
+    return tx
+      .select({ id: schema.repoLinks.id, projectId: schema.repoLinks.projectId })
+      .from(schema.repoLinks)
+      .where(
+        and(
+          eq(schema.repoLinks.orgId, orgId),
+          eq(schema.repoLinks.autoSync, true),
+          eq(schema.repoLinks.state, 'linked'),
+        ),
+      );
+  }
+
   /**
    * The link a delivery names, addressed the way a webhook can address one: by the repository id
    * and the branch the provider sent, never by a project the delivery does not know (spec 026
@@ -136,12 +226,55 @@ export class RepoLinkRepository {
    * what a deleted branch (`after` all zeroes) leaves behind. Answers how many links moved, which
    * is what decides the delivery's terminal state.
    */
+  /**
+   * Spec 044: `sha` is a checkpoint older than the one this project last pushed: a delivery of its
+   * own earlier push, deferred behind the next. A remote reset back to that checkpoint reads the
+   * same; the next push is refused as a non-fast-forward, which restores the truth.
+   */
+  async isBehindPushed(
+    tx: TenantTransaction,
+    orgId: string,
+    projectId: string,
+    sha: string,
+  ): Promise<boolean> {
+    const pushed = alias(schema.checkpoints, 'pushed');
+    const [row] = await tx
+      .select({ id: schema.checkpoints.id })
+      .from(schema.repoLinks)
+      .innerJoin(
+        pushed,
+        and(
+          eq(pushed.orgId, schema.repoLinks.orgId),
+          eq(pushed.id, schema.repoLinks.lastPushedCheckpointId),
+        ),
+      )
+      .innerJoin(
+        schema.checkpoints,
+        and(
+          eq(schema.checkpoints.orgId, schema.repoLinks.orgId),
+          eq(schema.checkpoints.projectId, schema.repoLinks.projectId),
+          eq(schema.checkpoints.gitSha, sha),
+        ),
+      )
+      .where(
+        and(
+          eq(schema.repoLinks.orgId, orgId),
+          eq(schema.repoLinks.projectId, projectId),
+          lt(schema.checkpoints.createdAt, pushed.createdAt),
+        ),
+      )
+      .limit(1);
+
+    return row !== undefined;
+  }
+
   async setRemoteHeadByRepo(
     tx: TenantTransaction,
     orgId: string,
     repoId: number,
     branch: string,
     remoteHeadSha: string | null,
+    except: readonly string[] = [],
   ): Promise<number> {
     const rows = await tx
       .update(schema.repoLinks)
@@ -151,6 +284,7 @@ export class RepoLinkRepository {
           eq(schema.repoLinks.orgId, orgId),
           eq(schema.repoLinks.repoId, repoId),
           eq(schema.repoLinks.branch, branch),
+          except.length === 0 ? undefined : notInArray(schema.repoLinks.projectId, [...except]),
         ),
       )
       .returning({ id: schema.repoLinks.id });

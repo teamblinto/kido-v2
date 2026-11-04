@@ -2,7 +2,7 @@ import type {
   Checkpoint,
   CheckpointDiffFile,
   CheckpointDiffResponse,
-  RunResponse,
+  RepoLink,
 } from '@repo/contracts';
 import { useQuery } from '@tanstack/react-query';
 import { screen, waitFor, within } from '@testing-library/react';
@@ -122,8 +122,8 @@ function historyHandlers() {
   ];
 }
 
-/** Everything `StageGit` asks for besides the history: the two gates and the GitHub panel. */
-function stageHandlers(permissions: readonly string[], run: RunResponse | null) {
+/** Everything `StageGit` asks for besides the history: the project and the GitHub panel. */
+function stageHandlers(permissions: readonly string[]) {
   return [
     http.get(`${API}/orgs/:orgId/projects/:projectId`, () =>
       HttpResponse.json({
@@ -135,34 +135,9 @@ function stageHandlers(permissions: readonly string[], run: RunResponse | null) 
         },
       }),
     ),
-    http.get(`${BASE}/runs/:runId`, () =>
-      run === null ? problemResponse('not-found', 404) : HttpResponse.json(run),
-    ),
     http.get(`${API}/orgs/:orgId/connectors`, () => HttpResponse.json({ connections: [] })),
     http.get(`${BASE}/repo-link`, () => HttpResponse.json(null)),
   ];
-}
-
-function aRun(status: RunResponse['status']): RunResponse {
-  return {
-    cacheReadTokens: 0,
-    cacheWriteTokens: 0,
-    cancelRequestedAt: null,
-    contextSkips: [],
-    createdAt: '2026-08-18T10:00:00.000Z',
-    endedAt: null,
-    failureClass: null,
-    id: RUN_ID,
-    inputTokens: 0,
-    lastSeq: 0,
-    model: 'claude-opus-5',
-    outputTokens: 0,
-    projectId: PROJECT_ID,
-    promptExcerpt: 'ship it',
-    startedAt: null,
-    status,
-    userId: USER_ID,
-  };
 }
 
 /** The row headings, newest first — what the list is actually ordered as. */
@@ -199,14 +174,15 @@ function OpenFile({ onFetch }: { onFetch: () => void }): React.JSX.Element | nul
 
 function renderStage(
   permissions: readonly string[],
-  run: RunResponse | null,
+  isRunActive = false,
   extra: React.ReactNode = null,
 ) {
-  server.use(...stageHandlers(permissions, run), ...historyHandlers());
+  server.use(...stageHandlers(permissions), ...historyHandlers());
 
   return renderScreen(
     <>
       <StageGit
+        isRunActive={isRunActive}
         onChangeView={vi.fn()}
         orgId={ORG_ID}
         paths={[]}
@@ -215,7 +191,7 @@ function renderStage(
       />
       {extra}
     </>,
-    { path: run === null ? '/p' : `/p?run=${RUN_ID}` },
+    { path: '/p' },
   );
 }
 
@@ -339,14 +315,14 @@ describe('GitHistory', () => {
   });
 
   it('FR-010: revert is not offered without project:files.write, and is disabled during a run', async () => {
-    const readOnly = renderStage(['project:read'], null);
+    const readOnly = renderStage(['project:read']);
 
     expect(await screen.findByText('Run turn 2')).toBeVisible();
     // Not disabled — not rendered at all.
     expect(screen.queryByRole('button', { name: 'Revert to this point' })).not.toBeInTheDocument();
     readOnly.unmount();
 
-    renderStage(['project:read', 'project:files.write'], aRun('running'));
+    renderStage(['project:read', 'project:files.write'], true);
 
     // The head cannot be reverted to, so two rows of three offer the control.
     const controls = await screen.findAllByRole('button', { name: 'Revert to this point' });
@@ -379,7 +355,7 @@ describe('GitHistory', () => {
       }),
     );
 
-    renderStage(['project:read', 'project:files.write'], null, <OpenFile onFetch={onFetch} />);
+    renderStage(['project:read', 'project:files.write'], false, <OpenFile onFetch={onFetch} />);
 
     expect(await screen.findByText('Starting point')).toBeVisible();
     await waitFor(() => {
@@ -406,7 +382,7 @@ describe('GitHistory', () => {
       http.post(`${BASE}/checkpoints/${BASELINE}/revert`, () => problemResponse('conflict', 409)),
     );
 
-    renderStage(['project:read', 'project:files.write'], null);
+    renderStage(['project:read', 'project:files.write']);
 
     expect(await screen.findByText('Starting point')).toBeVisible();
 
@@ -427,5 +403,85 @@ describe('GitHistory', () => {
       expect(screen.queryByRole('alert')).not.toBeInTheDocument();
     });
     expect(rowLabels()).toEqual(['Run turn 2', 'Run turn 1', 'Starting point']);
+  });
+});
+
+describe('GitHistory, spec 044', () => {
+  const aLink: RepoLink = {
+    autoSync: true,
+    branch: 'main',
+    connectionId: null,
+    id: RUN_ID,
+    lastPushedCheckpointId: TURN_ONE,
+    linkedAt: '2026-08-18T10:00:00.000Z',
+    linkedBy: { id: USER_ID, name: 'Ada' },
+    position: 'ahead',
+    remoteHeadSha: null,
+    repository: { fullName: 'blinto-co/forge', id: 42, name: 'forge', owner: 'blinto-co' },
+    sideBranch: null,
+    state: 'linked',
+  };
+
+  function render(link?: RepoLink) {
+    server.use(...historyHandlers());
+
+    return renderScreen(<GitHistory link={link} orgId={ORG_ID} projectId={PROJECT_ID} />);
+  }
+
+  it('shows a turn or edit label a person wrote, and keeps the plain words otherwise', async () => {
+    page = [
+      checkpoint({ id: EDIT, kind: 'edit', label: 'Tidy the header' }),
+      checkpoint({
+        files: [{ bytes: 1, path: 'src/a.ts', status: 'M' }],
+        id: PULL,
+        kind: 'edit',
+        label: 'Edit src/a.ts',
+      }),
+      checkpoint({ id: TURN_TWO, kind: 'turn', label: 'Add a dark mode (turn 2)', turn: 2 }),
+      TURN_ONE_ROW,
+    ];
+
+    render();
+
+    expect(await screen.findByText('Tidy the header')).toBeVisible();
+    expect(rowLabels()).toEqual([
+      'Tidy the header',
+      'Edited src/a.ts',
+      'Add a dark mode (turn 2)',
+      'Run turn 1',
+    ]);
+  });
+
+  it('marks rows at or older than the last pushed one, and links only those', async () => {
+    page = [TURN_TWO_ROW, TURN_ONE_ROW, BASELINE_ROW];
+
+    render(aLink);
+
+    expect(await screen.findByText('ddddddd')).not.toHaveAttribute('href');
+    expect(screen.getAllByText('· On GitHub')).toHaveLength(2);
+    expect(screen.getAllByText('· Not pushed yet')).toHaveLength(1);
+    expect(screen.getByRole('link', { name: 'ccccccc' })).toHaveAttribute(
+      'href',
+      `https://github.com/blinto-co/forge/commit/${sha('c')}`,
+    );
+    expect(screen.getByRole('link', { name: 'bbbbbbb' })).toBeVisible();
+  });
+
+  it('calls every row not pushed when the last pushed one is not loaded or never was', async () => {
+    page = [TURN_TWO_ROW, TURN_ONE_ROW];
+
+    render({ ...aLink, lastPushedCheckpointId: null });
+
+    expect(await screen.findAllByText('· Not pushed yet')).toHaveLength(2);
+    expect(screen.queryByRole('link')).not.toBeInTheDocument();
+  });
+
+  it('shows the short sha and no GitHub marker on an unlinked project', async () => {
+    page = [TURN_ONE_ROW];
+
+    render();
+
+    expect(await screen.findByText('ccccccc')).toBeVisible();
+    expect(screen.queryByText(/On GitHub|Not pushed yet/u)).not.toBeInTheDocument();
   });
 });

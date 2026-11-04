@@ -24,6 +24,8 @@ export const routes = {
   connectorsSettings: '/settings/connectors',
   emailVerified: '/verify-email/done',
   forgotPassword: '/forgot-password',
+  /** The GitHub App's OAuth callback, carrying `?code=` and `?state=` (spec 044). */
+  githubAuthorized: '/connectors/github/authorized',
   /** The GitHub App's Setup URL, carrying `?installation_id=` and `?state=` (018 research R8). */
   githubCallback: '/connectors/github/callback',
   home: '/',

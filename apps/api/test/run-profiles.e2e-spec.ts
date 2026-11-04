@@ -325,6 +325,7 @@ describe('Run profiles (e2e)', () => {
         'deploy.sweep',
         'domain.check',
         'domain.sweep',
+        'connector.autosync',
         'connector.health',
         'connector.ops',
         'connector.sync',

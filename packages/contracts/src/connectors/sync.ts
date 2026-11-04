@@ -42,11 +42,24 @@ export const SYNC_FAILURE_REASONS = [
   'repo-too-large',
   'branch-not-found',
   'import-checkout-failed',
+  // Spec 044: what GitHub itself can refuse, and the personal-account create's one refusal.
+  'branch-protected',
+  'push-rejected',
+  'workflow-permission',
+  'repo-gone',
+  'account-mismatch',
 ] as const;
 
 export const syncFailureReasonSchema = z.enum(SYNC_FAILURE_REASONS);
 
 export type SyncFailureReason = z.output<typeof syncFailureReasonSchema>;
+
+/** Spec 044: who asked. `auto` is the per-turn sync; a person's click is `manual`. */
+export const SYNC_TRIGGERS = ['manual', 'auto'] as const;
+
+export const syncTriggerSchema = z.enum(SYNC_TRIGGERS);
+
+export type SyncTrigger = z.output<typeof syncTriggerSchema>;
 
 const shaSchema = z.string().regex(/^[0-9a-f]{40}$/u);
 
@@ -68,7 +81,10 @@ export const syncOperationSchema = z.strictObject({
   requestedBy: actorSchema,
   startedAt: z.iso.datetime().nullable(),
   state: syncStateSchema,
+  /** Spec 044: where a push landed; the side branch when the linked one could not take it. */
+  targetBranch: z.string().min(1).nullable(),
   toSha: shaSchema.nullable(),
+  trigger: syncTriggerSchema,
 });
 
 export type SyncOperation = z.output<typeof syncOperationSchema>;
@@ -80,6 +96,24 @@ export const syncOperationPageSchema = z.strictObject({
 });
 
 export type SyncOperationPage = z.output<typeof syncOperationPageSchema>;
+
+/** Spec 044: `POST …/sync/commit`. No message: one is generated from the changed files. */
+export const syncCommitRequestSchema = z.strictObject({
+  message: z.string().trim().min(1).max(200).optional(),
+});
+
+export type SyncCommitRequest = z.output<typeof syncCommitRequestSchema>;
+
+/**
+ * `checkpointId` null: the tree was clean. `operation` null: nothing to push, or the slot was
+ * taken and the settling operation carries this head. Both null is "already up to date".
+ */
+export const syncCommitResponseSchema = z.strictObject({
+  checkpointId: z.uuid().nullable(),
+  operation: syncOperationSchema.nullable(),
+});
+
+export type SyncCommitResponse = z.output<typeof syncCommitResponseSchema>;
 
 export const syncListQuerySchema = cursorPageQuerySchema;
 
