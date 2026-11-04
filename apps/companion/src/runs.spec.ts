@@ -246,6 +246,26 @@ describe('ProviderRegistry.report', () => {
     expect(first).toMatchObject({ auth: { plan: 'Max' }, models, usage });
   });
 
+  it('probes afresh for every report, even within the same millisecond', async () => {
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_793_736_000_000);
+    try {
+      const registry = new ProviderRegistry('self.js');
+      let probed = 0;
+      registry.adapters.claude.probe = () => {
+        probed += 1;
+        return Promise.resolve(signedIn);
+      };
+      registry.adapters.claude.details = () => Promise.reject(new Error('boom'));
+
+      await registry.report('claude');
+      await registry.report('claude');
+
+      expect(probed).toBe(2);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
   it('leaves models and limits out when the probe fails, and never asks a signed-out CLI', async () => {
     const registry = new ProviderRegistry('self.js');
     let asked = 0;

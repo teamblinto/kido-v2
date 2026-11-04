@@ -42,7 +42,8 @@ export class ProviderRegistry {
   /** A probe already running is shared, so a burst of run starts spawns each CLI once. */
   probe(provider: LocalAgentProvider, maxAgeMs = 0): Promise<ProbedStatus> {
     const cached = this.cache.get(provider);
-    if (cached && Date.now() - cached.at <= maxAgeMs) return Promise.resolve(cached.status);
+    // Strictly younger: with the default 0, a status cached in this same millisecond is not "fresh".
+    if (cached && Date.now() - cached.at < maxAgeMs) return Promise.resolve(cached.status);
     let running = this.inFlight.get(provider);
     if (!running) {
       running = this.probeNow(provider).finally(() => this.inFlight.delete(provider));
