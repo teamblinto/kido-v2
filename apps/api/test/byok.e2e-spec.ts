@@ -436,7 +436,8 @@ describe('BYOK (e2e)', () => {
               eq(schema.auditLog.orgId, world.alpha.orgId),
               like(schema.auditLog.action, 'provider-key.%'),
             ),
-          ),
+          )
+          .orderBy(asc(schema.auditLog.at), asc(schema.auditLog.id)),
       );
       expect(audit.map((row) => row.action)).toEqual([
         'provider-key.added',
