@@ -140,6 +140,20 @@ const CLAIMABLE: readonly RunStatus[] = ['queued', 'starting', 'running', 'tool_
 const LEASED: readonly RunStatus[] = ['starting', 'running', 'tool_error'];
 
 /**
+ * The first line of a run's first user message, cut at 120. Written out rather than interpolated:
+ * drizzle renders a column reference in a select field unqualified, which would make the
+ * correlation `run_id = id` against the subquery's own table. Identifiers only, no values, so
+ * there is nothing here to parameterise.
+ */
+const PROMPT_EXCERPT = sql<string>`coalesce((
+  select left(btrim(split_part(m.content, chr(10), 1)), 120)
+  from run_messages m
+  where m.org_id = agent_runs.org_id and m.run_id = agent_runs.id and m.role = 'user'
+  order by m.at, m.id
+  limit 1
+), '')`.as('prompt_excerpt');
+
+/**
  * A run on Settings › Usage. `inAgentHome`: the run went to the person's agent home (spec 041), so
  * their subscription paid, whatever `credential_mode` says. Such runs were never stamped before
  * spec 043 and kept the column's retired `PLATFORM` default.
@@ -793,6 +807,16 @@ export class RunStore {
     return row?.at != null;
   }
 
+  /** The run's first line as a person wrote it, as a list row carries it; '' when it has none. */
+  async readExcerpt(tx: TenantTransaction, orgId: string, runId: string): Promise<string> {
+    const [row] = await tx
+      .select({ promptExcerpt: PROMPT_EXCERPT })
+      .from(agentRuns)
+      .where(and(eq(agentRuns.id, runId), eq(agentRuns.orgId, orgId)));
+
+    return row?.promptExcerpt ?? '';
+  }
+
   async readRun(
     tx: TenantTransaction,
     orgId: string,
@@ -828,16 +852,7 @@ export class RunStore {
     const rows = await tx
       .select({
         ...getTableColumns(agentRuns),
-        // Written out rather than interpolated: drizzle renders a column reference in a select
-        // field unqualified, which would make the correlation `run_id = id` against the subquery's
-        // own table. Identifiers only, no values, so there is nothing here to parameterise.
-        promptExcerpt: sql<string>`coalesce((
-          select left(btrim(split_part(m.content, chr(10), 1)), 120)
-          from run_messages m
-          where m.org_id = agent_runs.org_id and m.run_id = agent_runs.id and m.role = 'user'
-          order by m.at, m.id
-          limit 1
-        ), '')`.as('prompt_excerpt'),
+        promptExcerpt: PROMPT_EXCERPT,
       })
       .from(agentRuns)
       .where(

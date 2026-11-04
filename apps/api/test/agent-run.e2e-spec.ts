@@ -438,7 +438,11 @@ describe('Agent runs (e2e)', () => {
 
         const one = await read(viewer, first).expect(200);
 
-        expect(runResponseSchema.parse(one.body).id).toBe(first);
+        // The opening message is the run's own, on a read as on a list row (spec 043).
+        expect(runResponseSchema.parse(one.body)).toMatchObject({
+          id: first,
+          promptExcerpt: 'first',
+        });
 
         const listed = await http(app)
           .get(`${runsPath()}?limit=2`)

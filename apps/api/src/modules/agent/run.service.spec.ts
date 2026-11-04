@@ -77,6 +77,7 @@ describe('RunService', () => {
     | 'listRuns'
     | 'listUsage'
     | 'readEvents'
+    | 'readExcerpt'
     | 'readRun'
     | 'requestCancel'
     | 'setModel'
@@ -126,6 +127,7 @@ describe('RunService', () => {
         ]),
       ),
       listUsage: vi.fn(() => Promise.resolve({ nextCursor: null, runs: [] })),
+      readExcerpt: vi.fn(() => Promise.resolve('Build a todo app')),
       readRun: vi.fn(() => Promise.resolve(row({ nextSeq: 5 }))),
       requestCancel: vi.fn(() => Promise.resolve({ first: true, status: 'running' })),
       setModel: vi.fn(() => Promise.resolve()),
@@ -993,6 +995,7 @@ describe('RunService', () => {
 
       expect(store.readRun).toHaveBeenCalledWith(tx, ORG, PROJECT, RUN);
       expect(response.lastSeq).toBe(4);
+      expect(response.promptExcerpt).toBe('Build a todo app');
     });
 
     it('answers not-found for a run the project does not hold', async () => {

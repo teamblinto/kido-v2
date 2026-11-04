@@ -374,7 +374,10 @@ export class RunService {
 
   /** `404` for an unknown run and for a run of another project alike: the path names the project. */
   async read(orgId: string, projectId: string, runId: string): Promise<RunResponse> {
-    return toResponse(await this.row(orgId, projectId, runId));
+    const run = await this.row(orgId, projectId, runId);
+    const excerpt = await this.store.readExcerpt(this.tenant.tx, orgId, runId);
+
+    return toResponse(run, excerpt);
   }
 
   /** Newest first, cursor-paged; each row carries the first line of its prompt (022). */
