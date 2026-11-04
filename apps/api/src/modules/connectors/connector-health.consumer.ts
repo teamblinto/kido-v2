@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import type { ConnectorOpKind } from '@repo/contracts';
+import type { ConnectorOpKind, SyncFailureReason } from '@repo/contracts';
 import { orgs, schema } from '@repo/db';
 import { and, eq, inArray, isNotNull, isNull, lt } from 'drizzle-orm';
 
@@ -14,14 +14,27 @@ import { ConnectionRepository } from './connection.repository';
 import { ConnectionService } from './connection.service';
 import { OperationRepository, STALE_PUBLISH_MS } from './operation.repository';
 import { OperationService } from './operation.service';
+import { RepoLinkRepository } from './repo-link.repository';
 import { ResourceRepository } from './resource.repository';
 import { SyncRepository } from './sync.repository';
+import { SyncService } from './sync.service';
 
 export const CONNECTOR_HEALTH_QUEUE = 'connector.health';
 /** R7: a `running` operation this old has lost its worker. */
 export const STALE_RUNNING_MS = 15 * 60_000;
 /** A row a use (or a check) verified this recently is not probed again by the sweep. */
 export const VERIFIED_WITHIN_MS = 60 * 60_000;
+
+/** Spec 044: a `running` sync row this old has lost its worker; three git attempts fit well inside. */
+export const STALE_SYNC_MS = 30 * 60_000;
+/** Spec 044: a failed auto-sync is retried at this pace, so a stuck link adds ~48 rows a day, not 288. */
+export const SYNC_RETRY_SPACING_MS = 30 * 60_000;
+/** Spec 044: the failures a later try can fix. Any other reason waits for a new head. */
+const TRANSIENT_SYNC_FAILURES: readonly (SyncFailureReason | null)[] = [
+  'git-failed',
+  'provider-unavailable',
+  'timed-out',
+];
 
 /**
  * Spec 030 data-model § 5: how long a `connector_operations` row may stay `running` before the
@@ -57,7 +70,7 @@ type DueEvent = Envelope<'maintenance.due'>;
  * The arm of `maintenance.due` this module owns. Anything else is another module's tick;
  * `webhook.retention` is `WebhooksMaintenanceConsumer`'s (spec 029 T089).
  */
-type OwnedJob = 'connector.ops-timeout' | 'connector.verify';
+type OwnedJob = 'connector.ops-timeout' | 'connector.sync-reconcile' | 'connector.verify';
 
 export interface HealthSweepReport {
   /** `running` operations closed as `failed` / `timed-out`. */
@@ -106,6 +119,8 @@ export class ConnectorHealthConsumer extends EventConsumer<
     @Inject(ResourceRepository) private readonly resources: ResourceRepository,
     @Inject(ConnectionRepository) private readonly connectionRows: ConnectionRepository,
     @Inject(RESEND_DOMAIN_READER) private readonly resendDomains: ResendDomainReader | null,
+    @Inject(RepoLinkRepository) private readonly links: RepoLinkRepository,
+    @Inject(SyncService) private readonly syncs: SyncService,
   ) {
     super();
   }
@@ -119,7 +134,11 @@ export class ConnectorHealthConsumer extends EventConsumer<
     const { job } = event.payload;
 
     return Promise.resolve(
-      job === 'connector.verify' || job === 'connector.ops-timeout' ? job : undefined,
+      job === 'connector.verify' ||
+        job === 'connector.ops-timeout' ||
+        job === 'connector.sync-reconcile'
+        ? job
+        : undefined,
     );
   }
 
@@ -129,6 +148,15 @@ export class ConnectorHealthConsumer extends EventConsumer<
     if (job === 'connector.ops-timeout') {
       const timedOut = await this.timeoutOperations();
       this.logger.log(`timed out ${String(timedOut)} connector operation(s)`);
+
+      return;
+    }
+
+    if (job === 'connector.sync-reconcile') {
+      const { requested, timedOut } = await this.reconcileSync();
+      this.logger.log(
+        `sync reconcile: requested ${String(requested)}, timed out ${String(timedOut)}`,
+      );
 
       return;
     }
@@ -228,6 +256,56 @@ export class ConnectorHealthConsumer extends EventConsumer<
     }
 
     return closed;
+  }
+
+  /**
+   * `connector.sync-reconcile` (every 5 min, spec 044 decision 11): what a lost or transiently failed
+   * operation left behind. Stuck `running` rows close first, so the same pass can re-request them;
+   * then every auto-sync link whose latest operation is settled well, or failed in a way a later try
+   * can fix. `requestAuto` holds the remaining rule: never the head that already went.
+   */
+  async reconcileSync(): Promise<{ requested: number; timedOut: number }> {
+    const now = this.clock.now();
+    const stale = new Date(now.getTime() - STALE_SYNC_MS);
+    const report = { requested: 0, timedOut: 0 };
+    const tenants = await this.db.select({ id: orgs.id }).from(orgs).where(isNull(orgs.deletedAt));
+
+    for (const { id: orgId } of tenants) {
+      try {
+        await this.transactions.runInTenantTransaction(orgId, async (tx) => {
+          for (const operation of [
+            ...(await this.operations.staleRunning(tx, orgId, stale)),
+            ...(await this.operations.staleQueued(tx, orgId, stale)),
+          ]) {
+            report.timedOut += await this.operations.markDone(tx, orgId, operation.id, {
+              finishedAt: now,
+              reason: 'timed-out',
+              state: 'failed',
+            });
+          }
+
+          for (const { id, projectId } of await this.links.autoSyncLinks(tx, orgId)) {
+            const ref = { orgId, projectId };
+            const latest = await this.operations.latest(tx, ref, id);
+
+            if (
+              latest === undefined ||
+              latest.state === 'succeeded' ||
+              latest.kind === 'pull' ||
+              (latest.state === 'failed' &&
+                TRANSIENT_SYNC_FAILURES.includes(latest.reason) &&
+                (latest.finishedAt?.getTime() ?? 0) <= now.getTime() - SYNC_RETRY_SPACING_MS)
+            ) {
+              if ((await this.syncs.requestAuto(tx, ref)) !== null) report.requested += 1;
+            }
+          }
+        });
+      } catch (error) {
+        this.logger.warn(`sync reconcile skipped org ${orgId}: ${(error as Error).message}`);
+      }
+    }
+
+    return report;
   }
 
   /**

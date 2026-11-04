@@ -34,7 +34,9 @@ const FROZEN: Readonly<Record<string, string>> = {
   // on `provider` whose `github` arm (`githubConnectionSchema`) is 018's object unchanged but for
   // `provider` narrowing to the literal. The digest was updated in that commit, for that reason.
   'connection.ts': '26fea3b8c68305cbf107aa3dcb31fe39cdba463f06d8780cbd3cefa1c519061c',
-  'repo-link.ts': '2f1306a8d33f2be9a21a8c4b90928cc1b9dcea2fc26584cf693610d7fcd19de8',
+  // Spec 044 widened `repo-link.ts` deliberately: `autoSync` and `sideBranch` on the link, and the
+  // branch, settings and personal-account-create shapes beside it. Digest updated in that change.
+  'repo-link.ts': 'b69bd09b551e4ccca07813541632ee783517daac1ff7794ecd3d6a2bd07b8f64',
 };
 
 function digestOf(file: string): string {

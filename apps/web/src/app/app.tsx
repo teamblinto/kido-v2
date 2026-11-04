@@ -18,6 +18,7 @@ import { AccountSettingsPage } from '@/pages/account-settings-page';
 import { ConnectedAccountCallbackPage } from '@/pages/connected-account-callback-page';
 import { ConnectorsSettingsPage } from '@/pages/connectors-settings-page';
 import { ProjectNewImportPage } from '@/pages/project-new-import';
+import { GithubAuthorizedPage } from '@/pages/github-authorized-page';
 import { GithubCallbackPage } from '@/pages/github-callback-page';
 import { SupabaseCallbackPage } from '@/pages/supabase-callback-page';
 import { InvitationAcceptPage } from '@/pages/invitation-accept-page';
@@ -112,6 +113,15 @@ export function App(): React.JSX.Element {
         element={
           <RequireAuth>
             <GithubCallbackPage />
+          </RequireAuth>
+        }
+      />
+      {/* The personal-account create (spec 044): the state is bound to the user who started it. */}
+      <Route
+        path={routes.githubAuthorized}
+        element={
+          <RequireAuth>
+            <GithubAuthorizedPage />
           </RequireAuth>
         }
       />

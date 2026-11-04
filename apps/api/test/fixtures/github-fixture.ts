@@ -37,6 +37,8 @@ export interface FixtureRepository {
   readonly name: string;
   readonly owner: { readonly login: string };
   readonly private: boolean;
+  /** Spec 044: the branch names GitHub reports as protected. */
+  readonly protected?: readonly string[];
   /** Spec 026 R6: KiB, as GitHub's repository payload reports it. Absent reads as 0. */
   readonly size?: number;
   /**
@@ -80,6 +82,8 @@ export interface GithubFixture {
   readonly repositories: Map<number, FixtureRepository>;
   /** Minted installation tokens by value. */
   readonly tokens: Map<string, FixtureToken>;
+  /** Spec 044: who a code exchanges to; every user token is this person. The code `bad` is refused. */
+  readonly user: { login: string };
   /** Every request answered, in order, body parsed when JSON. */
   readonly requests: RecordedRequest[];
   readonly override: FixtureOverride;
@@ -200,6 +204,8 @@ export async function startGithubFixture(
   const installations = new Map<number, FixtureInstallation>();
   const repositories = new Map<number, FixtureRepository>();
   const tokens = new Map<string, FixtureToken>();
+  const user = { login: 'jane' };
+  const userTokens = new Set<string>();
   const requests: RecordedRequest[] = [];
   const override: FixtureOverride = {};
   const routes: Route[] = [];
@@ -414,6 +420,120 @@ export async function startGithubFixture(
     }),
   );
 
+  route(
+    'GET',
+    '/repositories/{id}/branches',
+    withToken((_token, { id }, _request, url) => {
+      const repository = repositories.get(Number(id));
+      const page = Number(url.searchParams.get('page') ?? '1');
+      const perPage = Number(url.searchParams.get('per_page') ?? '30');
+
+      return repository === undefined
+        ? NOT_FOUND
+        : {
+            body: Object.entries(repository.branches)
+              .slice((page - 1) * perPage, page * perPage)
+              .map(([name, sha]) => ({
+                commit: { sha },
+                name,
+                protected: repository.protected?.includes(name) ?? false,
+              })),
+            status: 200,
+          };
+    }),
+  );
+
+  route(
+    'POST',
+    '/repos/{owner}/{repo}/git/refs',
+    withToken((_token, { owner, repo }, request) => {
+      const { ref, sha } = request.body as { ref: string; sha: string };
+      const repository = [...repositories.values()].find(
+        (candidate) => candidate.full_name === `${owner ?? ''}/${repo ?? ''}`,
+      );
+      const branch = ref.replace(/^refs\/heads\//, '');
+
+      if (repository === undefined) return NOT_FOUND;
+      if (branch in repository.branches) {
+        return { body: { message: 'Reference already exists' }, status: 422 };
+      }
+
+      repository.branches[branch] = sha;
+
+      return { body: { object: { sha }, ref }, status: 201 };
+    }),
+  );
+
+  /** Spec 044: GitHub refuses a code with a 200 and an `error` member, not a status. */
+  route('POST', '/login/oauth/access_token', (_params, request) => {
+    if ((request.body as { code?: string }).code === 'bad') {
+      return { body: { error: 'bad_verification_code' }, status: 200 };
+    }
+
+    const token = `ghu_${randomBytes(20).toString('hex')}`;
+
+    userTokens.add(token);
+
+    return { body: { access_token: token, token_type: 'bearer' }, status: 200 };
+  });
+
+  /** Spec 044: basic-authed with the App's client pair; the token goes in the body. */
+  route('DELETE', '/applications/:clientId/token', (_params, request) => {
+    userTokens.delete((request.body as { access_token: string }).access_token);
+
+    return { body: null, status: 204 };
+  });
+
+  const withUserToken =
+    (handler: RouteHandler): RouteHandler =>
+    (params, request, url) =>
+      userTokens.has(bearer(request) ?? '')
+        ? handler(params, request, url)
+        : { body: { message: 'Bad credentials' }, status: 401 };
+
+  route(
+    'GET',
+    '/user',
+    withUserToken(() => ({ body: { login: user.login }, status: 200 })),
+  );
+
+  route(
+    'POST',
+    '/user/repos',
+    withUserToken((_params, request) => {
+      const body = request.body as { name: string; private?: boolean };
+      const fullName = `${user.login}/${body.name}`;
+
+      if ([...repositories.values()].some((repository) => repository.full_name === fullName)) {
+        return { body: { message: 'Repository creation failed.' }, status: 422 };
+      }
+
+      const repository: FixtureRepository = {
+        branches: {},
+        default_branch: 'main',
+        full_name: fullName,
+        id: 2000 + repositories.size,
+        name: body.name,
+        owner: { login: user.login },
+        private: body.private ?? false,
+      };
+
+      repositories.set(repository.id, repository);
+
+      return { body: repository, status: 201 };
+    }),
+  );
+
+  route(
+    'PUT',
+    '/user/installations/{id}/repositories/{repoId}',
+    withUserToken(({ id, repoId }) =>
+      installations.has(Number(id)) && repositories.has(Number(repoId))
+        ? { status: 204 }
+        : NOT_FOUND,
+    ),
+  );
+
   /** The git request's credential must be a minted token scoped to the repository it names. */
   const gitAuthorised = (authorization: string | undefined, fullName: string): boolean => {
     const basic = authorization?.replace(/^Basic /i, '') ?? '';
@@ -580,5 +700,6 @@ export async function startGithubFixture(
     route,
     tokens,
     url: `http://127.0.0.1:${String(port)}`,
+    user,
   };
 }

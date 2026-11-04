@@ -1,5 +1,5 @@
 import { schema } from '@repo/db';
-import { eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
@@ -16,6 +16,9 @@ import { OBJECT_STORE } from '../../common/object-store/object-store.port';
 import { mirrorKey } from '../checkpoints/repo-bundler';
 import type { Envelope } from '../outbox/envelope';
 import { SANDBOX_LIFECYCLE } from '../sandbox/sandbox-lifecycle';
+import { CheckpointService } from '../checkpoints/checkpoint.service';
+import { AutoSyncConsumer } from './autosync.consumer';
+import { RepoLinkRepository } from './repo-link.repository';
 import { RepoLinkService } from './repo-link.service';
 import { SyncConsumer } from './push.consumer';
 import { SyncService } from './sync.service';
@@ -125,6 +128,15 @@ describe('SyncConsumer (push)', () => {
     const remoteBytes = () =>
       git(remoteDir, 'cat-file', '--batch-all-objects', '--batch-check', '--unordered');
 
+    // Spec 044's first automatic push on link has its own suite; these drive operations by hand.
+    // In `beforeEach`: the config's `restoreMocks` undoes a spy set once.
+    beforeEach(() => {
+      vi.spyOn(
+        harness.moduleRef.get(SyncService, { strict: false }),
+        'requestAuto',
+      ).mockResolvedValue(null);
+    });
+
     beforeAll(async () => {
       harness = await startConnectorsHarness({
         git: true,
@@ -192,6 +204,150 @@ describe('SyncConsumer (push)', () => {
       expect(stored).toMatchObject({ position: 'level', remoteHeadSha: head });
     });
 
+    describe('spec 044: every turn lands on GitHub', () => {
+      const autoSync = () => harness.moduleRef.get(AutoSyncConsumer, { strict: false });
+
+      /** What the outbox delivers for the head checkpoint; ours inserts rows directly. */
+      async function checkpointCreated(): Promise<void> {
+        const head = await harness.inTenant((tx) =>
+          harness.moduleRef.get(CheckpointService, { strict: false }).head(tx, ref()),
+        );
+        const event: Envelope<'checkpoint.created'> = {
+          aggregate: 'checkpoint',
+          aggregateId: head!.id,
+          eventId: randomUUID(),
+          occurredAt: new Date().toISOString(),
+          orgId: harness.orgId,
+          payload: { checkpointId: head!.id, orgId: harness.orgId, projectId: harness.projectId },
+          traceId: null,
+          type: 'checkpoint.created',
+        };
+
+        await harness.inTenant((tx) => autoSync().handle(event, tx));
+      }
+
+      const open = () =>
+        harness.inTenant((tx) =>
+          tx
+            .select()
+            .from(schema.syncOperations)
+            .where(
+              and(
+                eq(schema.syncOperations.orgId, harness.orgId),
+                inArray(schema.syncOperations.state, ['queued', 'running']),
+              ),
+            ),
+        );
+
+      function requested(id: string): Envelope<'sync.requested'> {
+        return {
+          aggregate: 'sync-operation',
+          aggregateId: id,
+          eventId: randomUUID(),
+          occurredAt: new Date().toISOString(),
+          orgId: harness.orgId,
+          payload: {
+            orgId: harness.orgId,
+            projectId: harness.projectId,
+            syncOperationId: id,
+          },
+          traceId: null,
+          type: 'sync.requested',
+        };
+      }
+
+      async function drain(id: string): Promise<void> {
+        const event = requested(id);
+        const job = await harness.inTenant((tx) => consumer.handle(event, tx));
+
+        await consumer.effect(event, job, 1);
+      }
+
+      beforeEach(() => {
+        vi.spyOn(syncs, 'requestAuto').mockRestore();
+      });
+
+      it('a finished turn reaches GitHub with no click, marked automatic', async () => {
+        const head = await commit(1);
+
+        await checkpointCreated();
+
+        const [operation] = await open();
+
+        expect(operation).toMatchObject({ kind: 'push', trigger: 'auto' });
+        await drain(operation!.id);
+
+        expect(remoteHead()).toBe(head);
+        await expect(
+          harness.inTenant((tx) => syncs.byId(tx, ref(), operation!.id)),
+        ).resolves.toMatchObject({ state: 'succeeded', targetBranch: 'main', toSha: head });
+        expect(await open()).toEqual([]);
+      });
+
+      it('two turns during one push: the slot holds, and both reach GitHub', async () => {
+        await commit(1);
+        await checkpointCreated();
+
+        const [first] = await open();
+        const event = requested(first!.id);
+        const job = await harness.inTenant((tx) => consumer.handle(event, tx));
+
+        // The second turn lands while the first push is running.
+        const second = await commit(1);
+
+        await checkpointCreated();
+        expect(await open()).toHaveLength(1);
+
+        await consumer.effect(event, job, 1);
+
+        // The trailing edge queued exactly one more, and it ends the chain.
+        const [trailing] = await open();
+
+        expect(trailing).toMatchObject({ trigger: 'auto' });
+        expect(trailing!.id).not.toBe(first!.id);
+        await drain(trailing!.id);
+        expect(remoteHead()).toBe(second);
+        expect(await open()).toEqual([]);
+      });
+
+      it('a deferred delivery of our own earlier push is recognised as behind', async () => {
+        const repository = harness.moduleRef.get(RepoLinkRepository, { strict: false });
+        const behind = (sha: string) =>
+          harness.inTenant((tx) =>
+            repository.isBehindPushed(tx, harness.orgId, harness.projectId, sha),
+          );
+
+        const first = await commit(1);
+
+        await checkpointCreated();
+        await drain((await open())[0]!.id);
+
+        const second = await commit(1);
+
+        await checkpointCreated();
+        await drain((await open())[0]!.id);
+
+        await expect(behind(first)).resolves.toBe(true);
+        await expect(behind(second)).resolves.toBe(false);
+        // A commit someone made on GitHub is not ours to discount.
+        await expect(behind('f'.repeat(40))).resolves.toBe(false);
+      });
+
+      it('a checkpoint on a link with auto-sync off asks for nothing', async () => {
+        await commit(1);
+        await harness.inTenant((tx) =>
+          tx
+            .update(schema.repoLinks)
+            .set({ autoSync: false })
+            .where(eq(schema.repoLinks.orgId, harness.orgId)),
+        );
+
+        await checkpointCreated();
+
+        expect(await open()).toEqual([]);
+      });
+    });
+
     it('two more commits after a push: the second push carries commits: 2', async () => {
       const first = await commit(3);
       await push();
@@ -235,6 +391,13 @@ describe('SyncConsumer (push)', () => {
     });
 
     it('SC-005: a remote that moved ahead is refused as remote-ahead and left byte-for-byte unchanged', async () => {
+      // Spec 044: this is the refusal a person gets with auto-sync off; on, the head goes to the side.
+      await harness.inTenant((tx) =>
+        tx
+          .update(schema.repoLinks)
+          .set({ autoSync: false })
+          .where(eq(schema.repoLinks.orgId, harness.orgId)),
+      );
       await commit(2);
       await push();
       // Someone else pushes to the remote; our head is now behind it.

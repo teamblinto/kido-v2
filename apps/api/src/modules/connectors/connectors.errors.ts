@@ -99,14 +99,23 @@ export function connectorRefusal(
  * A GitHub failure on a user-facing call (list, create, resolve), re-stated in the § 4
  * vocabulary: a refused credential is `needs-reauth`, anything else is the provider being
  * unavailable. The caller keeps the `validation` and `not-found` arms it has a better answer for.
+ * `detail` replaces the message when the person must hear more than the category (spec 044: the
+ * repository exists even though the step after it failed).
  */
 export function githubRefusal(
   category: GithubErrorCategory,
   retryAfterSeconds: number,
+  detail?: string,
 ): ConflictError | ServiceUnavailableError {
-  return category === 'unauthorized'
-    ? syncConflict('needs-reauth', 'The GitHub connection needs to be reconnected.')
-    : providerUnavailable(retryAfterSeconds);
+  if (category === 'unauthorized') {
+    return syncConflict('needs-reauth', detail ?? 'The GitHub connection needs to be reconnected.');
+  }
+
+  return detail === undefined
+    ? providerUnavailable(retryAfterSeconds)
+    : new ServiceUnavailableError(detail, retryAfterSeconds, {
+        reason: 'provider-unavailable' satisfies SyncFailureReason,
+      });
 }
 
 /**

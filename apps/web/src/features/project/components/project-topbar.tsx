@@ -16,7 +16,6 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
-import { GitHubIcon } from '@/components/icons/brand-icons';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Button } from '@/components/ui/button';
 import {
@@ -32,9 +31,11 @@ import { messageFor } from '@/lib/api/problem';
 import { routes } from '@/lib/routes';
 import { cn } from '@/lib/utils';
 import { useSite } from '../hooks/use-deployments';
+import { useGitSync } from '../hooks/use-git-sync';
 import type { RunPhase, StageTab } from '../types';
 import { DeployPanel } from './deploy-panel';
 import { DomainsPanel } from './domains-panel';
+import { GitHubSyncChip } from './github-sync-chip';
 import { IntegrationsPanel } from './integrations-panel';
 import { RunStatusChip } from './run-status-chip';
 import { PresenceStrip } from './presence-strip';
@@ -61,6 +62,8 @@ interface ProjectTopbarProps {
   mobilePane: MobilePane;
   onChangeMobilePane: (pane: MobilePane) => void;
   onChangeStage: (stage: StageTab) => void;
+  /** Open the Git view at the GitHub panel. */
+  onOpenGitHub: () => void;
   onToggleChat: () => void;
   orgId: string | undefined;
   /** The caller's own permissions on this project; `project:deploy` gates the deploy actions. */
@@ -95,6 +98,7 @@ export function ProjectTopbar({
   mobilePane,
   onChangeMobilePane,
   onChangeStage,
+  onOpenGitHub,
   onToggleChat,
   orgId,
   permissions,
@@ -105,6 +109,7 @@ export function ProjectTopbar({
   stage,
 }: ProjectTopbarProps): React.JSX.Element {
   const [isDeployOpen, setDeployOpen] = useState(false);
+  const git = useGitSync(orgId, projectId);
   // Every reader may open the panel for the address and the history; only a member holding
   // `project:deploy` is shown the actions inside it, and the button says which it is.
   const canDeploy = permissions.includes('project:deploy');
@@ -270,18 +275,7 @@ export function ProjectTopbar({
 
         <span className="bg-line h-[22px] w-px max-lg:hidden" aria-hidden="true" />
 
-        <a
-          href="https://github.com"
-          target="_blank"
-          rel="noreferrer"
-          className={cn(
-            'text-subdued hover:bg-muted hover:text-foreground flex size-[30px] items-center',
-            'justify-center rounded-md transition-colors max-lg:hidden',
-          )}
-        >
-          <GitHubIcon className="size-4" />
-          <span className="sr-only">Open the repository on GitHub</span>
-        </a>
+        <GitHubSyncChip git={git} onOpen={onOpenGitHub} />
 
         <Avatar className="size-[26px] max-sm:hidden">
           <AvatarFallback>{account.name.slice(0, 1).toUpperCase()}</AvatarFallback>

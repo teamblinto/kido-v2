@@ -41,14 +41,16 @@ export interface ProjectWorkspace {
  * the layout state its name always claimed it was.
  */
 export function useProjectWorkspace(): ProjectWorkspace {
-  const [stage, setStage] = useState<StageTab>('preview');
-  const [gitView, setGitView] = useState<GitView>('changes');
-  const [mobilePane, setMobilePane] = useState<MobilePane>('chat');
+  const [searchParams] = useSearchParams();
+  // A trip to GitHub comes back with `?panel=github`, to the panel it left from.
+  const isGitHubLinked = searchParams.get('panel') === 'github';
+  const [stage, setStage] = useState<StageTab>(isGitHubLinked ? 'git' : 'preview');
+  const [gitView, setGitView] = useState<GitView>(isGitHubLinked ? 'history' : 'changes');
+  const [mobilePane, setMobilePane] = useState<MobilePane>(isGitHubLinked ? 'git' : 'chat');
   const [viewport, setViewport] = useState<PreviewViewport>('desktop');
   const [isChatOpen, setIsChatOpen] = useState(true);
   const [isLogOpen, setIsLogOpen] = useState(false);
   const [openPath, setOpenPath] = useState<string | undefined>(undefined);
-  const [searchParams] = useSearchParams();
   const runId = searchParams.get('run') ?? undefined;
 
   const toggleChat = useCallback(() => {

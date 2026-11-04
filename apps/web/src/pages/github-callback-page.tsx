@@ -5,11 +5,12 @@ import {
 } from '@repo/contracts';
 import { useMutation } from '@tanstack/react-query';
 import { AlertTriangle, Loader2 } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Navigate, useSearchParams } from 'react-router-dom';
 
 import { AuthHeading } from '@/features/auth/components/auth-heading';
 import { AuthLayout } from '@/features/auth/components/auth-layout';
+import { GITHUB_RETURN_KEY, safeReturnPath } from '@/features/project/lib/github-sync';
 import { useOrgs } from '@/features/workspace/hooks/use-orgs';
 import { apiRequest } from '@/lib/api/client';
 import { messageFor } from '@/lib/api/problem';
@@ -18,12 +19,16 @@ import { routes } from '@/lib/routes';
 /**
  * The GitHub App's Setup URL (018 research R8): GitHub lands here with `installation_id` and
  * `state`. The page hands both to `POST connectors/github/complete` once and returns to the
- * settings page; a state the API refuses (`oauth-state-invalid`) shows the catalogue's message.
+ * project that began the install (spec 044), else the settings page; a state the API refuses
+ * (`oauth-state-invalid`) shows the catalogue's message.
  */
 export function GithubCallbackPage(): React.JSX.Element {
   const [params] = useSearchParams();
   const { activeOrg, isLoading } = useOrgs();
   const orgId = activeOrg?.id;
+  const [returnTo] = useState(() =>
+    safeReturnPath(window.sessionStorage.getItem(GITHUB_RETURN_KEY)),
+  );
 
   const parsed = completeInstallRequestSchema.safeParse({
     installationId: Number(params.get('installation_id')),
@@ -37,6 +42,9 @@ export function GithubCallbackPage(): React.JSX.Element {
         body: input,
         schema: connectionSchema,
       }),
+    onSuccess: () => {
+      window.sessionStorage.removeItem(GITHUB_RETURN_KEY);
+    },
   });
 
   // Once — the state is single-use, and React's development double-invoke would spend it twice.
@@ -50,7 +58,7 @@ export function GithubCallbackPage(): React.JSX.Element {
   }, [body, complete, orgId]);
 
   if (complete.isSuccess) {
-    return <Navigate to={routes.connectorsSettings} replace />;
+    return <Navigate to={returnTo ?? routes.connectorsSettings} replace />;
   }
 
   if (body === undefined || complete.isError) {

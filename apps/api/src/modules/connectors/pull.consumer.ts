@@ -153,14 +153,14 @@ export class PullRunner implements PullRunnerPort<PullPrepared | undefined> {
       try {
         return { bundle, token: await this.connections.repositoryToken(tx, orgId, link.repoId) };
       } catch (error) {
-        if (error instanceof ConflictError && error.extensions.reason === 'needs-reauth') {
-          return null;
-        }
+        const reason = error instanceof ConflictError ? error.extensions.reason : undefined;
+
+        if (reason === 'needs-reauth' || reason === 'repo-gone') return reason;
         throw error;
       }
     });
 
-    if (source === null) return { reason: 'needs-reauth', state: 'failed' };
+    if (typeof source === 'string') return { reason: source, state: 'failed' };
 
     const remote = this.git.remoteUrl(link.owner, link.name);
     const branch = `refs/heads/${link.branch}`;
@@ -343,10 +343,17 @@ export class PullRunner implements PullRunnerPort<PullPrepared | undefined> {
           tx,
         );
         await this.links.setPushed(tx, orgId, link.id, rows.at(-1)!.id, remoteHead!);
-      } else if (outcome.state === 'succeeded') {
+      } else if (outcome.state === 'succeeded' && remoteHead !== null) {
+        // `null`: there was no remote branch to be level with, so nothing was pushed.
         await this.links.setPushed(tx, orgId, link.id, head.id, head.gitSha);
       } else if (remoteHead !== undefined) {
         await this.links.setRemoteHead(tx, orgId, link.id, remoteHead);
+      }
+
+      // Spec 044: the project caught up with the linked branch, so nothing waits on the side. A
+      // head that moved during the pull found the slot taken; the reconcile tick carries it.
+      if (outcome.state === 'succeeded') {
+        await this.links.setSideBranch(tx, orgId, link.id, null);
       }
     });
   }

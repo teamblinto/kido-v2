@@ -383,7 +383,122 @@ describe('CheckpointService', () => {
     });
   });
 
+  describe('commitWorkspace', () => {
+    const actor = randomUUID();
+
+    beforeEach(async () => {
+      await service.ensureRepository(ref, CTX, tx);
+      trace = [];
+      audits = [];
+      events = [];
+    });
+
+    it('a clean tree ahead of the head records the commit that has no row', async () => {
+      // An attempt that committed and rolled its row back, or a commit made in the terminal.
+      const before = rows.length;
+
+      write('header.ts', 'x\n');
+      handler({ command: gitAdd() });
+      handler({ command: gitCommit('Fix the header') });
+
+      const row = await service.commitWorkspace(ref, actor, {}, tx);
+
+      expect(row).toMatchObject({ gitSha: git.head(), kind: 'edit', label: 'Fix the header' });
+      expect(rows).toHaveLength(before + 1);
+    });
+
+    it('a clean tree commits nothing and answers null', async () => {
+      const commits = git.commits.size;
+
+      await expect(service.commitWorkspace(ref, actor, {}, tx)).resolves.toBeNull();
+
+      expect(git.commits.size).toBe(commits);
+      expect(events).toEqual([]);
+      expect(audits).toEqual([]);
+    });
+
+    it('dirty work becomes an edit row of the actor, labelled from the files, with its audit entry and event', async () => {
+      write('a.ts', 'a');
+      write('b.ts', 'b');
+      write('c.ts', 'c');
+
+      const row = await service.commitWorkspace(ref, actor, {}, tx);
+
+      expect(row).toMatchObject({
+        actorId: actor,
+        gitSha: git.head(),
+        kind: 'edit',
+        label: 'Update a.ts, b.ts and 1 more',
+        parentId: rows[0]!.id,
+        runId: null,
+      });
+      expect(git.commits.get(git.head()!)?.label).toBe('Update a.ts, b.ts and 1 more');
+      expect(audits).toMatchObject([
+        { action: 'checkpoint.edited', actorId: actor, metadata: { files: 3 }, target: row!.id },
+      ]);
+      expect(events).toMatchObject([{ type: 'checkpoint.created' }]);
+    });
+
+    it('a message is the subject, stripped of what the shell would read', async () => {
+      write('a.ts', 'a');
+
+      const row = await service.commitWorkspace(ref, actor, { message: 'Ship it; $now' }, tx);
+
+      expect(row?.label).toBe('Ship it now');
+      expect(git.commits.get(git.head()!)?.label).toBe('Ship it now');
+    });
+
+    it('refuses an active run under the lock, touching nothing', async () => {
+      write('a.ts', 'a');
+      activeRun = true;
+
+      await expect(service.commitWorkspace(ref, actor, {}, tx)).rejects.toMatchObject({
+        extensions: { reason: 'run-active' },
+      });
+
+      expect(trace.slice(0, 2)).toEqual(['lock:project', 'activeRun']);
+      expect(ensureReady).not.toHaveBeenCalledWith(tx, ref, {
+        leaseEpoch: 0,
+        operationId: expect.stringMatching(/^commit\//) as string,
+      });
+      expect(rows).toHaveLength(1);
+    });
+
+    it('refuses a project with no checkpoint', async () => {
+      rows = [];
+
+      await expect(service.commitWorkspace(ref, actor, {}, tx)).rejects.toMatchObject({
+        extensions: { reason: 'nothing-to-push' },
+      });
+    });
+
+    it('a waking sandbox answers 503 and commits nothing', async () => {
+      write('a.ts', 'a');
+      readiness = { because: 'resuming', ready: false };
+
+      await expect(service.commitWorkspace(ref, actor, {}, tx)).rejects.toMatchObject({
+        type: 'service-unavailable',
+      });
+      expect(rows).toHaveLength(1);
+    });
+  });
+
   describe('commitTurn', () => {
+    it('spec 044: the summary heads the commit and the row', async () => {
+      await service.ensureRepository(ref, CTX, tx);
+      write('a.ts', 'a');
+
+      const result = await service.commitTurn(
+        ref,
+        CTX,
+        { runId: randomUUID(), summary: 'Add the footer\nand more', turn: 2 },
+        tx,
+      );
+
+      expect(result.label).toBe('Add the footer (turn 2)');
+      expect(git.commits.get(git.head()!)?.label).toBe('Add the footer (turn 2)');
+    });
+
     it('commits a dirty tree, inserts the row under the head, and answers its id and label (FR-004)', async () => {
       const runId = randomUUID();
       write('src/app.ts', 'export const a = 1;\n');

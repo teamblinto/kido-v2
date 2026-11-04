@@ -71,12 +71,12 @@ describe('OutboxModule', () => {
    * Spec 006 (research R6): shipped code registers its consumers as ordinary providers of their
    * modules and the registry discovers them — the two mail consumers on `mail`, and since spec 008
    * the run consumer on `agent.run`, since spec 014 the ops consumer on `sandbox.ops` and the
-   * maintenance consumer on `maintenance`, and since spec 016 the mirror consumer on `repo.mirror`, and since spec 018 the health and push consumers on `connector.health` and `connector.sync`, and since spec 020 the provider-key health consumer on `byok.health`, and since spec 032 the linked-account health consumer on `byos.health`, and since spec 027 the build consumer on `build.deploy` (`agent` profile) the archive consumer on `deploy.lifecycle` and the stuck-deployment sweep on `deploy.sweep` (both `events` profile), and since spec 028 the domain check consumer on `domain.check` and the due-domain sweep on `domain.sweep` (both `events` profile), and since spec 029 the webhook fan-out on `webhook.fanout` the attempt consumer on `integration.out`, the pause notices on `webhook.notice` and the redelivery sweep on `webhook.sweep` (all `events` profile), and since spec 031 the line consumer on `agent.line` (`agent` profile) — each queue with its DLQ and one worker. Resolved from the
+   * maintenance consumer on `maintenance`, and since spec 016 the mirror consumer on `repo.mirror`, and since spec 018 the health and push consumers on `connector.health` and `connector.sync`, and since spec 044 the auto-sync consumer on `connector.autosync`, and since spec 020 the provider-key health consumer on `byok.health`, and since spec 032 the linked-account health consumer on `byos.health`, and since spec 027 the build consumer on `build.deploy` (`agent` profile) the archive consumer on `deploy.lifecycle` and the stuck-deployment sweep on `deploy.sweep` (both `events` profile), and since spec 028 the domain check consumer on `domain.check` and the due-domain sweep on `domain.sweep` (both `events` profile), and since spec 029 the webhook fan-out on `webhook.fanout` the attempt consumer on `integration.out`, the pause notices on `webhook.notice` and the redelivery sweep on `webhook.sweep` (all `events` profile), and since spec 031 the line consumer on `agent.line` (`agent` profile) — each queue with its DLQ and one worker. Resolved from the
    * application root so the assertion sees everything the root composes — a further queue
    * appearing here is a review point, not a surprise.
    */
   it.skipIf(!redis)(
-    'builds exactly the mail, agent.run, byok.health, byos.health, agent.line, repo.mirror, maintenance, sandbox.ops, connector.health, connector.sync, connector.webhook, build.deploy, deploy.lifecycle, deploy.sweep, domain.check, domain.sweep, integration.out, webhook.fanout, webhook.notice and webhook.sweep queues and their DLQs in shipped code',
+    'builds exactly the mail, agent.run, byok.health, byos.health, agent.line, repo.mirror, maintenance, sandbox.ops, connector.health, connector.autosync, connector.sync, connector.webhook, build.deploy, deploy.lifecycle, deploy.sweep, domain.check, domain.sweep, integration.out, webhook.fanout, webhook.notice and webhook.sweep queues and their DLQs in shipped code',
     async () => {
       const start = vi.spyOn(OutboxRelay.prototype, 'start');
       moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
@@ -112,6 +112,8 @@ describe('OutboxModule', () => {
         'domain.check.dlq',
         'domain.sweep',
         'domain.sweep.dlq',
+        'connector.autosync',
+        'connector.autosync.dlq',
         'connector.health',
         'connector.health.dlq',
         'connector.ops',
@@ -143,6 +145,7 @@ describe('OutboxModule', () => {
         'deploy.sweep',
         'domain.check',
         'domain.sweep',
+        'connector.autosync',
         'connector.health',
         'connector.ops',
         'connector.sync',
@@ -231,6 +234,8 @@ describe('OutboxModule', () => {
         'domain.check.dlq',
         'domain.sweep',
         'domain.sweep.dlq',
+        'connector.autosync',
+        'connector.autosync.dlq',
         'connector.health',
         'connector.health.dlq',
         'connector.ops',
@@ -286,6 +291,8 @@ describe('OutboxModule', () => {
         'domain.check.dlq',
         'domain.sweep',
         'domain.sweep.dlq',
+        'connector.autosync',
+        'connector.autosync.dlq',
         'connector.health',
         'connector.health.dlq',
         'connector.ops',
@@ -313,6 +320,7 @@ describe('OutboxModule', () => {
         'deploy.sweep',
         'domain.check',
         'domain.sweep',
+        'connector.autosync',
         'connector.health',
         'connector.ops',
         'connector.sync',
@@ -370,6 +378,8 @@ describe('OutboxModule', () => {
         'domain.check.dlq',
         'domain.sweep',
         'domain.sweep.dlq',
+        'connector.autosync',
+        'connector.autosync.dlq',
         'connector.health',
         'connector.health.dlq',
         'connector.ops',
@@ -402,6 +412,7 @@ describe('OutboxModule', () => {
         'deploy.sweep',
         'domain.check',
         'domain.sweep',
+        'connector.autosync',
         'connector.health',
         'connector.ops',
         'connector.sync',

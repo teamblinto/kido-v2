@@ -21,6 +21,8 @@ export const linkPositionSchema = z.enum(LINK_POSITIONS);
 export type LinkPosition = z.output<typeof linkPositionSchema>;
 
 export const repoLinkSchema = z.strictObject({
+  /** Spec 044: push after every turn. */
+  autoSync: z.boolean(),
   branch: z.string().min(1),
   connectionId: z.uuid().nullable(),
   id: z.uuid(),
@@ -38,6 +40,8 @@ export const repoLinkSchema = z.strictObject({
     name: z.string().min(1),
     owner: z.string().min(1),
   }),
+  /** Spec 044: where the project's work waits while the linked branch cannot take it. */
+  sideBranch: z.string().min(1).nullable(),
   state: repoLinkStateSchema,
 });
 
@@ -63,3 +67,67 @@ export const putRepoLinkRequestSchema = z.union([
 ]);
 
 export type PutRepoLinkRequest = z.output<typeof putRepoLinkRequestSchema>;
+
+/**
+ * A subset of `git check-ref-format`: no leading dash or dot, no `..`, `@{`, trailing `.lock`
+ * or slash. It reaches a git argument as `refs/heads/<name>`, so the alphabet is closed.
+ */
+export const branchNameSchema = z
+  .string()
+  .max(200)
+  .regex(/^[A-Za-z0-9_][A-Za-z0-9._/-]*$/u)
+  .refine(
+    (name) =>
+      !name.includes('..') &&
+      !name.includes('//') &&
+      !name.endsWith('/') &&
+      !name.endsWith('.') &&
+      !name.endsWith('.lock'),
+    { message: 'not a valid branch name' },
+  );
+
+/** Spec 044: `PATCH …/repo-link`. At least one field. */
+export const patchRepoLinkRequestSchema = z
+  .strictObject({ autoSync: z.boolean().optional(), branch: branchNameSchema.optional() })
+  .refine((body) => body.autoSync !== undefined || body.branch !== undefined, {
+    message: 'nothing to change',
+  });
+
+export type PatchRepoLinkRequest = z.output<typeof patchRepoLinkRequestSchema>;
+
+export const repoBranchSchema = z.strictObject({
+  default: z.boolean(),
+  name: z.string().min(1),
+  protected: z.boolean(),
+});
+
+export type RepoBranch = z.output<typeof repoBranchSchema>;
+
+export const repoBranchListSchema = z.strictObject({ branches: z.array(repoBranchSchema) });
+
+export type RepoBranchList = z.output<typeof repoBranchListSchema>;
+
+/** `POST …/repo-link/branches`: from the linked branch's remote head, then linked. */
+export const createBranchRequestSchema = z.strictObject({ name: branchNameSchema });
+
+export type CreateBranchRequest = z.output<typeof createBranchRequestSchema>;
+
+/** `POST …/repo-link/authorize`: the personal-account create, step one. */
+export const authorizeRepoCreateRequestSchema = z.strictObject({
+  name: repositoryNameSchema,
+  private: z.boolean(),
+});
+
+export type AuthorizeRepoCreateRequest = z.output<typeof authorizeRepoCreateRequestSchema>;
+
+export const authorizeRepoCreateResponseSchema = z.strictObject({ authorizeUrl: z.url() });
+
+export type AuthorizeRepoCreateResponse = z.output<typeof authorizeRepoCreateResponseSchema>;
+
+/** `POST …/repo-link/authorized`: GitHub's redirect, handed over once. */
+export const completeRepoCreateRequestSchema = z.strictObject({
+  code: z.string().min(1).max(512),
+  state: z.string().min(1).max(512),
+});
+
+export type CompleteRepoCreateRequest = z.output<typeof completeRepoCreateRequestSchema>;

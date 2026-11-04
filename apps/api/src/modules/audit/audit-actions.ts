@@ -99,6 +99,7 @@ export const AUDIT_ACTIONS = Object.freeze({
   'provider-key.replaced': 'A provider key replaced another for the same provider.',
   'repo-link.created': 'A project was linked to a repository on a connection.',
   'repo-link.removed': "A project's repository link was removed.",
+  'repo-link.updated': "A project's repository link changed branch or auto-sync.",
   'sandbox-callback.refused':
     'A sandbox callback was refused: unknown sandbox, bad token or a stale lease.',
   'sandbox.claimed': 'A project took a sandbox from the warm pool, or had one created for it.',

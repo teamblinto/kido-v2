@@ -7,6 +7,7 @@ import {
   index,
   integer,
   jsonb,
+  boolean,
   pgEnum,
   pgTable,
   text,
@@ -126,6 +127,9 @@ export const syncKind = pgEnum('sync_kind', ['push', 'pull', 'import']);
 
 export const syncState = pgEnum('sync_state', ['queued', 'running', 'succeeded', 'failed']);
 
+/** Spec 044: who asked for an operation. */
+export const syncTrigger = pgEnum('sync_trigger', ['manual', 'auto']);
+
 /** The `SYNC_FAILURE_REASONS` vocabulary (contracts/connectors.md § 3); null unless `failed`. */
 export const syncFailureReason = pgEnum('sync_failure_reason', [
   'remote-ahead',
@@ -145,6 +149,11 @@ export const syncFailureReason = pgEnum('sync_failure_reason', [
   'repo-too-large',
   'branch-not-found',
   'import-checkout-failed',
+  'branch-protected',
+  'push-rejected',
+  'workflow-permission',
+  'repo-gone',
+  'account-mismatch',
 ]);
 
 /**
@@ -217,6 +226,8 @@ export const connections = pgTable(
 export const repoLinks = pgTable(
   'repo_links',
   {
+    /** Spec 044: push after every turn. Rows that predate the column are false (0057). */
+    autoSync: boolean('auto_sync').notNull().default(true),
     branch: text('branch').notNull(),
     connectionId: uuid('connection_id'),
     id: uuid('id').primaryKey().defaultRandom(),
@@ -232,6 +243,8 @@ export const repoLinks = pgTable(
     projectId: uuid('project_id').notNull(),
     remoteHeadSha: text('remote_head_sha'),
     repoId: bigint('repo_id', { mode: 'number' }).notNull(),
+    /** Spec 044: set while the project's work waits on a side branch; a level push clears it. */
+    sideBranch: text('side_branch'),
     state: repoLinkState('state').notNull(),
     ...timestamps,
   },
@@ -286,7 +299,10 @@ export const syncOperations = pgTable(
       .references(() => users.id),
     startedAt: timestamp('started_at', { withTimezone: true }),
     state: syncState('state').notNull(),
+    /** Spec 044: the branch a push landed on; null for a pull, an import, or a push that did not land. */
+    targetBranch: text('target_branch'),
     toSha: text('to_sha'),
+    trigger: syncTrigger('trigger').notNull().default('manual'),
     ...timestamps,
   },
   (table) => [

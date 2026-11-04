@@ -15,17 +15,32 @@ export function installStateKey(stateHash: string): string {
   return `cn:state:${stateHash}`;
 }
 
+/** Spec 044: the repository a personal account asked for, and the project it is for. */
+export interface RepoCreateIntent {
+  readonly name: string;
+  readonly private: boolean;
+  readonly projectId: string;
+}
+
 export interface InstallState {
   readonly orgId: string;
   /** Spec 030: the PKCE verifier of an OAuth install (Supabase); absent for GitHub's. */
   readonly pkce?: string;
   /** Spec 030: which provider's install issued the state; it is refused for any other. */
   readonly provider: ConnectorProvider;
+  /** Spec 044: present on a personal-account create's state, absent on an install's. */
+  readonly repoCreate?: RepoCreateIntent;
   readonly userId: string;
 }
 
-/** Who may spend a state: the organisation, user and provider it was issued for. */
-export type InstallExpectation = Pick<InstallState, 'orgId' | 'provider' | 'userId'>;
+/**
+ * Who may spend a state: the organisation, user and provider it was issued for, and the project
+ * of a personal-account create. Naming no project refuses a create's state, so one issued under
+ * `project:files.write` can never finish an install, which needs `org:connectors.manage`.
+ */
+export type InstallExpectation = Pick<InstallState, 'orgId' | 'provider' | 'userId'> & {
+  readonly projectId?: string;
+};
 
 /**
  * Research R8: the install flow's state, kept the way `oauth.service.ts` keeps the sign-in flow's —
@@ -47,7 +62,11 @@ export class InstallStateStore {
   async issue(
     orgId: string,
     userId: string,
-    options: { readonly pkce?: string; readonly provider?: ConnectorProvider } = {},
+    options: {
+      readonly pkce?: string;
+      readonly provider?: ConnectorProvider;
+      readonly repoCreate?: RepoCreateIntent;
+    } = {},
   ): Promise<string> {
     const state = randomBytes(STATE_BYTES).toString('base64url');
     const key = installStateKey(digest(state));
@@ -57,6 +76,11 @@ export class InstallStateStore {
       userId,
     };
     if (options.pkce !== undefined) record.pkce = options.pkce;
+    if (options.repoCreate !== undefined) {
+      record.projectId = options.repoCreate.projectId;
+      record.repoName = options.repoCreate.name;
+      record.repoPrivate = String(options.repoCreate.private);
+    }
 
     await this.redis.multi().hset(key, record).expire(key, this.ttlSeconds).exec();
 
@@ -65,17 +89,19 @@ export class InstallStateStore {
 
   /**
    * Single use: the record is deleted in the same round trip that reads it, whether or not it is
-   * the caller's. A state issued for another organisation, user or provider answers undefined.
+   * the caller's. A state issued for another organisation, user, provider or project answers
+   * undefined.
    */
   async consume(state: string, expected: InstallExpectation): Promise<InstallState | undefined> {
     const key = installStateKey(digest(state));
     const [read] = (await this.redis.multi().hgetall(key).del(key).exec()) ?? [];
-    const stored = read?.[1] as Partial<Record<keyof InstallState, string>> | undefined;
+    const stored = read?.[1] as Record<string, string | undefined> | undefined;
 
     if (
       stored?.orgId !== expected.orgId ||
       stored.userId !== expected.userId ||
-      stored.provider !== expected.provider
+      stored.provider !== expected.provider ||
+      stored.projectId !== expected.projectId
     ) {
       return undefined;
     }
@@ -85,6 +111,15 @@ export class InstallStateStore {
       provider: expected.provider,
       userId: stored.userId,
       ...(typeof stored.pkce === 'string' ? { pkce: stored.pkce } : {}),
+      ...(stored.projectId !== undefined && stored.repoName !== undefined
+        ? {
+            repoCreate: {
+              name: stored.repoName,
+              private: stored.repoPrivate === 'true',
+              projectId: stored.projectId,
+            },
+          }
+        : {}),
     };
   }
 }

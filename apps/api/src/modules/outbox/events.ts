@@ -155,6 +155,7 @@ export const EVENTS = {
         'sandbox.refill',
         'sandbox.reconcile',
         'connector.verify',
+        'connector.sync-reconcile',
         'connector.ops-timeout',
         'byok.verify',
         'byos.verify',

@@ -93,7 +93,9 @@ const HEALTH_REMINT_MS = 24 * 3_600_000;
  * pull mints its own one-repository token through {@link ConnectionService.repositoryToken}.
  */
 const ORG_TOKEN_PERMISSIONS = { administration: 'write', contents: 'read', metadata: 'read' };
-const REPO_TOKEN_PERMISSIONS = { contents: 'write', metadata: 'read' };
+const REPO_TOKEN_BASE_PERMISSIONS = { contents: 'write', metadata: 'read' };
+/** Spec 044: a push touching `.github/workflows` needs this; an App not yet updated lacks it. */
+const REPO_TOKEN_PERMISSIONS = { ...REPO_TOKEN_BASE_PERMISSIONS, workflows: 'write' };
 
 /** R9: the installation gone (404) or the App refused (401) — only a reinstall repairs it. */
 function isRevoked(error: GithubApiError): boolean {
@@ -885,7 +887,8 @@ export class ConnectionService {
         login: row.accountLogin,
         type: row.accountType!,
       },
-      canCreateRepositories: row.accountType === 'organization',
+      // Spec 044: an organisation creates with the installation token, a person through the App's OAuth.
+      canCreateRepositories: row.accountType === 'organization' || this.github.canAuthorizeUsers(),
       circuitOpenUntil: row.circuitOpenUntil?.toISOString() ?? null,
       connectedAt: row.createdAt.toISOString(),
       connectedBy: { id: row.connectedBy, name: row.connectedByName },
@@ -910,11 +913,26 @@ export class ConnectionService {
     }
   }
 
-  private mint(installationId: number, repositoryIds?: number[]): Promise<MintedToken> {
-    return this.github.mintToken(installationId, {
-      permissions: repositoryIds === undefined ? ORG_TOKEN_PERMISSIONS : REPO_TOKEN_PERMISSIONS,
-      ...(repositoryIds === undefined ? {} : { repositoryIds }),
-    });
+  private async mint(installationId: number, repositoryIds?: number[]): Promise<MintedToken> {
+    if (repositoryIds === undefined) {
+      return this.github.mintToken(installationId, { permissions: ORG_TOKEN_PERMISSIONS });
+    }
+
+    try {
+      return await this.github.mintToken(installationId, {
+        permissions: REPO_TOKEN_PERMISSIONS,
+        repositoryIds,
+      });
+    } catch (error) {
+      if (!(error instanceof GithubApiError) || error.category !== 'validation') throw error;
+
+      // A 422 is GitHub's "permissions not granted". One retry, and narrower, never wider: the
+      // client's fail-closed rule stands. What this token cannot do fails as `workflow-permission`.
+      return this.github.mintToken(installationId, {
+        permissions: REPO_TOKEN_BASE_PERMISSIONS,
+        repositoryIds,
+      });
+    }
   }
 
   /**
@@ -943,6 +961,12 @@ export class ConnectionService {
         );
 
         throw syncConflict('needs-reauth', 'The GitHub connection needs to be reconnected.');
+      }
+
+      // Spec 044: a 422 on the narrow ask too is GitHub's answer for a repository the installation
+      // cannot reach (deleted, or dropped from its selection). The App is healthy: no breaker.
+      if (repositoryIds !== undefined && error.category === 'validation') {
+        throw syncConflict('repo-gone', 'The linked repository is gone from this installation.');
       }
 
       await this.transition(tx, row, null, () =>

@@ -5,6 +5,7 @@ import { checkCommand } from '../sandbox/sandbox-guards';
 import {
   DIFF_FILE_CAP_BYTES,
   EMPTY_TREE,
+  filesLabel,
   gitAdd,
   gitBundle,
   gitCommit,
@@ -28,6 +29,7 @@ import {
   parseSha,
   sanitiseLabel,
   splitDiff,
+  turnLabel,
 } from './git-commands';
 
 const A = 'a'.repeat(40);
@@ -206,5 +208,74 @@ describe('git commands', () => {
       expect(file).toMatchObject({ binary: false, path: 'big.txt', status: 'M', truncated: true });
       expect(Buffer.byteLength((file as { patch: string }).patch)).toBe(DIFF_FILE_CAP_BYTES);
     });
+  });
+});
+
+/** Spec 044 decision 6: deterministic, and never able to block the commit it heads. */
+describe('turnLabel', () => {
+  it('is the first non-empty line of the prompt, plain on the first turn', () => {
+    expect(turnLabel('\n  \n  Fix the login page  \nand the footer', 1)).toBe('Fix the login page');
+  });
+
+  it('says which turn past the first', () => {
+    expect(turnLabel('Fix the login page', 3)).toBe('Fix the login page (turn 3)');
+  });
+
+  it.each([
+    ['no summary', undefined],
+    ['null', null],
+    ['an empty prompt', ''],
+    ['only blank lines', ' \n\t\n'],
+    ['nothing a commit message can carry', '$$$ ``` ;;; |||'],
+  ])('%s falls back to Turn n', (_name, summary) => {
+    expect(turnLabel(summary, 2)).toBe('Turn 2');
+  });
+
+  it('scrubs a secret before anything else', () => {
+    const label = turnLabel(`deploy with ghp_${'a'.repeat(36)} please`, 1);
+
+    expect(label).not.toContain('ghp_');
+    expect(label).toContain('[Redacted');
+  });
+
+  it('keeps nothing a shell would read, and no control character', () => {
+    const label = turnLabel('add `$(rm -rf /)` "now"; a\tb\u0000c \\ | d', 1);
+
+    expect(label).not.toMatch(/["\\;&|`$<>\p{Cc}]/u);
+    expect(() => gitCommit(label)).not.toThrow();
+  });
+
+  it('cuts at 72 on a word boundary, the turn suffix inside the width', () => {
+    const prompt = `${'word '.repeat(30)}end`;
+
+    expect(turnLabel(prompt, 1)).toHaveLength(69);
+    expect(turnLabel(prompt, 1).endsWith('word')).toBe(true);
+    expect(turnLabel(prompt, 12).length).toBeLessThanOrEqual(72);
+    expect(turnLabel(prompt, 12).endsWith('word (turn 12)')).toBe(true);
+  });
+
+  it('cuts a line with no space at the width', () => {
+    expect(turnLabel('x'.repeat(100), 1)).toBe('x'.repeat(72));
+  });
+
+  it('exactly 72 stays whole', () => {
+    const prompt = `${'y'.repeat(30)} ${'z'.repeat(41)}`;
+
+    expect(turnLabel(prompt, 1)).toBe(prompt);
+  });
+});
+
+/** Spec 044 decision 8: `status --porcelain` read back as a subject. */
+describe('filesLabel', () => {
+  it.each([
+    [' M src/a.ts\n', 'Update a.ts'],
+    ['?? a.ts\n M b.ts\n', 'Update a.ts and b.ts'],
+    [' M a.ts\n M b.ts\n?? c.ts\n', 'Update a.ts, b.ts and 1 more'],
+    [' M a.ts\n M b.ts\n?? c.ts\n D d.ts\n', 'Update a.ts, b.ts and 2 more'],
+    ['R  old.ts -> src/new.ts\n', 'Update new.ts'],
+    ['?? web/\n', 'Update web'],
+    ['?? "with space.ts"\n', 'Update with space.ts'],
+  ])('%j', (status, label) => {
+    expect(filesLabel(status)).toBe(label);
   });
 });

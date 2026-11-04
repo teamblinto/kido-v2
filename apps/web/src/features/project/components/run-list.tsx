@@ -6,6 +6,7 @@ import { cn } from '@/lib/utils';
 import { cancelRun } from '../api';
 import { useRunLine } from '../hooks/use-run-line';
 import { useRunList } from '../hooks/use-run-list';
+import { describeAge } from '../lib/describe-age';
 import { statusToPhase } from '../lib/run-phase';
 import { EmptyPane } from './empty-pane';
 import { RunStatusChip } from './run-status-chip';
@@ -25,36 +26,6 @@ interface RunListProps {
   readonly projectId: string | undefined;
   /** The run the address currently names, so the list can mark where you are. */
   readonly selectedRunId?: string | undefined;
-}
-
-const MINUTE = 60_000;
-const HOUR = 60 * MINUTE;
-const DAY = 24 * HOUR;
-
-const relative = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto', style: 'narrow' });
-
-/**
- * "2 hr ago", from a run's `createdAt`.
- *
- * `Intl.RelativeTimeFormat` rather than a date library: the platform already speaks this, and the
- * spec's dependency list approves nothing that would say it better.
- */
-function describeAge(iso: string, now: number): string {
-  const elapsed = now - new Date(iso).getTime();
-
-  if (Number.isNaN(elapsed) || elapsed < MINUTE) {
-    return 'just now';
-  }
-
-  if (elapsed < HOUR) {
-    return relative.format(-Math.floor(elapsed / MINUTE), 'minute');
-  }
-
-  if (elapsed < DAY) {
-    return relative.format(-Math.floor(elapsed / HOUR), 'hour');
-  }
-
-  return relative.format(-Math.floor(elapsed / DAY), 'day');
 }
 
 /**

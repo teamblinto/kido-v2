@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { position, pullDecision, pushDecision } from './sync-guards';
+import { classifyPushRejection, position, pullDecision, pushDecision } from './sync-guards';
 
 const H = 'h'.repeat(40);
 const R = 'r'.repeat(40);
@@ -82,5 +82,53 @@ describe('position (contracts § 5)', () => {
   it('is diverged otherwise, including with no push recorded', () => {
     expect(position({ lastPushedSha: L, remoteHeadSha: R }, H)).toBe('diverged');
     expect(position({ lastPushedSha: null, remoteHeadSha: R }, H)).toBe('diverged');
+  });
+});
+
+/** Spec 044: stderr as git and GitHub print it; the reason is all that goes further. */
+describe('classifyPushRejection', () => {
+  const rejected = (detail: string) =>
+    `To https://github.com/acme/site.git\n ! [rejected]        abc -> main (${detail})\nerror: failed to push some refs to 'https://github.com/acme/site.git'\n`;
+
+  it.each([
+    ['non-fast-forward', rejected('non-fast-forward'), 'remote-ahead'],
+    ['fetch first', rejected('fetch first'), 'remote-ahead'],
+    ['stale info', rejected('stale info'), 'remote-ahead'],
+    [
+      'GH006',
+      `remote: error: GH006: Protected branch update failed for refs/heads/main.\nremote: error: Changes must be made through a pull request.\n ! [remote rejected] abc -> main (protected branch hook declined)\n`,
+      'branch-protected',
+    ],
+    [
+      'a ruleset',
+      `remote: error: GH013: Repository rule violations found for refs/heads/main.\nremote: Review all repository rules at https://github.com/acme/site/rules?ref=refs%2Fheads%2Fmain\nremote:\nremote: - Changes must be made through a pull request.\n ! [remote rejected] abc -> main (push declined due to repository rule violations)\n`,
+      'branch-protected',
+    ],
+    [
+      'secret scanning under GH013',
+      `remote: error: GH013: Repository rule violations found for refs/heads/main.\nremote: - GITHUB PUSH PROTECTION\nremote:   Resolve the following violations before pushing again\nremote:   - Push cannot contain secrets\n ! [remote rejected] abc -> main (push declined due to repository rule violations)\n`,
+      'push-rejected',
+    ],
+    [
+      'GH001',
+      `remote: error: GH001: Large files detected. You may want to try Git Large File Storage.\nremote: error: File big.bin is 120.00 MB; this exceeds GitHub's file size limit of 100.00 MB\n ! [remote rejected] abc -> main (pre-receive hook declined)\n`,
+      'push-rejected',
+    ],
+    [
+      'a workflow without the permission',
+      ` ! [remote rejected] abc -> main (refusing to allow a GitHub App to create or update workflow \`.github/workflows/ci.yml\` without \`workflows\` permission)\n`,
+      'workflow-permission',
+    ],
+  ])('%s', (_name, stderr, reason) => {
+    expect(classifyPushRejection(stderr)).toBe(reason);
+  });
+
+  it.each([
+    ['nothing', ''],
+    ['a lost connection', 'fatal: unable to access: Could not resolve host: github.com\n'],
+    ['an auth failure', 'remote: Invalid username or password.\nfatal: Authentication failed\n'],
+    ['a generic hook', ' ! [remote rejected] abc -> main (pre-receive hook declined)\n'],
+  ])('%s stays git-failed', (_name, stderr) => {
+    expect(classifyPushRejection(stderr)).toBeUndefined();
   });
 });

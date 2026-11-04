@@ -130,6 +130,34 @@ describe('InstallStateStore', () => {
       });
     });
 
+    it('spec 044: a create’s state carries the request, for its project and no other, and is spent by a wrong one', async () => {
+      const projectId = randomUUID();
+      const repoCreate = { name: 'blog', private: false, projectId };
+      const issue044 = async () => {
+        const state = await store.issue(orgId, userId, { repoCreate });
+
+        issued.push(state);
+
+        return state;
+      };
+      const state = await issue044();
+
+      await expect(store.consume(state, { ...github, projectId })).resolves.toEqual({
+        ...github,
+        repoCreate,
+      });
+
+      const wrong = await issue044();
+
+      await expect(
+        store.consume(wrong, { ...github, projectId: randomUUID() }),
+      ).resolves.toBeUndefined();
+      await expect(store.consume(wrong, { ...github, projectId })).resolves.toBeUndefined();
+
+      // An install names no project, so a create's state cannot finish one.
+      await expect(store.consume(await issue044(), github)).resolves.toBeUndefined();
+    });
+
     it.each([
       ['another provider', { orgId, provider: 'github' as const, userId }],
       ['another organisation', { orgId: randomUUID(), provider: 'supabase' as const, userId }],

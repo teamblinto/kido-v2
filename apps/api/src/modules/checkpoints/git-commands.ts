@@ -1,3 +1,5 @@
+import { scrubSecrets } from '../../common/telemetry/scrubber';
+
 /**
  * The git surface of spec 016 as pure functions (research R1, R3, R5–R7): each step is one
  * string `checkCommand` admits — no `&&`, no `;`, no pipe — and each parser reads one exec's
@@ -23,6 +25,58 @@ const sha = (value: string): string => {
 /** A label that survives `-m "…"` on the daemon's bash: no quote, no operator, never empty. */
 export const sanitiseLabel = (label: string): string =>
   label.replace(UNSAFE, '').trim() || 'Checkpoint';
+
+/** A commit subject's conventional width (spec 044 decision 6). */
+const SUBJECT_CHARS = 72;
+
+/**
+ * Spec 044 decision 6: a turn's commit subject from the run's prompt, ` (turn n)` inside the width
+ * past the first, `Turn n` when nothing usable is left. It runs before a commit and a message must
+ * never block one, so whatever goes wrong here is the fallback.
+ */
+export const turnLabel = (summary: string | null | undefined, turn: number): string => {
+  const fallback = `Turn ${String(turn)}`;
+
+  try {
+    const first = summary?.split(/\r?\n/).find((line) => line.trim() !== '') ?? '';
+    const scrubbed = scrubSecrets(first).replace(/[\p{Cc}\s]+/gu, ' ');
+
+    if (scrubbed.replace(UNSAFE, '').trim() === '') return fallback;
+
+    const line = sanitiseLabel(scrubbed).replace(/ +/g, ' ');
+    const suffix = turn > 1 ? ` (turn ${String(turn)})` : '';
+    const room = SUBJECT_CHARS - suffix.length;
+
+    if (line.length <= room) return `${line}${suffix}`;
+
+    const space = line.lastIndexOf(' ', room);
+
+    return `${line.slice(0, space > 0 ? space : room).trimEnd()}${suffix}`;
+  } catch {
+    return fallback;
+  }
+};
+
+/** Spec 044 decision 8: `status --porcelain` as a subject, `Update a.ts, b.ts and 2 more`. */
+export const filesLabel = (status: string): string => {
+  const names = status
+    .split('\n')
+    .filter((line) => line.trim() !== '')
+    // `XY path`, `R  old -> new`; a directory of untracked files ends in a slash.
+    .map((line) =>
+      line
+        .replace(/^\s*\S+\s+/, '')
+        .split(' -> ')
+        .at(-1)!,
+    )
+    .map((path) => path.replace(/^"|"$/g, '').replace(/\/$/, '').split('/').at(-1)!);
+  const [first, second] = names;
+
+  if (names.length === 1) return `Update ${first!}`;
+  if (names.length === 2) return `Update ${first!} and ${second!}`;
+
+  return `Update ${first!}, ${second!} and ${String(names.length - 2)} more`;
+};
 
 export const gitInit = (): string => 'git init -q';
 export const gitAdd = (): string => 'git add -A';

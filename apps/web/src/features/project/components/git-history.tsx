@@ -1,13 +1,16 @@
-import type { Checkpoint } from '@repo/contracts';
+import type { Checkpoint, RepoLink } from '@repo/contracts';
 import { useState } from 'react';
 
 import { messageFor } from '@/lib/api/problem';
 import { cn } from '@/lib/utils';
 import { useCheckpointDiff, useCheckpoints } from '../hooks/use-checkpoints';
+import { commitUrl, shortSha } from '../lib/github-sync';
 import { CheckpointDiff } from './checkpoint-diff';
 import { EmptyPane } from './empty-pane';
 
 interface GitHistoryProps {
+  /** The project's repository, when it has one: rows then say whether they reached GitHub. */
+  readonly link?: RepoLink | null | undefined;
   readonly orgId: string | undefined;
   readonly projectId: string | undefined;
   /**
@@ -24,13 +27,21 @@ interface GitHistoryProps {
  * the checkpoint it went back to — looked up among the rows already loaded, falling back to the
  * server's own label when the target is further back than the pane has paged.
  */
-export function GitHistory({ orgId, projectId, renderRevert }: GitHistoryProps): React.JSX.Element {
+export function GitHistory({
+  link,
+  orgId,
+  projectId,
+  renderRevert,
+}: GitHistoryProps): React.JSX.Element {
   const project = { orgId, projectId };
   const [selectedId, setSelectedId] = useState<string | undefined>(undefined);
   const checkpoints = useCheckpoints(project);
   const diff = useCheckpointDiff(project, selectedId);
 
   const rows = checkpoints.data?.checkpoints ?? [];
+  // Newest first, so everything at or below the last pushed row went with it. Not found means it
+  // is older than the loaded pages, which leaves every row here unpushed.
+  const pushedFrom = rows.findIndex((row) => row.id === link?.lastPushedCheckpointId);
 
   if (checkpoints.isPending) {
     return <p className="text-faint text-body-sm px-6 py-5">Loading the project's history…</p>;
@@ -81,6 +92,27 @@ export function GitHistory({ orgId, projectId, renderRevert }: GitHistoryProps):
                 </span>
               </button>
 
+              <p className="text-faint text-body-sm flex gap-1.5 px-4 pb-2">
+                {link != null && pushedFrom !== -1 && index >= pushedFrom ? (
+                  <>
+                    <a
+                      href={commitUrl(link.repository.fullName, checkpoint.gitSha)}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="hover:text-foreground font-mono underline"
+                    >
+                      {shortSha(checkpoint.gitSha)}
+                    </a>
+                    <span>· On GitHub</span>
+                  </>
+                ) : (
+                  <>
+                    <code className="font-mono">{shortSha(checkpoint.gitSha)}</code>
+                    {link != null ? <span>· Not pushed yet</span> : null}
+                  </>
+                )}
+              </p>
+
               {renderRevert?.(checkpoint, index === 0)}
 
               {isOpen && (
@@ -115,6 +147,9 @@ function describe(checkpoint: Checkpoint, rows: readonly Checkpoint[]): string {
     case 'baseline':
       return 'Starting point';
     case 'turn':
+      // Spec 044: a turn's label is the person's prompt now; `Turn n` is what it falls back to.
+      if (!/^Turn \d+$/u.test(checkpoint.label)) return checkpoint.label;
+
       return checkpoint.turn === null ? 'Run turn' : `Run turn ${String(checkpoint.turn)}`;
     case 'pull':
       return 'Pulled from GitHub';
@@ -125,7 +160,10 @@ function describe(checkpoint: Checkpoint, rows: readonly Checkpoint[]): string {
     case 'edit': {
       // Spec 024's fifth kind, worded like the branches above rather than shown raw. The server's
       // label is `Edit <path>`; the row's own file summary is the better source for the path, and
-      // the label is the fallback when a save ever records more or fewer than one file.
+      // the label is the fallback when a save ever records more or fewer than one file. A label in
+      // any other form is a message someone wrote with Commit & push (spec 044), and it is shown.
+      if (!checkpoint.label.startsWith('Edit ')) return checkpoint.label;
+
       const path = checkpoint.files[0]?.path;
 
       return path === undefined ? checkpoint.label : `Edited ${path}`;

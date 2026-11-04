@@ -11,6 +11,7 @@ import { RbacModule } from '../rbac/rbac.module';
 import { SandboxModule } from '../sandbox/sandbox.module';
 import { TenancyModule } from '../tenancy/tenancy.module';
 import { WebhooksModule } from '../webhooks/webhooks.module';
+import { AutoSyncConsumer } from './autosync.consumer';
 import { BindingRepository } from './binding.repository';
 import { BindingService } from './binding.service';
 import { ConnectionRepository } from './connection.repository';
@@ -130,6 +131,8 @@ import { SyncService } from './sync.service';
     WebhooksModule,
   ],
   providers: [
+    // Spec 044: `checkpoint.created` on `connector.autosync`, beside the mirror's own queue.
+    AutoSyncConsumer,
     BindingReleaseHandler,
     BindingRepository,
     BindingService,

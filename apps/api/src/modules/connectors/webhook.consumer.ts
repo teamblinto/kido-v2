@@ -272,12 +272,28 @@ export class WebhookDeliveryConsumer extends EventConsumer<'webhook.received'> {
   /** Step 5 for one organisation: the writer lock, then the one column. */
   private async advance(match: Match, plan: Plan): Promise<number> {
     return this.transactions.runInTenantTransaction(match.orgId, async (tx) => {
+      const behind: string[] = [];
+
       for (const projectId of match.projectIds) {
         // The same lock a pull takes, so the later of the two writers wins (R14, FR-036).
         await this.checkpoints.lockProject(tx, { orgId: match.orgId, projectId });
+
+        if (
+          plan.head !== null &&
+          (await this.links.isBehindPushed(tx, match.orgId, projectId, plan.head))
+        ) {
+          behind.push(projectId);
+        }
       }
 
-      return this.links.setRemoteHeadByRepo(tx, match.orgId, plan.repoId, plan.branch, plan.head);
+      return this.links.setRemoteHeadByRepo(
+        tx,
+        match.orgId,
+        plan.repoId,
+        plan.branch,
+        plan.head,
+        behind,
+      );
     });
   }
 

@@ -56,6 +56,7 @@ export class MaintenanceConsumer extends EventConsumer<'maintenance.due', Mainte
         await this.reconciler.reconcile();
         return;
       case 'connector.verify':
+      case 'connector.sync-reconcile':
       case 'connector.ops-timeout':
       case 'byok.verify':
       case 'byos.verify':

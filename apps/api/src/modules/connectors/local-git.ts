@@ -89,12 +89,18 @@ export class LocalGit implements OnModuleInit {
       if (key.startsWith('GIT_TRACE') || key === 'GIT_CURL_VERBOSE') delete env[key];
     }
 
+    // Spec 044: no ambient credential helper. A refused token must fail now, not stall on a prompt
+    // or leave anything in a store; the header below is the only credential this process offers.
+    env.GIT_CONFIG_COUNT = '1';
+    env.GIT_CONFIG_KEY_0 = 'credential.helper';
+    env.GIT_CONFIG_VALUE_0 = '';
+
     if (auth !== undefined) {
       const basic = Buffer.from(`x-access-token:${revealPlaintext(auth).toString('utf8')}`);
 
-      env.GIT_CONFIG_COUNT = '1';
-      env.GIT_CONFIG_KEY_0 = `http.${this.gitOrigin}/.extraheader`;
-      env.GIT_CONFIG_VALUE_0 = `Authorization: Basic ${basic.toString('base64')}`;
+      env.GIT_CONFIG_COUNT = '2';
+      env.GIT_CONFIG_KEY_1 = `http.${this.gitOrigin}/.extraheader`;
+      env.GIT_CONFIG_VALUE_1 = `Authorization: Basic ${basic.toString('base64')}`;
     }
 
     try {
@@ -145,8 +151,13 @@ export class LocalGit implements OnModuleInit {
       const info = await stat(path).catch(() => null);
 
       if (info === null || !info.isDirectory() || info.mtimeMs > cutoff) continue;
-      await rm(path, { force: true, recursive: true });
-      swept += 1;
+      // Housekeeping at boot: a directory that will not go (a live one on Windows) must not stop it.
+      const removed = await rm(path, { force: true, recursive: true }).then(
+        () => true,
+        () => false,
+      );
+
+      if (removed) swept += 1;
     }
     if (swept > 0)
       this.logger.warn(`swept ${swept} stale sync director${swept === 1 ? 'y' : 'ies'}`);

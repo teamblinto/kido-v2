@@ -1,4 +1,10 @@
-import { syncListQuerySchema, syncOperationPageSchema, syncOperationSchema } from '@repo/contracts';
+import {
+  syncCommitRequestSchema,
+  syncCommitResponseSchema,
+  syncListQuerySchema,
+  syncOperationPageSchema,
+  syncOperationSchema,
+} from '@repo/contracts';
 
 import { ApiZodSchema, createZodDto } from '../../../common/validation/zod-dto';
 
@@ -11,3 +17,10 @@ export class SyncOperationPageResponseDto extends createZodDto(syncOperationPage
 
 @ApiZodSchema()
 export class SyncListQueryDto extends createZodDto(syncListQuerySchema) {}
+
+/** Spec 044: the one-click commit and push. */
+@ApiZodSchema()
+export class SyncCommitRequestDto extends createZodDto(syncCommitRequestSchema) {}
+
+@ApiZodSchema()
+export class SyncCommitResponseDto extends createZodDto(syncCommitResponseSchema) {}

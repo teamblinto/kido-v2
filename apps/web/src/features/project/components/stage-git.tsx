@@ -1,11 +1,9 @@
 import { useQuery } from '@tanstack/react-query';
-import { useSearchParams } from 'react-router-dom';
 
 import { getProject } from '@/features/workspace/api';
 import { cn } from '@/lib/utils';
 import { GitHubPanel } from '../github-panel';
-import { getRun } from '../api';
-import { isTerminal } from '../lib/run-phase';
+import { useGitSync } from '../hooks/use-git-sync';
 import type { GitView } from '../types';
 import { GitChanges } from './git-changes';
 import { GitHistory } from './git-history';
@@ -19,6 +17,8 @@ const views: readonly SegmentedItem<GitView>[] = [
 
 interface StageGitProps {
   className?: string;
+  /** The stream's live answer, so the controls free up the moment a run ends. */
+  isRunActive: boolean;
   onChangeView: (view: GitView) => void;
   orgId: string | undefined;
   /** The files this run has changed, newest first (FR-029). */
@@ -34,40 +34,23 @@ interface StageGitProps {
  */
 export function StageGit({
   className,
+  isRunActive,
   onChangeView,
   orgId,
   paths,
   projectId,
   view,
 }: StageGitProps): React.JSX.Element {
-  /*
-   * The two gates the history rows cannot answer for themselves.
-   *
-   * Both reads share the keys the project screen already uses — `['project', …]` and
-   * `['run', …, runId]` — so neither is a second request: react-query hands back the entry the
-   * page filled, and this pane simply reads two fields out of it.
-   */
+  // Shares the key the project screen already uses, so this is not a second request.
   const project = useQuery({
     enabled: orgId !== undefined && projectId !== '',
     queryFn: ({ signal }) => getProject(orgId ?? '', projectId, signal),
     queryKey: ['project', orgId, projectId],
   });
-
-  const [searchParams] = useSearchParams();
-  const runId = searchParams.get('run') ?? undefined;
-
-  const run = useQuery({
-    enabled: orgId !== undefined && projectId !== '' && runId !== undefined,
-    queryFn: ({ signal }) => getRun(orgId ?? '', projectId, runId ?? '', signal),
-    queryKey: ['run', orgId, projectId, runId],
-  });
+  const { link } = useGitSync(orgId, projectId);
 
   const permissions: readonly string[] = project.data?.project.permissions ?? [];
   const mayWrite = permissions.includes('project:files.write');
-  // ponytail: the run record is read, not streamed, so a run that ends while this pane is open
-  // keeps the control disabled until the entry refetches. Pass the console's live phase down if
-  // that lag ever matters.
-  const isRunActive = run.data !== undefined && !isTerminal(run.data.status);
 
   return (
     <div className={cn('flex min-h-0 min-w-0 flex-col', className)}>
@@ -88,9 +71,16 @@ export function StageGit({
       ) : (
         <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
           {orgId !== undefined && projectId !== '' ? (
-            <GitHubPanel orgId={orgId} projectId={projectId} />
+            <GitHubPanel
+              canWrite={mayWrite}
+              isRunActive={isRunActive}
+              orgId={orgId}
+              projectId={projectId}
+              projectName={project.data?.project.name}
+            />
           ) : null}
           <GitHistory
+            link={link}
             orgId={orgId}
             projectId={projectId}
             renderRevert={

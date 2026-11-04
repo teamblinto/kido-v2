@@ -181,13 +181,15 @@ export class SandboxTools {
    */
   async checkpoint(context: ExecutionContext, turn: number): Promise<RunOutcome | undefined> {
     const { run } = context;
+    // Spec 044 decision 6: the subject is the prompt this turn answered.
+    const summary = run.messages.filter((message) => message.role === 'user').at(-1)?.content;
     let checkpoint: { id: string; label: string };
     try {
       checkpoint = await context.dispatch(() =>
         this.deps.checkpoints.commitTurn(
           refOf(run),
           { leaseEpoch: run.epoch, operationId: `${run.id}/checkpoint-${String(turn)}` },
-          { runId: run.id, turn },
+          { runId: run.id, summary, turn },
           this.deps.tenant.tx,
         ),
       );

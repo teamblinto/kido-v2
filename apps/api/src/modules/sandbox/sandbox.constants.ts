@@ -159,6 +159,7 @@ export type MaintenanceJob =
   | 'sandbox.refill'
   | 'sandbox.reconcile'
   | 'connector.verify'
+  | 'connector.sync-reconcile'
   | 'connector.ops-timeout'
   | 'byok.verify'
   | 'byos.verify'
@@ -170,6 +171,7 @@ export type MaintenanceJob =
 /**
  * The scheduler's catalogue: `periodStart = floor(now / periodMs) × periodMs` per job.
  * `connector.verify` is spec 018's daily health sweep (research R9), consumed by `connectors`;
+ * `connector.sync-reconcile` spec 044's auto-sync backstop, every 5 min, consumed by `connectors`;
  * `connector.ops-timeout` spec 030's stale connector-operation sweep, every 5 min, consumed by
  * `connectors`;
  * `byok.verify` spec 020's daily provider-key check (US4), consumed by `agent/byok`;
@@ -191,6 +193,7 @@ export const MAINTENANCE_JOBS: readonly {
   { job: 'sandbox.refill', periodMs: 60_000 },
   { job: 'sandbox.reconcile', periodMs: 300_000 },
   { job: 'connector.verify', periodMs: 86_400_000 },
+  { job: 'connector.sync-reconcile', periodMs: 300_000 },
   { job: 'connector.ops-timeout', periodMs: 300_000 },
   { job: 'byok.verify', periodMs: 86_400_000 },
   { job: 'byos.verify', periodMs: 86_400_000 },

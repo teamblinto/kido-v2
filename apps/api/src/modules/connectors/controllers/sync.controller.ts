@@ -1,6 +1,16 @@
-import { Controller, Get, HttpCode, HttpStatus, Inject, Param, Post, Query } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Inject,
+  Param,
+  Post,
+  Query,
+} from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import type { SyncOperation, SyncOperationPage } from '@repo/contracts';
+import type { SyncCommitResponse, SyncOperation, SyncOperationPage } from '@repo/contracts';
 
 import { TenantContext } from '../../../database/tenant-context';
 import { CurrentUser } from '../../identity/decorators/current-user.decorator';
@@ -8,6 +18,8 @@ import type { AuthenticatedUser } from '../../identity/services/session.service'
 import { RequirePermission } from '../../rbac/decorators/require-permission.decorator';
 import { ResourceOrg } from '../../rbac/resource-org.resolver';
 import {
+  SyncCommitRequestDto,
+  SyncCommitResponseDto,
   SyncListQueryDto,
   SyncOperationPageResponseDto,
   SyncOperationResponseDto,
@@ -17,7 +29,7 @@ import { SyncService } from '../sync.service';
 /**
  * A project's push and pull operations (spec 018 US2/US3, contracts § 3): the two `POST`s answer
  * `202` with the `queued` row (refusals in § 4), replayed by the application-wide idempotency
- * interceptor; the reads are `project:read`.
+ * interceptor; the reads are `project:read`. `commit` (spec 044) answers `200`: it did the work.
  */
 @ApiTags('connectors')
 @ResourceOrg()
@@ -52,6 +64,20 @@ export class SyncController {
     @Param('projectId') projectId: string,
   ): Promise<SyncOperation> {
     return this.syncs.request(this.tenant.tx, { orgId, projectId }, caller.userId, 'pull');
+  }
+
+  @Post('commit')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('project:files.write')
+  @ApiOperation({ summary: 'Commit the dirty workspace and push the project head' })
+  @ApiResponse({ status: 200, type: SyncCommitResponseDto })
+  commit(
+    @CurrentUser() caller: AuthenticatedUser,
+    @Param('orgId') orgId: string,
+    @Param('projectId') projectId: string,
+    @Body() body: SyncCommitRequestDto,
+  ): Promise<SyncCommitResponse> {
+    return this.syncs.commit(this.tenant.tx, { orgId, projectId }, caller.userId, body);
   }
 
   @Get()

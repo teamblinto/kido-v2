@@ -30,6 +30,7 @@ import {
   RUN_ON_ORGANISATION,
 } from '@/features/settings/subscription-limit';
 import { answerRun, cancelRun, createRun } from '../api';
+import { invalidateGitSync } from '../hooks/use-git-sync';
 import { usePresence } from '../hooks/use-presence';
 import { useProjectWorkspace } from '../hooks/use-project-workspace';
 import { useRun } from '../hooks/use-run';
@@ -185,10 +186,20 @@ export function ProjectPage(): React.JSX.Element {
         setPreviewReadyCount((count) => count + 1);
         void queryClient.invalidateQueries({ queryKey: ['files'] });
         void queryClient.invalidateQueries({ queryKey: ['file'] });
+        void invalidateGitSync(queryClient, orgId, projectId);
       }
     },
     [orgId, projectId, queryClient],
   );
+
+  const openGitHub = useCallback(() => {
+    setStage('git');
+    setGitView('history');
+    // After the commit that mounts the panel: focus scrolls to it and tells a screen reader.
+    requestAnimationFrame(() => {
+      document.getElementById('github-panel-heading')?.focus();
+    });
+  }, [setGitView, setStage]);
 
   const { connection, error, items, retry, run, source } = useRunStream({
     onEvent,
@@ -477,6 +488,7 @@ export function ProjectPage(): React.JSX.Element {
         mobilePane={mobilePane}
         onChangeMobilePane={setMobilePane}
         onChangeStage={setStage}
+        onOpenGitHub={openGitHub}
         onToggleChat={toggleChat}
         orgId={orgId}
         permissions={project.data?.project.permissions ?? []}
@@ -564,6 +576,7 @@ export function ProjectPage(): React.JSX.Element {
           ) : stage === 'git' ? (
             <StageGit
               className="flex-1"
+              isRunActive={isRunning}
               onChangeView={setGitView}
               orgId={orgId}
               paths={paths}

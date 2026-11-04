@@ -75,6 +75,23 @@ export class SyncRepository {
     return row!;
   }
 
+  /**
+   * Spec 044: `insertQueued` for a caller a taken slot does not concern. `undefined` then: the
+   * conflict is swallowed by Postgres, so the transaction lives on where a violation would abort it.
+   */
+  async insertQueuedIfFree(
+    tx: TenantTransaction,
+    draft: Omit<NewSyncOperation, 'state'>,
+  ): Promise<SyncOperation | undefined> {
+    const [row] = await tx
+      .insert(schema.syncOperations)
+      .values({ ...draft, state: 'queued' })
+      .onConflictDoNothing()
+      .returning();
+
+    return row;
+  }
+
   async markRunning(tx: TenantTransaction, orgId: string, id: string, now: Date): Promise<void> {
     await tx
       .update(schema.syncOperations)
@@ -92,6 +109,7 @@ export class SyncRepository {
       fromSha?: string | null;
       reason: SyncFailureReason | null;
       state: 'failed' | 'succeeded';
+      targetBranch?: string | null;
       toSha?: string | null;
     },
   ): Promise<number> {
@@ -164,6 +182,51 @@ export class SyncRepository {
       .limit(1);
 
     return row !== undefined;
+  }
+
+  /**
+   * Spec 044: the link's newest operation, or its newest in `state`. By link, not project: a
+   * relinked project's old rows say nothing about the repository it points at now.
+   */
+  async latest(
+    tx: TenantTransaction,
+    ref: { orgId: string; projectId: string },
+    linkId: string,
+    state?: SyncOperation['state'],
+  ): Promise<SyncOperation | undefined> {
+    const [row] = await tx
+      .select()
+      .from(schema.syncOperations)
+      .where(
+        and(
+          eq(schema.syncOperations.orgId, ref.orgId),
+          eq(schema.syncOperations.projectId, ref.projectId),
+          eq(schema.syncOperations.linkId, linkId),
+          state === undefined ? undefined : eq(schema.syncOperations.state, state),
+        ),
+      )
+      .orderBy(desc(schema.syncOperations.createdAt), desc(schema.syncOperations.id))
+      .limit(1);
+
+    return row;
+  }
+
+  /** Spec 044: `queued` rows whose job went to the DLQ or was lost; each would hold the slot for ever. */
+  async staleQueued(
+    tx: TenantTransaction,
+    orgId: string,
+    olderThan: Date,
+  ): Promise<SyncOperation[]> {
+    return tx
+      .select()
+      .from(schema.syncOperations)
+      .where(
+        and(
+          eq(schema.syncOperations.orgId, orgId),
+          eq(schema.syncOperations.state, 'queued'),
+          lt(schema.syncOperations.createdAt, olderThan),
+        ),
+      );
   }
 
   /** R7: `running` rows started before `olderThan` — the daily job closes them as `timed-out`. */

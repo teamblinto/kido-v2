@@ -1,4 +1,14 @@
-import { type PutRepoLinkRequest, putRepoLinkRequestSchema, repoLinkSchema } from '@repo/contracts';
+import {
+  authorizeRepoCreateRequestSchema,
+  authorizeRepoCreateResponseSchema,
+  completeRepoCreateRequestSchema,
+  createBranchRequestSchema,
+  patchRepoLinkRequestSchema,
+  type PutRepoLinkRequest,
+  putRepoLinkRequestSchema,
+  repoBranchListSchema,
+  repoLinkSchema,
+} from '@repo/contracts';
 import type { ZodType } from 'zod';
 
 import { ApiZodSchema, createZodDto } from '../../../common/validation/zod-dto';
@@ -21,3 +31,23 @@ type PutRepoLinkBody = Partial<{
 export class PutRepoLinkRequestDto extends createZodDto(
   putRepoLinkRequestSchema as unknown as ZodType<PutRepoLinkBody>,
 ) {}
+
+@ApiZodSchema()
+export class PatchRepoLinkRequestDto extends createZodDto(patchRepoLinkRequestSchema) {}
+
+@ApiZodSchema()
+export class RepoBranchListResponseDto extends createZodDto(repoBranchListSchema) {}
+
+@ApiZodSchema()
+export class CreateBranchRequestDto extends createZodDto(createBranchRequestSchema) {}
+
+@ApiZodSchema()
+export class AuthorizeRepoCreateRequestDto extends createZodDto(authorizeRepoCreateRequestSchema) {}
+
+@ApiZodSchema()
+export class AuthorizeRepoCreateResponseDto extends createZodDto(
+  authorizeRepoCreateResponseSchema,
+) {}
+
+@ApiZodSchema()
+export class CompleteRepoCreateRequestDto extends createZodDto(completeRepoCreateRequestSchema) {}

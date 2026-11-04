@@ -1,4 +1,4 @@
-import { syncOperationPageSchema } from '@repo/contracts';
+import { syncCommitResponseSchema, syncOperationPageSchema } from '@repo/contracts';
 import { HttpStatus } from '@nestjs/common';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -34,7 +34,9 @@ const record: SyncRecord = {
   requestedByName: 'owner@example.test',
   startedAt: null,
   state: 'queued',
+  targetBranch: null,
   toSha: null,
+  trigger: 'manual',
   updatedAt: new Date('2026-09-20T10:00:00.000Z'),
 };
 
@@ -69,6 +71,30 @@ describe('SyncController', () => {
       });
     }
     expect(PROJECT_ROLE_PERMISSIONS.viewer).not.toContain('project:files.write');
+  });
+
+  it('commit is project:files.write and 200, delegating with the caller and the body', async () => {
+    expect(metadataOf('commit', REQUIRED_PERMISSION)).toMatchObject({
+      permission: 'project:files.write',
+    });
+    expect(metadataOf('commit', '__httpCode__')).toBe(HttpStatus.OK);
+
+    const answer = { checkpointId: null, operation: null };
+    const commit = vi.fn().mockResolvedValue(answer);
+    const controller = build({ commit });
+
+    await expect(controller.commit(CALLER, ORG, PROJECT, { message: 'Ship' })).resolves.toEqual(
+      answer,
+    );
+    expect(commit).toHaveBeenCalledWith(TX, REF, USER, { message: 'Ship' });
+    expect(syncCommitResponseSchema.parse(answer)).toEqual(answer);
+  });
+
+  it('a refusal of the commit passes through', async () => {
+    const refusal = syncConflict('not-linked', 'nope');
+    const controller = build({ commit: vi.fn().mockRejectedValue(refusal) });
+
+    await expect(controller.commit(CALLER, ORG, PROJECT, {})).rejects.toBe(refusal);
   });
 
   it('push and pull delegate with the kind and the caller, and pass a § 4 refusal through', async () => {

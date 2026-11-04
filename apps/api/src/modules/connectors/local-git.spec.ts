@@ -158,9 +158,9 @@ describe.skipIf(!hasGit())('LocalGit', () => {
     expect(JSON.stringify(args)).not.toContain(TOKEN);
     expect(options.timeout).toBe(GIT_TIMEOUT_MS);
     expect(options.env.GIT_TERMINAL_PROMPT).toBe('0');
-    expect(options.env.GIT_CONFIG_COUNT).toBe('1');
-    expect(options.env.GIT_CONFIG_KEY_0).toBe('http.https://github.com/.extraheader');
-    expect(options.env.GIT_CONFIG_VALUE_0).toBe(
+    expect(options.env.GIT_CONFIG_COUNT).toBe('2');
+    expect(options.env.GIT_CONFIG_KEY_1).toBe('http.https://github.com/.extraheader');
+    expect(options.env.GIT_CONFIG_VALUE_1).toBe(
       `Authorization: Basic ${Buffer.from(`x-access-token:${TOKEN}`).toString('base64')}`,
     );
   });
@@ -184,7 +184,10 @@ describe.skipIf(!hasGit())('LocalGit', () => {
 
     const options = execFileMock.mock.calls[0]?.[2] as unknown as { env: NodeJS.ProcessEnv };
 
-    expect(options.env.GIT_CONFIG_COUNT).toBeUndefined();
+    // Spec 044: no credential, and no ambient helper either.
+    expect(options.env.GIT_CONFIG_COUNT).toBe('1');
+    expect(options.env.GIT_CONFIG_KEY_0).toBe('credential.helper');
+    expect(options.env.GIT_CONFIG_VALUE_0).toBe('');
     expect(options.env.GIT_TERMINAL_PROMPT).toBe('0');
   });
 

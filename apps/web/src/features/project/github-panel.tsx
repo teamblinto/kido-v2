@@ -1,117 +1,75 @@
 import {
-  connectionListSchema,
+  type AuthorizeRepoCreateRequest,
+  authorizeRepoCreateResponseSchema,
   importMismatchResponseSchema,
-  type LinkPosition,
+  installResponseSchema,
+  type PatchRepoLinkRequest,
   type PutRepoLinkRequest,
   type RepoLink,
   repoLinkSchema,
-  repositoryPageSchema,
-  SYNC_FAILURE_REASONS,
-  type SyncFailureReason,
+  type SyncCommitResponse,
+  syncCommitResponseSchema,
   type SyncOperation,
-  syncOperationPageSchema,
   syncOperationSchema,
 } from '@repo/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
-import { useState } from 'react';
 
 import { Alert } from '@/components/ui/alert';
-import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { apiRequest } from '@/lib/api/client';
-import { ApiProblem, messageFor } from '@/lib/api/problem';
+import { ApiProblem } from '@/lib/api/problem';
+import { GitHubLinkForm } from './github-link-form';
+import { GitHubLinked } from './github-linked';
+import { invalidateGitSync, useGitSync } from './hooks/use-git-sync';
+import {
+  errorCopy,
+  GITHUB_AUTHORIZE_KEY,
+  GITHUB_RETURN_KEY,
+  githubPanelPath,
+} from './lib/github-sync';
 
-/** Contracts § 3's vocabulary as copy. Local on purpose: no slug, no `MESSAGES` entry (R12). */
-const REASON_COPY: Record<SyncFailureReason, string> = {
-  'branch-not-found': 'That branch no longer exists on the repository.',
-  'bundle-too-large': 'The repository is too large to send.',
-  'create-unsupported': 'This connection cannot create repositories. Choose an existing one.',
-  diverged: 'The repository and the project have diverged.',
-  'empty-repo': 'That repository has no commits to import.',
-  'git-failed': 'Git failed. Try again.',
-  'import-checkout-failed': 'The repository could not be checked out. Try the import again.',
-  'name-taken': 'A repository with that name already exists.',
-  'needs-reauth': 'GitHub needs reconnecting. Ask an owner to verify the connector.',
-  'not-linked': 'The project is not linked to a repository.',
-  'nothing-to-push': 'Nothing to push: the project has no checkpoint yet.',
-  'operation-in-flight': 'A sync is already in progress.',
-  'provider-unavailable': 'GitHub is unavailable right now. Try again later.',
-  'remote-ahead': 'The repository is ahead of the project. Pull first.',
-  'repo-too-large': 'That repository is too large to import.',
-  'run-active': 'A run is active. Wait for it to finish.',
-  'timed-out': 'The sync timed out.',
-};
+function commitNote(result: SyncCommitResponse): string {
+  if (result.operation !== null) return 'On its way to GitHub.';
 
-const POSITION: Record<
-  LinkPosition,
-  { readonly label: string; readonly variant: 'info' | 'muted' | 'success' | 'warning' }
-> = {
-  ahead: { label: 'Ahead of GitHub', variant: 'info' },
-  behind: { label: 'Behind GitHub', variant: 'warning' },
-  diverged: { label: 'Diverged', variant: 'warning' },
-  level: { label: 'Level with GitHub', variant: 'success' },
-  unknown: { label: 'Not synced yet', variant: 'muted' },
-};
-
-const STATE: Record<SyncOperation['state'], 'danger' | 'info' | 'muted' | 'success'> = {
-  failed: 'danger',
-  queued: 'muted',
-  running: 'info',
-  succeeded: 'success',
-};
-
-function isReason(value: unknown): value is SyncFailureReason {
-  return typeof value === 'string' && (SYNC_FAILURE_REASONS as readonly string[]).includes(value);
-}
-
-/** A refusal's `reason` extension (contracts § 4) beats the generic slug copy. */
-function errorCopy(error: unknown): string {
-  const reason = ApiProblem.is(error) ? error.detail?.reason : undefined;
-
-  return isReason(reason) ? REASON_COPY[reason] : messageFor(error);
+  return result.checkpointId === null
+    ? 'Nothing new to commit'
+    : 'Saved; it will go out with the sync in progress';
 }
 
 interface GitHubPanelProps {
+  /** `project:files.write`. Without it the panel reports and offers nothing the API would refuse. */
+  readonly canWrite?: boolean;
+  readonly isRunActive?: boolean;
   readonly orgId: string;
   readonly projectId: string;
+  /** Prefills a new repository's name. */
+  readonly projectName?: string | undefined;
 }
 
 /**
- * The project's GitHub link (spec 018 US2–US5): link to a new or existing repository, push, pull,
- * unlink, and see the last few operations. Unlinking never touches the repository on GitHub.
+ * The project's GitHub link (specs 018, 044): connect, give the project a repository, then push,
+ * pull, unlink, and see the last few operations. Unlinking never touches the repository on GitHub.
+ * Every trip through GitHub comes back here.
  */
-export function GitHubPanel({ orgId, projectId }: GitHubPanelProps): React.JSX.Element {
+export function GitHubPanel({
+  canWrite = true,
+  isRunActive = false,
+  orgId,
+  projectId,
+  projectName,
+}: GitHubPanelProps): React.JSX.Element {
   const queryClient = useQueryClient();
   const base = `/orgs/${encodeURIComponent(orgId)}/projects/${encodeURIComponent(projectId)}`;
   const linkKey = ['repo-link', orgId, projectId];
-  const syncKey = ['sync', orgId, projectId];
+  const { connection, error: readError, ...git } = useGitSync(orgId, projectId);
+  const { link } = git;
+  const refresh = () => invalidateGitSync(queryClient, orgId, projectId);
 
-  const connectors = useQuery({
-    queryFn: ({ signal }) =>
-      apiRequest('GET', `/orgs/${encodeURIComponent(orgId)}/connectors`, {
-        schema: connectionListSchema,
-        signal,
-      }),
-    queryKey: ['connectors', orgId],
-  });
-  const link = useQuery({
-    queryFn: ({ signal }) =>
-      apiRequest('GET', `${base}/repo-link`, { schema: repoLinkSchema.nullable(), signal }),
-    queryKey: linkKey,
-  });
-  const sync = useQuery({
-    enabled: link.data !== null && link.data !== undefined,
-    queryFn: ({ signal }) =>
-      apiRequest('GET', `${base}/sync`, { schema: syncOperationPageSchema, signal }),
-    queryKey: syncKey,
-  });
   // Spec 026 contracts § 4: the FR-016 warning. One line, never an error — a runtime the
   // repository disagrees with blocks nothing, so this query is deliberately outside `error`.
   const mismatch = useQuery({
-    enabled: link.data !== null && link.data !== undefined,
+    enabled: link !== null && link !== undefined,
     queryFn: ({ signal }) =>
       apiRequest('GET', `${base}/import-mismatch`, {
         schema: importMismatchResponseSchema,
@@ -120,6 +78,16 @@ export function GitHubPanel({ orgId, projectId }: GitHubPanelProps): React.JSX.E
     queryKey: ['import-mismatch', orgId, projectId],
   });
 
+  const install = useMutation({
+    mutationFn: () =>
+      apiRequest('POST', `/orgs/${encodeURIComponent(orgId)}/connectors/github/install`, {
+        schema: installResponseSchema,
+      }),
+    onSuccess: ({ installUrl }) => {
+      window.sessionStorage.setItem(GITHUB_RETURN_KEY, githubPanelPath(projectId));
+      window.location.assign(installUrl);
+    },
+  });
   const put = useMutation({
     mutationFn: (body: PutRepoLinkRequest) =>
       apiRequest('PUT', `${base}/repo-link`, { body, schema: repoLinkSchema }),
@@ -127,16 +95,50 @@ export function GitHubPanel({ orgId, projectId }: GitHubPanelProps): React.JSX.E
       queryClient.setQueryData(linkKey, data);
     },
   });
+  const authorize = useMutation({
+    mutationFn: (body: AuthorizeRepoCreateRequest) =>
+      apiRequest('POST', `${base}/repo-link/authorize`, {
+        body,
+        schema: authorizeRepoCreateResponseSchema,
+      }),
+    onSuccess: ({ authorizeUrl }) => {
+      window.sessionStorage.setItem(
+        GITHUB_AUTHORIZE_KEY,
+        JSON.stringify({ projectId, returnTo: githubPanelPath(projectId) }),
+      );
+      window.location.assign(authorizeUrl);
+    },
+  });
   const syncMutation = (kind: SyncOperation['kind']) => ({
     mutationFn: () => apiRequest('POST', `${base}/sync/${kind}`, { schema: syncOperationSchema }),
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({ queryKey: syncKey }),
-        queryClient.invalidateQueries({ queryKey: linkKey }),
-      ]),
+    onSuccess: refresh,
   });
   const push = useMutation(syncMutation('push'));
   const pull = useMutation(syncMutation('pull'));
+  const commit = useMutation({
+    mutationFn: (message: string) =>
+      apiRequest('POST', `${base}/sync/commit`, {
+        body: message === '' ? {} : { message },
+        schema: syncCommitResponseSchema,
+      }),
+    onSuccess: refresh,
+  });
+  // No response schema on these two: the panel reads the link back rather than rely on the reply.
+  const patch = useMutation({
+    mutationFn: (body: PatchRepoLinkRequest) => apiRequest('PATCH', `${base}/repo-link`, { body }),
+    // The switch and the picker move on the click; a refusal reads the truth back.
+    onMutate: (body) => {
+      queryClient.setQueryData<RepoLink | null>(linkKey, (current) =>
+        current === null || current === undefined ? current : { ...current, ...body },
+      );
+    },
+    onSettled: refresh,
+  });
+  const createBranch = useMutation({
+    mutationFn: (name: string) =>
+      apiRequest('POST', `${base}/repo-link/branches`, { body: { name } }),
+    onSuccess: refresh,
+  });
   const unlink = useMutation({
     mutationFn: () => apiRequest('DELETE', `${base}/repo-link`),
     onSuccess: () => {
@@ -144,18 +146,15 @@ export function GitHubPanel({ orgId, projectId }: GitHubPanelProps): React.JSX.E
     },
   });
 
-  const error =
-    put.error ??
-    push.error ??
-    pull.error ??
-    unlink.error ??
-    link.error ??
-    connectors.error ??
-    sync.error;
-  const github = connectors.data?.connections.find((c) => c.provider === 'github');
+  const actions = [install, put, authorize, push, pull, commit, patch, createBranch, unlink];
+  // Only the last thing tried speaks: a refusal stays until something newer has happened.
+  const last = actions.reduce((a, b) => (b.submittedAt > a.submittedAt ? b : a));
+  const busy = actions.some((action) => action.isPending);
+  const error = last.error ?? readError;
+
   const refusedReason = ApiProblem.is(error) ? error.detail?.reason : undefined;
   const showConnection =
-    github !== undefined &&
+    connection !== undefined &&
     (refusedReason === 'needs-reauth' || refusedReason === 'provider-unavailable');
 
   return (
@@ -163,47 +162,82 @@ export function GitHubPanel({ orgId, projectId }: GitHubPanelProps): React.JSX.E
       className="border-line m-4 rounded-lg border p-4"
       aria-labelledby="github-panel-heading"
     >
-      <h2 id="github-panel-heading" className="text-heading-sm font-semibold">
+      <h2
+        id="github-panel-heading"
+        className="text-heading-sm font-semibold outline-none"
+        tabIndex={-1}
+      >
         GitHub
       </h2>
 
-      {error !== null && error !== undefined ? (
-        <Alert variant="danger" className="mt-3">
+      {error !== null ? (
+        <Alert variant="danger" className="mt-3 block">
           {errorCopy(error)}
           {showConnection ? (
             <span className="block" data-testid="connection-state">
-              Connection: {github.health === 'needs_reauth' ? 'needs reconnecting' : github.health}
-              {github.circuitOpenUntil !== null
-                ? ` until ${new Date(github.circuitOpenUntil).toLocaleString()}`
+              Connection:{' '}
+              {connection.health === 'needs_reauth' ? 'needs reconnecting' : connection.health}
+              {connection.circuitOpenUntil !== null
+                ? ` until ${new Date(connection.circuitOpenUntil).toLocaleString()}`
                 : ''}
             </span>
           ) : null}
         </Alert>
       ) : null}
 
-      {link.isLoading || connectors.isLoading ? (
+      {connection?.health === 'needs_reauth' && link?.state !== 'disconnected' ? (
+        <Alert variant="warning" className="mt-3 flex flex-col items-start gap-2">
+          GitHub needs reconnecting before this project can push or pull.
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy}
+            onClick={() => {
+              install.mutate();
+            }}
+          >
+            Reconnect GitHub
+          </Button>
+        </Alert>
+      ) : null}
+
+      {git.isLoading ? (
         <div className="mt-3 flex items-center gap-2.5" role="status" aria-live="polite">
           <Loader2 className="text-subdued size-[18px] animate-spin" aria-hidden="true" />
           <span className="text-body-sm text-subdued">Loading…</span>
         </div>
       ) : null}
 
-      {link.isSuccess && link.data === null && connectors.isSuccess ? (
-        github === undefined ? (
-          <p className="text-body-sm text-subdued mt-2">
-            Connect GitHub in the organisation settings first.
+      {git.status === 'not-connected' ? (
+        <div className="mt-2 flex flex-col items-start gap-3">
+          <p className="text-body-sm text-subdued">
+            Keep this project&apos;s code on GitHub, updated after every turn.
           </p>
-        ) : (
-          <LinkForm
-            canCreate={github.canCreateRepositories}
-            connectionId={github.id}
-            disabled={put.isPending}
-            onSubmit={(body) => {
-              put.mutate(body);
+          <Button
+            size="sm"
+            disabled={busy}
+            onClick={() => {
+              install.mutate();
             }}
-            orgId={orgId}
-          />
-        )
+          >
+            Connect GitHub
+          </Button>
+        </div>
+      ) : null}
+
+      {git.status === 'not-linked' && connection !== undefined ? (
+        <GitHubLinkForm
+          connection={connection}
+          disabled={busy}
+          onAuthorize={(body) => {
+            authorize.mutate(body);
+          }}
+          onSubmit={(body) => {
+            put.mutate(body);
+          }}
+          orgId={orgId}
+          projectName={projectName}
+        />
       ) : null}
 
       {mismatch.data?.templateMismatch != null ? (
@@ -214,15 +248,37 @@ export function GitHubPanel({ orgId, projectId }: GitHubPanelProps): React.JSX.E
         </p>
       ) : null}
 
-      {link.data !== null && link.data !== undefined ? (
-        <Linked
-          busy={push.isPending || pull.isPending || unlink.isPending}
-          link={link.data}
+      {link !== null && link !== undefined ? (
+        <GitHubLinked
+          canWrite={canWrite}
+          base={base}
+          busy={busy}
+          commitNote={
+            last === commit && commit.data !== undefined ? commitNote(commit.data) : undefined
+          }
+          isInFlight={git.isInFlight}
+          isRunActive={isRunActive}
+          link={link}
+          onAutoSync={(autoSync) => {
+            patch.mutate({ autoSync });
+          }}
+          onCommit={(message, onSaved) => {
+            commit.mutate(message, { onSuccess: onSaved });
+          }}
+          onCreateBranch={(name) => {
+            createBranch.mutate(name);
+          }}
           onPull={() => {
             pull.mutate();
           }}
           onPush={() => {
             push.mutate();
+          }}
+          onReconnect={() => {
+            install.mutate();
+          }}
+          onSwitchBranch={(branch) => {
+            patch.mutate({ branch });
           }}
           onUnlink={() => {
             if (
@@ -233,228 +289,9 @@ export function GitHubPanel({ orgId, projectId }: GitHubPanelProps): React.JSX.E
               unlink.mutate();
             }
           }}
-          operations={sync.data?.operations.slice(0, 5) ?? []}
+          operations={git.operations}
         />
       ) : null}
     </section>
-  );
-}
-
-function LinkForm({
-  canCreate,
-  connectionId,
-  disabled,
-  onSubmit,
-  orgId,
-}: {
-  readonly canCreate: boolean;
-  readonly connectionId: string;
-  readonly disabled: boolean;
-  readonly onSubmit: (body: PutRepoLinkRequest) => void;
-  readonly orgId: string;
-}): React.JSX.Element {
-  const [mode, setMode] = useState<'choose' | 'create'>(canCreate ? 'create' : 'choose');
-  const [name, setName] = useState('');
-  const [isPrivate, setIsPrivate] = useState(true);
-  const [filter, setFilter] = useState('');
-
-  const repositories = useQuery({
-    enabled: mode === 'choose',
-    queryFn: ({ signal }) =>
-      apiRequest(
-        'GET',
-        `/orgs/${encodeURIComponent(orgId)}/connectors/${encodeURIComponent(connectionId)}/repositories?query=${encodeURIComponent(filter)}`,
-        { schema: repositoryPageSchema, signal },
-      ),
-    queryKey: ['repositories', orgId, connectionId, filter],
-  });
-
-  return (
-    <div className="mt-3 flex flex-col gap-3">
-      {canCreate ? (
-        <div className="flex gap-2" role="group" aria-label="Link mode">
-          <Button
-            size="sm"
-            variant={mode === 'create' ? 'default' : 'outline'}
-            aria-pressed={mode === 'create'}
-            onClick={() => {
-              setMode('create');
-            }}
-          >
-            Create
-          </Button>
-          <Button
-            size="sm"
-            variant={mode === 'choose' ? 'default' : 'outline'}
-            aria-pressed={mode === 'choose'}
-            onClick={() => {
-              setMode('choose');
-            }}
-          >
-            Choose
-          </Button>
-        </div>
-      ) : null}
-
-      {mode === 'create' ? (
-        <form
-          className="flex flex-col gap-3"
-          onSubmit={(event) => {
-            event.preventDefault();
-            onSubmit({ create: { name, private: isPrivate } });
-          }}
-        >
-          <Label htmlFor="github-repo-name">Repository name</Label>
-          <Input
-            id="github-repo-name"
-            value={name}
-            pattern="[A-Za-z0-9._\-]{1,100}"
-            required
-            onChange={(event) => {
-              setName(event.target.value);
-            }}
-          />
-          <label className="text-body-sm flex items-center gap-2">
-            <input
-              type="checkbox"
-              checked={isPrivate}
-              onChange={(event) => {
-                setIsPrivate(event.target.checked);
-              }}
-            />
-            Private
-          </label>
-          <Button type="submit" size="sm" disabled={disabled || name === ''}>
-            Create and link
-          </Button>
-        </form>
-      ) : (
-        <div className="flex flex-col gap-2">
-          <Label htmlFor="github-repo-filter">Find a repository</Label>
-          <Input
-            id="github-repo-filter"
-            value={filter}
-            placeholder="Filter by name"
-            onChange={(event) => {
-              setFilter(event.target.value);
-            }}
-          />
-          {repositories.isSuccess && repositories.data.repositories.length === 0 ? (
-            <p className="text-body-sm text-subdued">No repositories match.</p>
-          ) : null}
-          <ul className="flex flex-col gap-1">
-            {repositories.data?.repositories.map((repo) => (
-              <li key={repo.id} className="flex items-center justify-between gap-3">
-                <span className="text-body-sm truncate">{repo.fullName}</span>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={disabled}
-                  aria-label={`Link ${repo.fullName}`}
-                  onClick={() => {
-                    onSubmit({ existing: { repoId: repo.id } });
-                  }}
-                >
-                  Link
-                </Button>
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function Linked({
-  busy,
-  link,
-  onPull,
-  onPush,
-  onUnlink,
-  operations,
-}: {
-  readonly busy: boolean;
-  readonly link: RepoLink;
-  readonly onPull: () => void;
-  readonly onPush: () => void;
-  readonly onUnlink: () => void;
-  readonly operations: readonly SyncOperation[];
-}): React.JSX.Element {
-  const disconnected = link.state === 'disconnected';
-
-  return (
-    <div className="mt-3 flex flex-col gap-3">
-      <div className="flex items-center justify-between gap-4">
-        <div className="min-w-0">
-          <p className="text-body-sm truncate font-medium">
-            {link.repository.fullName} · {link.branch}
-          </p>
-          <p className="text-body-sm text-subdued">
-            Last pushed: {link.lastPushedCheckpointId ?? 'never'}
-          </p>
-        </div>
-        <div className="flex items-center gap-2">
-          <Badge variant={POSITION[link.position].variant}>{POSITION[link.position].label}</Badge>
-          <Button size="sm" disabled={busy || disconnected} onClick={onPush}>
-            Push
-          </Button>
-          <Button size="sm" variant="outline" disabled={busy || disconnected} onClick={onPull}>
-            Pull
-          </Button>
-          <Button size="sm" variant="ghost" disabled={busy} onClick={onUnlink}>
-            Unlink
-          </Button>
-        </div>
-      </div>
-
-      {disconnected ? (
-        <Alert variant="warning">
-          The connector was removed. Reconnect the organisation&apos;s GitHub to push or pull again.
-        </Alert>
-      ) : null}
-
-      {/*
-        Spec 026 US3 (SC-010). A push at GitHub reaches this panel as one refreshed field — the
-        link's `remoteHeadSha` — and nothing else moved: no run, no checkpoint, no operation to
-        list. So the news is stated here rather than in the operation list, the commit is named so
-        that it is a fact and not a mood, and the only thing offered is the pull that would answer
-        it. Nothing is done automatically: FR-034 says a delivery never pulls.
-      */}
-      {!disconnected && link.position === 'behind' && link.remoteHeadSha !== null ? (
-        <Alert variant="warning">
-          <span data-testid="remote-ahead">
-            The repository is ahead of the project at{' '}
-            <code className="font-mono">{link.remoteHeadSha.slice(0, 7)}</code>. Pull to bring the
-            project up to date.
-          </span>
-          <Button size="sm" variant="outline" className="mt-2" disabled={busy} onClick={onPull}>
-            Pull from GitHub
-          </Button>
-        </Alert>
-      ) : null}
-
-      {operations.length > 0 ? (
-        <ul className="text-body-sm flex flex-col gap-1" aria-label="Recent operations">
-          {operations.map((op) => (
-            <li key={op.id} className="flex flex-wrap items-center gap-2">
-              <Badge variant={STATE[op.state]}>{op.state}</Badge>
-              <span className="capitalize">{op.kind}</span>
-              <span className="text-subdued">
-                {op.requestedBy.name} · {new Date(op.createdAt).toLocaleString()}
-              </span>
-              {op.reason !== null ? (
-                <span className="text-danger">{REASON_COPY[op.reason]}</span>
-              ) : null}
-              {op.kind === 'pull' && op.state === 'succeeded' ? (
-                <span className="text-subdued">
-                  {op.commits} {op.commits === 1 ? 'checkpoint' : 'checkpoints'} pulled from GitHub
-                </span>
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </div>
   );
 }

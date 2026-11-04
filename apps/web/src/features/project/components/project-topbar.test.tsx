@@ -1,3 +1,4 @@
+import type { RepoLink, SyncOperation } from '@repo/contracts';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { HttpResponse, http } from 'msw';
@@ -9,11 +10,46 @@ import { ProjectTopbar } from './project-topbar';
 
 const ORG = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
 const PROJECT = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
+const PROJECT_URL = `${API}/orgs/${ORG}/projects/${PROJECT}`;
+const ACTOR = { id: ORG, name: 'Ada' };
+
+const aLink: RepoLink = {
+  autoSync: true,
+  branch: 'main',
+  connectionId: ORG,
+  id: PROJECT,
+  lastPushedCheckpointId: null,
+  linkedAt: '2026-09-21T08:00:00.000Z',
+  linkedBy: ACTOR,
+  position: 'level',
+  remoteHeadSha: null,
+  repository: { fullName: 'blinto-co/forge', id: 42, name: 'forge', owner: 'blinto-co' },
+  sideBranch: null,
+  state: 'linked',
+};
+
+const anOperation: SyncOperation = {
+  commits: 0,
+  createdAt: '2026-09-21T09:00:00.000Z',
+  finishedAt: null,
+  fromSha: null,
+  id: ORG,
+  kind: 'push',
+  projectId: PROJECT,
+  reason: null,
+  requestedBy: ACTOR,
+  startedAt: null,
+  state: 'succeeded',
+  targetBranch: null,
+  toSha: null,
+  trigger: 'auto',
+};
 
 function renderTopbar(
   permissions: readonly string[],
   path = '/',
   routes: Record<string, React.ReactNode> = {},
+  onOpenGitHub: () => void = () => undefined,
 ): void {
   renderScreen(
     <ProjectTopbar
@@ -23,6 +59,7 @@ function renderTopbar(
       mobilePane="chat"
       onChangeMobilePane={() => undefined}
       onChangeStage={() => undefined}
+      onOpenGitHub={onOpenGitHub}
       onToggleChat={() => undefined}
       orgId={ORG}
       permissions={permissions}
@@ -43,6 +80,8 @@ beforeEach(() => {
         invitations: [],
       }),
     ),
+    http.get(`${API}/orgs/${ORG}/connectors`, () => HttpResponse.json({ connections: [] })),
+    http.get(`${PROJECT_URL}/repo-link`, () => HttpResponse.json(null)),
   );
 });
 
@@ -72,7 +111,7 @@ describe('ProjectTopbar sharing', () => {
 /** Spec 036: rename and delete from the project name menu. */
 describe('ProjectTopbar project management', () => {
   const WORKSPACE = 'c7e1b2a3-4d5f-4e6a-8b9c-0d1e2f3a4b5c';
-  const PROJECT_URL = `${API}/orgs/${ORG}/workspaces/${WORKSPACE}/projects/${PROJECT}`;
+  const WORKSPACE_PROJECT = `${API}/orgs/${ORG}/workspaces/${WORKSPACE}/projects/${PROJECT}`;
 
   beforeEach(() => {
     server.use(
@@ -99,7 +138,7 @@ describe('ProjectTopbar project management', () => {
     let body: unknown;
 
     server.use(
-      http.patch(PROJECT_URL, async ({ request }) => {
+      http.patch(WORKSPACE_PROJECT, async ({ request }) => {
         body = await request.json();
 
         return new HttpResponse(null, { status: 204 });
@@ -120,7 +159,7 @@ describe('ProjectTopbar project management', () => {
     let deleted = false;
 
     server.use(
-      http.delete(PROJECT_URL, () => {
+      http.delete(WORKSPACE_PROJECT, () => {
         deleted = true;
 
         return new HttpResponse(null, { status: 204 });
@@ -145,5 +184,71 @@ describe('ProjectTopbar project management', () => {
 
     // msw's `onUnhandledRequest: 'error'` would fail a DELETE nobody handled.
     expect(screen.getByText('Launch site')).toBeInTheDocument();
+  });
+});
+
+/** Spec 044: the bar's view of GitHub. */
+describe('ProjectTopbar sync chip', () => {
+  const syncChip = async (name: string) => {
+    const status = (await screen.findByText(name)).closest('[role="status"]');
+
+    expect(status).not.toBeNull();
+  };
+
+  function linked(over: Partial<RepoLink> = {}, operations: Partial<SyncOperation>[] = []): void {
+    server.use(
+      http.get(`${PROJECT_URL}/repo-link`, () => HttpResponse.json({ ...aLink, ...over })),
+      http.get(`${PROJECT_URL}/sync`, () =>
+        HttpResponse.json({ operations: operations.map((op) => ({ ...anOperation, ...op })) }),
+      ),
+    );
+  }
+
+  it('links the icon to the real repository and says Synced in a status region', async () => {
+    linked();
+
+    renderTopbar(['project:read']);
+
+    await syncChip('Synced');
+
+    const icon = screen.getByRole('link', { name: 'Open the repository on GitHub' });
+
+    expect(icon).toHaveAttribute('href', 'https://github.com/blinto-co/forge');
+    expect(icon).toHaveAttribute('target', '_blank');
+    expect(icon).toHaveAttribute('rel', 'noreferrer');
+  });
+
+  it('says Syncing… while an operation runs', async () => {
+    linked({}, [{ state: 'running' }]);
+
+    renderTopbar(['project:read']);
+
+    await syncChip('Syncing…');
+  });
+
+  it('says Needs attention on a side branch, and opens the panel from the chip', async () => {
+    const onOpenGitHub = vi.fn();
+
+    linked({ sideBranch: 'kido-sync' });
+
+    renderTopbar(['project:read'], '/', {}, onOpenGitHub);
+
+    await syncChip('Needs attention');
+    await userEvent.click(screen.getByRole('button', { name: /needs attention/iu }));
+
+    expect(onOpenGitHub).toHaveBeenCalledOnce();
+  });
+
+  it('opens the GitHub panel from the icon while nothing is linked, with no status claimed', async () => {
+    const onOpenGitHub = vi.fn();
+
+    renderTopbar(['project:read'], '/', {}, onOpenGitHub);
+
+    const button = await screen.findByRole('button', { name: 'Set up GitHub for this project' });
+
+    expect(screen.queryByRole('link', { name: /repository on github/iu })).not.toBeInTheDocument();
+    await userEvent.click(button);
+
+    expect(onOpenGitHub).toHaveBeenCalledOnce();
   });
 });
