@@ -27,9 +27,9 @@ describe('previewStage', () => {
     expect(previewStage({ ...SETTLED, transition: 'creating' }, null)).toBe('no-sandbox');
   });
 
-  it('answers no-sandbox for a lost row, even mid-transition', () => {
+  it('answers asleep for a lost row, even mid-transition: a wake replaces it', () => {
     expect(previewStage({ ...SETTLED, lostAt: new Date(), transition: 'resuming' }, PORT)).toBe(
-      'no-sandbox',
+      'asleep',
     );
   });
 

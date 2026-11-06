@@ -1,12 +1,19 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { type Sandbox, type SandboxPoolEntry, schema } from '@repo/db';
-import { and, eq, sql } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import type { Redis } from 'ioredis';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { CLOCK, type ClockPort } from '../../common/clock/clock.port';
+import {
+  mirrorKey,
+  OBJECT_STORE,
+  type ObjectStorePort,
+  ObjectStoreUnconfigured,
+  UnconfiguredObjectStore,
+} from '../../common/object-store/object-store.port';
 import { QUEUE_REDIS } from '../../common/redis/redis.constants';
 import type { Environment } from '../../config/environment';
 import { APP_DATABASE } from '../../database/database.constants';
@@ -43,6 +50,12 @@ type OpEvent = Envelope<'sandbox.op.requested'>;
  */
 const DEV_LAUNCH_TIMEOUT_SECONDS = 10;
 
+/** Dependencies can take minutes under gVisor; a restore is rare and a run waits on it anyway. */
+const RESTORE_INSTALL_TIMEOUT_SECONDS = 300;
+const RESTORE_GIT_TIMEOUT_SECONDS = 120;
+/** Under `.git`, so git never sees it (as the mirror's own bundle). */
+const RESTORE_BUNDLE_PATH = '.git/forge-restore.bundle';
+
 /** What `handle` re-read: a project row under its tenant, or a platform pool row. */
 export type OpTarget =
   | { readonly kind: 'project'; readonly orgId: string; readonly row: Sandbox }
@@ -63,14 +76,28 @@ export class ReadinessTimeoutError extends Error {
 }
 
 /**
+ * The project's mirror could not be put back. Always retried; on the last attempt the row is lost
+ * again, so the next wake claims afresh and a blank template is never served as the project.
+ */
+export class WorkspaceRestoreError extends Error {
+  constructor(daytonaId: string, cause: unknown) {
+    super(
+      `workspace restore failed on ${daytonaId}: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+    this.name = 'WorkspaceRestoreError';
+  }
+}
+
+/**
  * The one consumer for every sandbox op (spec 014 contract § 4, research R5). `handle` re-reads the
  * row and returns `undefined` when the target state is already recorded (FR-010); `effect` drives
  * Daytona with no transaction held and then settles the record in its own transaction — tenant
  * for a project row, platform for a pool row — so the DLQ row and the record agree (FR-033).
  *
- * A `resume` carrying a `leaseEpoch` is stale when a newer `resume` for the same sandbox has been
- * recorded with a higher epoch: `agent_runs.lease_epoch` is another module's table, so the fence
- * the sandbox module can see is its own outbox trail (the same read the scheduler makes).
+ * A `resume` is stale when the row has moved to a later cycle: its `since` no longer names the
+ * row's `transition_since`, which the reconciler's retry advances. Not `leaseEpoch`: a preview or
+ * files wake is always epoch 0, so an older run's resume at a higher epoch would outrank every wake.
  */
 @Injectable()
 export class SandboxOpsConsumer extends EventConsumer<
@@ -113,6 +140,9 @@ export class SandboxOpsConsumer extends EventConsumer<
     @Optional()
     @Inject(PREVIEW_ENV_SOURCE)
     private readonly previewEnv?: PreviewEnvSource,
+    @Optional()
+    @Inject(OBJECT_STORE)
+    private readonly repos: ObjectStorePort = new UnconfiguredObjectStore(),
   ) {
     super();
     this.owner = config.get('SANDBOX_OWNER', { infer: true });
@@ -158,7 +188,7 @@ export class SandboxOpsConsumer extends EventConsumer<
         return target.kind === 'project' &&
           target.row.state === 'hibernated' &&
           target.row.transition === 'resuming' &&
-          !(await this.staleEpoch(tx, target.row.id, event.payload.leaseEpoch))
+          !staleCycle(target.row, event.payload.since)
           ? target
           : undefined;
     }
@@ -191,7 +221,7 @@ export class SandboxOpsConsumer extends EventConsumer<
       const retryable =
         error instanceof DaytonaError && error.retryable
           ? new RetryableFailure(error.kind === 'unreachable' ? 'timeout' : 'upstream-5xx', error)
-          : error instanceof ReadinessTimeoutError
+          : error instanceof ReadinessTimeoutError || error instanceof WorkspaceRestoreError
             ? new RetryableFailure('timeout', error)
             : undefined;
 
@@ -202,11 +232,13 @@ export class SandboxOpsConsumer extends EventConsumer<
         throw retryable;
       }
 
-      // Daytona has no such sandbox: the record is a ghost until the next claim replaces it (FR-026).
+      // Daytona has no such sandbox: the record is a ghost until the next claim replaces it
+      // (FR-026). So is a sandbox whose workspace never came back: serving it would present an
+      // empty template as the project.
       if (
-        error instanceof DaytonaError &&
-        error.kind === 'sandbox-not-found' &&
-        target.kind === 'project'
+        target.kind === 'project' &&
+        (error instanceof WorkspaceRestoreError ||
+          (error instanceof DaytonaError && error.kind === 'sandbox-not-found'))
       ) {
         await this.settleProject(target, { lostAt: this.clock.now() });
       }
@@ -225,6 +257,7 @@ export class SandboxOpsConsumer extends EventConsumer<
     const now = this.clock.now();
 
     if (target.kind === 'project') {
+      await this.restoreWorkspace(target, workspaceRoot);
       await this.deliverSandboxRuntime(target, workspaceRoot);
       await this.settleProject(target, {
         failureReason: null,
@@ -244,6 +277,102 @@ export class SandboxOpsConsumer extends EventConsumer<
       .set({ failureReason: null, node, readyAt: now, state: 'ready', workspaceRoot })
       .where(eq(schema.sandboxPool.id, target.row.id));
     await this.redis.rpush(poolFrontKey(target.row.template), target.row.id);
+  }
+
+  /**
+   * A project with checkpoints landing on a fresh sandbox: its previous sandbox is gone, so its
+   * files come back from the mirror before the dev server starts and before the row says ready.
+   * Every step is idempotent, so a retried `create` repeats them safely. Nothing to restore from
+   * is a loss the record cannot undo: said out loud, and the sandbox still comes up usable.
+   */
+  private async restoreWorkspace(
+    target: Extract<OpTarget, { kind: 'project' }>,
+    root: string,
+  ): Promise<void> {
+    const { daytonaId, projectId } = target.row;
+    const [head] = await this.transactions.runInTenantTransaction(target.orgId, (tx) =>
+      tx
+        .select({ gitSha: schema.checkpoints.gitSha })
+        .from(schema.checkpoints)
+        .where(eq(schema.checkpoints.projectId, projectId))
+        .orderBy(desc(schema.checkpoints.createdAt), desc(schema.checkpoints.id))
+        .limit(1),
+    );
+    if (head === undefined) return;
+
+    try {
+      const mirror = await this.repos
+        .get(mirrorKey(target.orgId, projectId))
+        .catch((error: unknown) => {
+          if (error instanceof ObjectStoreUnconfigured) return null;
+          throw error;
+        });
+
+      if (mirror === null) {
+        this.logger.error(
+          `workspace not restored, no mirror exists: project=${projectId} head=${head.gitSha}`,
+        );
+        return;
+      }
+
+      const sha = mirror.meta.head ?? head.gitSha;
+      const git = async (command: string): Promise<void> => {
+        const outcome = await this.daytona.execute(daytonaId, {
+          command,
+          cwd: root,
+          timeoutSeconds: RESTORE_GIT_TIMEOUT_SECONDS,
+        });
+        if (outcome.timedOut || outcome.exitCode !== 0) {
+          throw new Error(`\`${command}\`: ${outcome.timedOut ? 'timed out' : outcome.result}`);
+        }
+      };
+
+      await git('git init -q');
+      await this.daytona.upload(daytonaId, `${root}/${RESTORE_BUNDLE_PATH}`, mirror.body);
+      await git(`git fetch -q --update-head-ok ${RESTORE_BUNDLE_PATH} '+refs/*:refs/*'`);
+      await git(`git reset -q --hard ${sha}`);
+      // Not `-x`: the image's `node_modules` is ignored, and it is what the install below reuses.
+      await git('git clean -fdq');
+      await git(`rm -f ${RESTORE_BUNDLE_PATH}`);
+      await this.installDependencies(target, root);
+      this.logger.log(
+        `workspace restored: project=${projectId} sha=${sha} ` +
+          `current=${String(sha === head.gitSha)} bytes=${mirror.body.length}`,
+      );
+    } catch (error) {
+      throw new WorkspaceRestoreError(daytonaId, error);
+    }
+  }
+
+  /**
+   * The project's lockfile may name packages the image never installed. A failure is a warning:
+   * the files are back, which is what matters, and the dev server's report says the rest.
+   */
+  private async installDependencies(
+    target: Extract<OpTarget, { kind: 'project' }>,
+    root: string,
+  ): Promise<void> {
+    const [project] = await this.transactions.runInTenantTransaction(target.orgId, (tx) =>
+      tx
+        .select({ template: schema.projects.template })
+        .from(schema.projects)
+        .where(eq(schema.projects.id, target.row.projectId)),
+    );
+    const install = this.catalogue.all().find(({ id }) => id === project?.template)
+      ?.manifest.install;
+    if (install === undefined) return;
+
+    const outcome = await this.daytona.execute(target.row.daytonaId, {
+      command: install,
+      cwd: root,
+      timeoutSeconds: RESTORE_INSTALL_TIMEOUT_SECONDS,
+    });
+    if (outcome.timedOut || outcome.exitCode !== 0) {
+      this.logger.warn(
+        `install after restore failed: project=${target.row.projectId} ` +
+          `kind=${outcome.timedOut ? 'timeout' : `exit-${outcome.exitCode}`}`,
+      );
+    }
   }
 
   /** `stop`, wait for `stopped`, record it: the disk is the snapshot (research R1). */
@@ -520,6 +649,8 @@ export class SandboxOpsConsumer extends EventConsumer<
           ? `${error.name}: ${error.message}`
           : String(error);
 
+    this.logger.error(`sandbox op failed: daytonaId=${target.row.daytonaId} ${failureReason}`);
+
     if (target.kind === 'project') {
       await this.settleProject(target, { failureReason, transition: null, transitionSince: null });
 
@@ -539,30 +670,6 @@ export class SandboxOpsConsumer extends EventConsumer<
     return this.transactions.runInTenantTransaction(target.orgId, (tx) =>
       tx.update(schema.sandboxes).set(values).where(eq(schema.sandboxes.id, target.row.id)),
     );
-  }
-
-  /** Stale: a `resume` for this sandbox has been recorded with a higher `leaseEpoch` than ours. */
-  private async staleEpoch(
-    tx: TenantTransaction,
-    sandboxId: string,
-    leaseEpoch: number | undefined,
-  ): Promise<boolean> {
-    if (leaseEpoch === undefined) {
-      return false;
-    }
-
-    const [newest] = await tx
-      .select({ epoch: sql<number | null>`max((${schema.outbox.payload}->>'leaseEpoch')::int)` })
-      .from(schema.outbox)
-      .where(
-        and(
-          eq(schema.outbox.type, 'sandbox.op.requested'),
-          eq(schema.outbox.aggregateId, sandboxId),
-          sql`${schema.outbox.payload}->>'op' = 'resume'`,
-        ),
-      );
-
-    return newest?.epoch !== null && newest?.epoch !== undefined && newest.epoch > leaseEpoch;
   }
 
   private async load(event: OpEvent, tx: TenantTransaction): Promise<OpTarget | undefined> {
@@ -596,6 +703,11 @@ function inTransition(target: OpTarget, transition: 'creating'): boolean {
   return target.kind === 'project'
     ? target.row.transition === transition
     : target.row.state === transition;
+}
+
+/** A request stamped for a cycle the row has left; an unstamped one predates the stamp. */
+function staleCycle(row: Sandbox, since: string | undefined): boolean {
+  return since !== undefined && row.transitionSince?.getTime() !== Date.parse(since);
 }
 
 /** The global timer rather than `timers/promises`, so a suite's fake clock can drive the wait. */

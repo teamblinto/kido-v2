@@ -19,8 +19,8 @@ const LABEL = /^[0-9a-f]{20,64}$/;
  * Why a label did not resolve. Internal only: the wire answer is `404 {}` for every one of these
  * (contract § 3), so the gateway can tell none of them apart and neither can a visitor probing it.
  * `never-run` is a project with no `sandboxes` row at all; `unroutable` is a row in any state but
- * `active`/`idle`, mid-transition, lost or not yet started; `no-port` is a template that declares
- * no `devPort`. Two are not `404` on the wire: `resuming` — a `hibernated` row was handed to
+ * `active`/`idle`, mid-transition or not yet started; `no-port` is a template that declares
+ * no `devPort`. Two are not `404` on the wire: `resuming` — a `hibernated` or lost row was handed to
  * `ensureReady` and the gateway renders the waking page (`202`) — and `unauthorised` — a
  * non-public preview is cold and the caller carried no grant that opens it, so nothing was woken
  * (`401`).
@@ -68,12 +68,13 @@ export class RouteBrokerService {
     if (sandbox === undefined) return refused('never-run');
     // The same ladder `SandboxService.resolve` applies (data-model § Derived state), read at mint
     // time and stamped into the route, never stored.
-    if (sandbox.lostAt !== null || sandbox.workspaceRoot === null) return refused('unroutable');
+    const lost = sandbox.lostAt !== null;
+    if (!lost && sandbox.workspaceRoot === null) return refused('unroutable');
     // A resume already in flight — this broker's or a run's — is what `ensureReady` would answer
     // too, without touching the row; every other transition is unroutable.
-    if (sandbox.transition === 'resuming') return refused('resuming');
-    if (sandbox.transition !== null) return refused('unroutable');
-    if (sandbox.state === 'hibernated') {
+    if (!lost && sandbox.transition === 'resuming') return refused('resuming');
+    if (!lost && sandbox.transition !== null) return refused('unroutable');
+    if (lost || sandbox.state === 'hibernated') {
       // The gateway cannot know a cold private preview needs a grant before it asks, so the wake
       // is gated here: a public preview wakes freely; any other needs a grant that verifies for
       // this label's own host. Nothing is woken for a stranger.

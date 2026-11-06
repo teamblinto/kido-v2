@@ -6,7 +6,14 @@ import { Button } from '@/components/ui/button';
 import { getProject } from '@/features/workspace/api';
 import { messageFor } from '@/lib/api/problem';
 import { cn } from '@/lib/utils';
-import { isAsleep, useDirectory, useFile, useSaveFile, useWake } from '../hooks/use-files';
+import {
+  isAsleep,
+  useDirectory,
+  useFile,
+  useSaveFile,
+  useWake,
+  useWakeWhileAsleep,
+} from '../hooks/use-files';
 import { AsleepPane } from './asleep-pane';
 import { EmptyPane } from './empty-pane';
 import { type DirectoryState, FileTree } from './file-tree';
@@ -77,6 +84,11 @@ export function StageCode({
   const root = useDirectory(orgId, projectId, '');
   const file = useFile(orgId, projectId, open?.path);
   const wake = useWake(orgId, projectId);
+  const waking = useWakeWhileAsleep(
+    wake,
+    root.isPending ? undefined : isAsleep(root.error),
+    root.errorUpdatedAt,
+  );
   const save = useSaveFile(orgId, projectId);
 
   /*
@@ -98,11 +110,9 @@ export function StageCode({
     return (
       <div className={cn('flex min-h-0 min-w-0 flex-col', className)}>
         <AsleepPane
-          because={wake.isPending ? 'resuming' : (wake.data?.because ?? null)}
+          because={waking.isWaking ? (wake.data?.because ?? 'resuming') : null}
           error={wake.error ?? undefined}
-          onWake={() => {
-            wake.mutate();
-          }}
+          onWake={waking.start}
         />
       </div>
     );

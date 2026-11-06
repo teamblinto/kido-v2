@@ -17,6 +17,7 @@ import {
   type RunEventsResponse,
   type RunLineResponse,
   type RunListResponse,
+  type RunMessagesResponse,
   type RunResponse,
   STREAM_RETRY_MS,
 } from '@repo/contracts';
@@ -125,6 +126,18 @@ export class RunController {
     @Param('projectId') projectId: string,
   ): Promise<RunLineResponse> {
     return this.lines.read(this.tenant.tx, orgId, projectId);
+  }
+
+  /** Declared before `:runId`, as `line` is. */
+  @Get('messages')
+  @RequirePermission('project:read')
+  @ApiOperation({ summary: 'Read the project’s conversation across its runs, newest first' })
+  async messages(
+    @Param('orgId') orgId: string,
+    @Param('projectId') projectId: string,
+    @Query() query: RunListQueryDto,
+  ): Promise<RunMessagesResponse> {
+    return this.runs.messages(orgId, projectId, query);
   }
 
   @Get(':runId')

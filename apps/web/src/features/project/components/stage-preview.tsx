@@ -19,7 +19,7 @@ import { Progress } from '@/components/ui/progress';
 import { useNow } from '@/hooks/use-now';
 import { messageFor } from '@/lib/api/problem';
 import { cn } from '@/lib/utils';
-import { isAsleep, useWake } from '../hooks/use-files';
+import { isAsleep, useWake, useWakeWhileAsleep } from '../hooks/use-files';
 import { usePreview, usePreviewFrameSrc, useRotate, useSetVisibility } from '../hooks/use-preview';
 import type { PreviewViewport } from '../hooks/use-project-workspace';
 import { runPhaseTone, toneDot } from '../lib/run-phase';
@@ -86,6 +86,11 @@ export function StagePreview({
   // Only a ready preview is framed, so only a ready one spends a grant code.
   const frameSrc = usePreviewFrameSrc(stage === 'ready' ? preview.data : undefined, reloadKey);
   const asleep = isAsleep(preview.error) || stage === 'asleep';
+  const waking = useWakeWhileAsleep(
+    wake,
+    preview.isPending ? undefined : asleep,
+    Math.max(preview.dataUpdatedAt, preview.errorUpdatedAt),
+  );
 
   /*
    * The last start-up step this pane watched, kept so a failure can name the step it stopped on
@@ -215,11 +220,9 @@ export function StagePreview({
       <div className="bg-canvas relative flex min-h-0 flex-1 justify-center overflow-auto">
         {asleep ? (
           <AsleepPane
-            because={wake.data?.because ?? (wake.isPending ? 'resuming' : null)}
+            because={waking.isWaking ? (wake.data?.because ?? 'resuming') : null}
             error={wake.error ?? undefined}
-            onWake={() => {
-              wake.mutate();
-            }}
+            onWake={waking.start}
           />
         ) : stage === 'ready' ? (
           // Mounted only now: before `ready` the gateway has no route, and a frame pointed at it

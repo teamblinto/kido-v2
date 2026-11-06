@@ -293,6 +293,31 @@ export const runListResponseSchema = z.strictObject({
 
 export type RunListResponse = z.output<typeof runListResponseSchema>;
 
+/**
+ * One thing said in a project's conversation: what the person sent, or the assistant's reply to a
+ * turn. Tool rows stay out: they are the executor's context, and the events already show the work.
+ */
+export const runMessageSchema = z.strictObject({
+  at: z.iso.datetime(),
+  content: z.string(),
+  id: z.uuid(),
+  role: z.enum(['assistant', 'user']),
+  runId: z.uuid(),
+});
+
+export type RunMessage = z.output<typeof runMessageSchema>;
+
+/**
+ * `GET …/runs/messages`: the project's conversation across its runs, newest first, cursor-paged.
+ * The stream's `token`s are never stored, so this is the only record of a reply or a follow-up.
+ */
+export const runMessagesResponseSchema = z.strictObject({
+  messages: z.array(runMessageSchema),
+  nextCursor: cursorSchema.nullable(),
+});
+
+export type RunMessagesResponse = z.output<typeof runMessagesResponseSchema>;
+
 /** `GET …/runs/:runId/events`: `seq > after`, ascending, at most `limit`. */
 export const runEventsResponseSchema = z.strictObject({
   events: z.array(runEventSchema),

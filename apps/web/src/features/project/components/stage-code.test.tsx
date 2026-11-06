@@ -139,7 +139,7 @@ describe('StageCode', () => {
     expect(screen.getByText('Refreshed by the run')).toBeInTheDocument();
   });
 
-  it('SC-005: an asleep sandbox shows one wake button and populates after wake', async () => {
+  it('SC-005: an asleep sandbox wakes itself on opening and populates', async () => {
     let awake = false;
 
     server.use(
@@ -159,14 +159,8 @@ describe('StageCode', () => {
 
     renderScreen(<StageCode orgId={ORG_ID} projectId={PROJECT_ID} />);
 
-    expect(await screen.findByText('This project is asleep')).toBeInTheDocument();
-    const wake = screen.getByRole('button', { name: 'Wake' });
-    expect(screen.getAllByRole('button')).toHaveLength(1);
-
-    await userEvent.click(wake);
-
     expect(await screen.findByRole('tree', { name: 'Project files' })).toBeInTheDocument();
-    expect(screen.getByText('readme.md')).toBeInTheDocument();
+    expect(await screen.findByText('readme.md')).toBeInTheDocument();
   });
 
   it("SC-008: an archived project shows the console's sentence", async () => {

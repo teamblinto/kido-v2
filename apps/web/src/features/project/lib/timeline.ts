@@ -9,11 +9,15 @@ import { type TranscriptItem, joinTokens } from './transcript';
  * and the run's other notices as they came. Pure, so the grouping rules are tested without a DOM.
  */
 
-/** Something the person sent: the run's prompt, or an answer to a run waiting for input. */
+/**
+ * Something said outside the run's events: what the person sent, or (`role: 'assistant'`) a reply
+ * read back from the record, whose tokens were never stored.
+ */
 export interface UserTurn {
   /** Where it sits: before the joined transcript item at this index (`Infinity`: at the end). */
   readonly at: number;
   readonly id: string;
+  readonly role?: 'assistant';
   readonly text: string;
 }
 
@@ -87,7 +91,7 @@ export function buildTimeline(
       const turn = pending.shift();
       if (turn === undefined) break;
       work = undefined;
-      rows.push({ id: turn.id, kind: 'user', text: turn.text });
+      rows.push({ id: turn.id, kind: turn.role ?? 'user', text: turn.text });
     }
   };
 

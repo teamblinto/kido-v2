@@ -64,10 +64,11 @@ export class MaintenanceConsumer extends EventConsumer<'maintenance.due', Mainte
       case 'deploy.sweep':
       case 'domain.check':
       case 'webhook.redeliver':
+      case 'repo.mirror-sweep':
         // Spec 018 R9 / 020 US4 / 026 R15 / 027 R8 / 028 / 029 R6: `ConnectorHealthConsumer`,
         // `ProviderKeyHealthConsumer`, `LinkedAccountHealthConsumer` (032), `WebhooksMaintenanceConsumer` (retention),
         // `DeploySweepConsumer`, the domain check routine and `WebhooksMaintenanceConsumer`
-        // (redelivery) take these on their own queues.
+        // (redelivery) and `RepoMirrorSweep` take these on their own queues.
         return;
       default:
         // Exhaustive: a job added to `MaintenanceJob` without a case here stops compiling.

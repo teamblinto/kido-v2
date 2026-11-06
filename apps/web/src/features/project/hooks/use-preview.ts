@@ -37,11 +37,13 @@ export const PREVIEW_POLL_MS = 1_500;
 
 export const PREVIEW_IDLE_POLL_MS = 5_000;
 
+/** A ready sandbox still sleeps or dies under an open tab, and the frame cannot say so. */
+export const PREVIEW_READY_POLL_MS = 15_000;
+
 /**
  * Where this project's preview is served, who may reach it, and how far its start-up has got.
- * Asked every 1.5 s while it starts, so the stage pane can walk its steps, and every 5 s while it
- * waits; never once it is ready. React
- * Query pauses the interval in a hidden tab.
+ * Asked every 1.5 s while it starts, so the stage pane can walk its steps, every 5 s while it
+ * waits, and every 15 s once it is ready. React Query pauses the interval in a hidden tab.
  */
 export function usePreview(project: ProjectRef): UseQueryResult<PreviewResponse, Error> {
   const { orgId, projectId } = project;
@@ -53,9 +55,8 @@ export function usePreview(project: ProjectRef): UseQueryResult<PreviewResponse,
     refetchInterval: (query) => {
       const stage = query.state.data?.stage;
 
-      if (stage === undefined || stage === 'ready') {
-        return false;
-      }
+      if (stage === undefined) return false;
+      if (stage === 'ready') return PREVIEW_READY_POLL_MS;
 
       return WAITING.has(stage) ? PREVIEW_IDLE_POLL_MS : PREVIEW_POLL_MS;
     },

@@ -976,6 +976,42 @@ describe('RunStore', () => {
         expect(page).toEqual([]);
       });
 
+      it('reads the project’s conversation across its runs, without its tool rows', async () => {
+        const project = await seedProject();
+        const first = await seedRun({ project, prompt: 'first' });
+
+        await inTenant(async (tx) => {
+          clock.advance(1_000);
+          await store.insertMessage(tx, {
+            content: 'reply',
+            orgId,
+            role: 'assistant',
+            runId: first,
+          });
+          clock.advance(1_000);
+          await store.insertMessage(tx, { content: 'tool out', orgId, role: 'tool', runId: first });
+          clock.advance(1_000);
+          await store.insertMessage(tx, { content: '', orgId, role: 'assistant', runId: first });
+        });
+        clock.advance(1_000);
+        await seedRun({ project, prompt: 'second' });
+        await seedRun({ project: await seedProject(), prompt: 'another project' });
+
+        const page = await inTenant((tx) =>
+          store.listProjectMessages(tx, orgId, project, { limit: 2 }),
+        );
+
+        expect(page.messages.map(({ content }) => content)).toEqual(['second', 'reply']);
+        expect(page.nextCursor).toEqual(expect.any(String));
+
+        const rest = await inTenant((tx) =>
+          store.listProjectMessages(tx, orgId, project, { cursor: page.nextCursor!, limit: 2 }),
+        );
+
+        expect(rest.messages.map(({ content }) => content)).toEqual(['first']);
+        expect(rest.nextCursor).toBeNull();
+      });
+
       it('pages the run list by cursor and carries the prompt’s first line', async () => {
         const project = await seedProject();
         const first = await seedRun({ project, prompt: 'Build the landing page\nand ship it' });

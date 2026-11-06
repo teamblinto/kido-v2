@@ -3,7 +3,7 @@ import { Readable } from 'node:stream';
 
 import { HttpError } from './http.ts';
 
-export const MAX_UPLOAD = 64 << 20;
+export const MAX_UPLOAD = 128 << 20;
 export const MAX_JSON = 1 << 20;
 export const SESSION_ID = /^[A-Za-z0-9_.-]{1,64}$/;
 

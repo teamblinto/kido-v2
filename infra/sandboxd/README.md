@@ -50,6 +50,10 @@ Daytona's wire protocol, so the API's adapter just points `DAYTONA_API_URL` at i
   `host-setup.sh` chowns the key file (`0640`, not `0600`) to that gid. Only sandboxd runs in the
   host user namespace.
 
+- Repository mirrors: with no bucket configured, the overlay sets `OBJECT_STORE_DIR` and keeps them on
+  the `repo-mirrors` volume. A mirror is the only copy of a project's files that outlives its sandbox
+  (a replaced sandbox is restored from it), so back this volume up with Postgres.
+
 ## Deploy (single 8 GB VPS, Ubuntu 24.04)
 
 1. `sudo bash infra/sandboxd/host-setup.sh` prints the plan and changes nothing. Review it, then

@@ -8,6 +8,7 @@ import {
 import type { ConfigService } from '@nestjs/config';
 
 import type { Environment } from '../../config/environment';
+import { FsObjectStore } from './fs-object-store';
 import { type ObjectStorePort, UnconfiguredObjectStore } from './object-store.port';
 
 /** The SDK's 404s: `NoSuchKey` from GetObject, `NotFound` from HeadObject. */
@@ -99,7 +100,12 @@ export function objectStoreFor(
     secretAccessKey === undefined ||
     bucket === undefined
   ) {
-    return new UnconfiguredObjectStore();
+    // Repos only: built sites are read back by the gateway over S3, which a directory cannot serve.
+    const dir = config.get('OBJECT_STORE_DIR', { infer: true });
+
+    return bucketName === 'repos' && dir !== undefined
+      ? new FsObjectStore(dir)
+      : new UnconfiguredObjectStore();
   }
 
   return new R2ObjectStore(

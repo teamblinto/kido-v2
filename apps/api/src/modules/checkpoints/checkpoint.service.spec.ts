@@ -236,7 +236,7 @@ describe('CheckpointService', () => {
         gitLsTree(sha),
       ]);
       expect(fileAt('.gitignore')).toBe(
-        'node_modules/\ndist/\n.next/\n__pycache__/\n.venv/\n.env*\n',
+        'node_modules/\ndist/\n.next/\n__pycache__/\n.venv/\n.env*\n.npm/\n.cache/\n',
       );
       expect(rows).toHaveLength(1);
       expect(rows[0]).toMatchObject({
@@ -274,7 +274,7 @@ describe('CheckpointService', () => {
       await service.ensureRepository(ref, BASELINE_CTX, tx);
 
       expect(fileAt('.gitignore')).toBe(
-        'dist/\nnode_modules/\n.next/\n__pycache__/\n.venv/\n.env*\n',
+        'dist/\nnode_modules/\n.next/\n__pycache__/\n.venv/\n.env*\n.npm/\n.cache/\n',
       );
       expect(rows[0]!.files.map((file) => file.path)).not.toContain('.env');
       expect(git.commits.get(rows[0]!.gitSha)!.tree.has('.env')).toBe(false);
@@ -282,12 +282,15 @@ describe('CheckpointService', () => {
 
     it("leaves a scaffold's .gitignore alone when it already has every default rule", async () => {
       fresh();
-      write('.gitignore', '.env*\nnode_modules/\ndist/\n.next/\n__pycache__/\n.venv/\n');
+      write(
+        '.gitignore',
+        '.env*\nnode_modules/\ndist/\n.next/\n__pycache__/\n.venv/\n.npm/\n.cache/\n',
+      );
 
       await service.ensureRepository(ref, BASELINE_CTX, tx);
 
       expect(fileAt('.gitignore')).toBe(
-        '.env*\nnode_modules/\ndist/\n.next/\n__pycache__/\n.venv/\n',
+        '.env*\nnode_modules/\ndist/\n.next/\n__pycache__/\n.venv/\n.npm/\n.cache/\n',
       );
     });
 

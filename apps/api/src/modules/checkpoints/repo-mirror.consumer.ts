@@ -93,13 +93,22 @@ export class RepoMirrorConsumer extends EventConsumer<'checkpoint.created', Mirr
   }
 
   override async effect(_event: MirrorEvent, job: MirrorJob | undefined): Promise<void> {
-    if (job === undefined) return;
-    const { head, row } = job;
+    if (job !== undefined) await this.mirror(job);
+  }
 
+  /** Bundle, PUT, mark: the event's path, and `RepoMirrorSweep`'s for a head that fell behind. */
+  async mirror({ head, row }: MirrorJob): Promise<void> {
     const ref = { orgId: row.orgId, projectId: row.projectId };
     const ctx: MutationContext = { leaseEpoch: 0, operationId: `mirror/${row.id}` };
 
     try {
+      const readiness = await this.transactions.runInTenantTransaction(row.orgId, (tx) =>
+        this.bundler.wake(tx, ref, ctx),
+      );
+      if (!readiness.ready) {
+        throw new RetryableFailure('timeout', new Error(`sandbox ${readiness.because}`));
+      }
+
       // The port resolves the sandbox through `TenantContext.tx` (014), so the git steps run in
       // a tenant scope as the executor's tool calls do. The project's writer lock is held from
       // the bundle to the PUT, so a slower job never lands an older bundle over a newer one.

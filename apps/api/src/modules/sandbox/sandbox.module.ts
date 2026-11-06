@@ -1,5 +1,9 @@
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 
+import { OBJECT_STORE } from '../../common/object-store/object-store.port';
+import { objectStoreFor } from '../../common/object-store/r2-object-store';
+import type { Environment } from '../../config/environment';
 import { AuditModule } from '../audit/audit.module';
 import { OutboxModule } from '../outbox/outbox.module';
 import { TenancyModule } from '../tenancy/tenancy.module';
@@ -86,6 +90,12 @@ import { TemplatesController } from './controllers/templates.controller';
     { provide: SANDBOX_PORT, useExisting: SandboxService },
     { provide: SANDBOX_LIFECYCLE, useExisting: SandboxLifecycleService },
     { provide: BUILD_SANDBOX, useExisting: BuildSandboxService },
+    // The repos bucket, read by `SandboxOpsConsumer` to restore a replaced sandbox's workspace.
+    {
+      inject: [ConfigService],
+      provide: OBJECT_STORE,
+      useFactory: (config: ConfigService<Environment, true>) => objectStoreFor(config, 'repos'),
+    },
   ],
 })
 export class SandboxModule {}

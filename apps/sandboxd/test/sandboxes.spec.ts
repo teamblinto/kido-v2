@@ -163,6 +163,24 @@ describe('sandbox control plane', () => {
     expect(await stateOf(dto.id as string)).toBe('error');
   });
 
+  it('a removed container is a sandbox that no longer exists, so the API can replace it', async () => {
+    const id = (await create()).dto.id as string;
+    docker.containers.delete(cidOf(id));
+
+    const listed = (await (await call('GET', '/sandbox')).json()) as { items: unknown[] };
+    expect(listed.items).toEqual([]);
+    expect((await call('GET', `/sandbox/${id}`)).status).toBe(404);
+    expect(store.get(id)).toBeUndefined();
+  });
+
+  it('start on a removed container answers 404, not a start that can never happen', async () => {
+    const id = (await create()).dto.id as string;
+    docker.containers.delete(cidOf(id));
+
+    expect((await call('POST', `/sandbox/${id}/start`)).status).toBe(404);
+    expect(adm.size()).toBe(0);
+  });
+
   it('a container that exited on its own reports stopped, and start brings it back', async () => {
     const id = (await create()).dto.id as string;
     docker.containers.get(cidOf(id))!.status = 'exited';
@@ -170,12 +188,6 @@ describe('sandbox control plane', () => {
     await call('POST', `/sandbox/${id}/start`);
     await adm.tick();
     expect(await stateOf(id)).toBe('started');
-  });
-
-  it('a row whose container is gone reports error', async () => {
-    const id = (await create()).dto.id as string;
-    docker.containers.delete(cidOf(id));
-    expect(await stateOf(id)).toBe('error');
   });
 
   it('create, start, stop and delete return while a docker start hangs', async () => {

@@ -16,6 +16,9 @@
  */
 export const OBJECT_STORE = Symbol('forge.object-store');
 
+/** The one object per project in the repos bucket (data-model § Object store). */
+export const mirrorKey = (orgId: string, projectId: string): string => `${orgId}/${projectId}.git`;
+
 export interface ObjectStorePort {
   put(key: string, body: Buffer, meta: Readonly<Record<string, string>>): Promise<void>;
   get(key: string): Promise<{ body: Buffer; meta: Record<string, string> } | null>;

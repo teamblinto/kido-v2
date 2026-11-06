@@ -34,10 +34,12 @@ import { invalidateGitSync } from '../hooks/use-git-sync';
 import { usePresence } from '../hooks/use-presence';
 import { useProjectWorkspace } from '../hooks/use-project-workspace';
 import { useRun } from '../hooks/use-run';
+import { useRunMessages } from '../hooks/use-run-messages';
 import { useRunStream } from '../hooks/use-run-stream';
 import { isTerminal, statusToPhase } from '../lib/run-phase';
 import { activityLines, changedPaths } from '../lib/stage';
 import type { UserTurn } from '../lib/timeline';
+import { recordedTurns } from '../lib/conversation';
 import { joinTokens } from '../lib/transcript';
 
 /** `dirname` for a posix API path. `'src/a.ts'` → `'src'`, `'a.ts'` → `''` (the root). */
@@ -162,6 +164,13 @@ export function ProjectPage(): React.JSX.Element {
 
   const onEvent = useCallback(
     (event: RunEvent) => {
+      // A turn ended or a message landed: the record has something the stream never carried.
+      if (event.type === 'state') {
+        void queryClient.invalidateQueries({ queryKey: ['runs', orgId, projectId, 'messages'] });
+
+        return;
+      }
+
       if (event.type === 'file.patch') {
         const { path } = event.data;
 
@@ -207,6 +216,8 @@ export function ProjectPage(): React.JSX.Element {
     projectId,
     runId,
   });
+
+  const messages = useRunMessages(orgId, projectId);
 
   // Where a message sent now sits in the run on screen: after everything it has said so far.
   const joinedCount = useRef(0);
@@ -440,21 +451,25 @@ export function ProjectPage(): React.JSX.Element {
         (turn) => turn.runId === undefined || turn.runId === runId || turn.runId === awaitedRunId,
       )
       .map((turn) => (turn.runId === runId ? turn : { ...turn, at: Number.POSITIVE_INFINITY }));
-    // A run opened from the list or after a reload: its opening message is the record's excerpt,
-    // the only copy this screen has, so the conversation still starts with what was asked.
+    const recorded = recordedTurns(messages, runId, items, turns);
+    // A run opened before the conversation has been read: its record's excerpt holds the place, so
+    // the conversation still starts with what was asked.
     const opening =
       run !== undefined &&
       run.id === runId &&
       run.promptExcerpt !== '' &&
-      !shown.some((turn) => turn.runId === runId && turn.at === 0)
+      !shown.some((turn) => turn.runId === runId && turn.at === 0) &&
+      !messages.some((message) => message.runId === runId)
         ? [{ at: 0, id: `prompt-${run.id}`, runId: run.id, text: run.promptExcerpt }]
         : [];
 
-    return [...opening, ...shown];
-  }, [awaitedRunId, run, runId, turns]);
-  // A failed or cancelled run is sent again as a new run on the current model — when this screen
-  // holds its whole prompt; the run record carries only an excerpt.
-  const retryPrompt = turns.find((turn) => turn.runId === runId && turn.at === 0)?.text;
+    return [...opening, ...recorded, ...shown];
+  }, [awaitedRunId, items, messages, run, runId, turns]);
+  // A failed or cancelled run is sent again as a new run on the current model: its whole prompt, from
+  // this screen or from the record; the run record carries only an excerpt.
+  const retryPrompt =
+    turns.find((turn) => turn.runId === runId && turn.at === 0)?.text ??
+    messages.find((message) => message.runId === runId && message.role === 'user')?.content;
   const { choice } = modelState;
   const retryRun =
     retryPrompt === undefined

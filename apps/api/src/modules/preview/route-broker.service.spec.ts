@@ -207,6 +207,22 @@ describe('RouteBrokerService', () => {
     expect(previewOrigin).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['settled', sandbox({ lostAt: new Date() })],
+    ['marked resuming', sandbox({ lostAt: new Date(), transition: 'resuming' })],
+    ['with no work dir', sandbox({ lostAt: new Date(), workspaceRoot: null })],
+  ])('wakes a lost sandbox %s, as it does a hibernated one', async (_name, row) => {
+    const { service, ensureReady, previewOrigin } = broker({
+      devPort: '5173',
+      projects: { [ORG]: { ...project, previewVisibility: 'public' } },
+      sandboxes: row,
+    });
+
+    await expect(service.resolve(LABEL)).resolves.toEqual({ because: 'resuming', kind: 'refused' });
+    expect(ensureReady).toHaveBeenCalledTimes(1);
+    expect(previewOrigin).not.toHaveBeenCalled();
+  });
+
   describe('gates the wake of a cold non-public preview on a grant', () => {
     const host = `${LABEL}-5173.preview.example`;
     const cold = () => broker({ devPort: '5173', sandboxes: sandbox({ state: 'hibernated' }) });
@@ -312,8 +328,6 @@ describe('RouteBrokerService', () => {
     ['archived', sandbox({ state: 'archived' })],
     ['pooled', sandbox({ state: 'pooled' })],
     ['mid-transition', sandbox({ transition: 'hibernating' })],
-    ['lost while marked resuming', sandbox({ lostAt: new Date(), transition: 'resuming' })],
-    ['lost', sandbox({ lostAt: new Date() })],
     ['not yet started', sandbox({ workspaceRoot: null })],
   ])('refuses a %s sandbox as unroutable, never wakes it and dials nothing', async (_name, row) => {
     const { service, ensureReady, previewOrigin } = broker({ devPort: '5173', sandboxes: row });

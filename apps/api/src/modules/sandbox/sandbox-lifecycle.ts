@@ -31,7 +31,8 @@ export interface SandboxLifecycle {
    * transaction. `ready: true` when the row is `active` (or `idle`, flipped) with no transition.
    * On `hibernated` it records `resuming` and appends the resume op, and answers `ready: false`.
    * On no row, or a row with `lost_at`, it claims (contract § 3) — a pooled sandbox answers
-   * `ready: true` at once; a cold create answers `ready: false, because: 'creating'`. On a row in
+   * `ready: true` at once; a cold create, or any claim replacing a lost row (its workspace is
+   * restored first), answers `ready: false, because: 'creating'`. On a row in
    * transition it answers `ready: false` without touching it. Throws
    * `SandboxGuardError('no-sandbox')` only when the project does not exist or its template has
    * no snapshot and the pool is empty.
@@ -90,11 +91,22 @@ export class SandboxLifecycleService implements SandboxLifecycle {
           .set({ lastSeenAt: now, state: 'active', stateEnteredAt: now })
           .where(eq(sandboxes.id, row.id));
         return { ready: true };
-      case 'hibernated':
-        await tx
+      case 'hibernated': {
+        // Compare-and-set, so concurrent wakes cannot each start a cycle: the loser blocks on the
+        // row lock, finds the transition set and enqueues nothing.
+        const [won] = await tx
           .update(sandboxes)
           .set({ transition: 'resuming', transitionSince: now })
-          .where(eq(sandboxes.id, row.id));
+          .where(
+            and(
+              eq(sandboxes.id, row.id),
+              eq(sandboxes.state, 'hibernated'),
+              isNull(sandboxes.transition),
+            ),
+          )
+          .returning({ id: sandboxes.id });
+        if (won === undefined) return { because: 'resuming', ready: false };
+
         await this.outbox.append(tx, {
           aggregateId: row.id,
           orgId: ref.orgId,
@@ -104,10 +116,14 @@ export class SandboxLifecycleService implements SandboxLifecycle {
             operationId: ctx.operationId,
             orgId: ref.orgId,
             sandboxId: row.id,
+            // Without it the job id is the same every cycle, and the last resume's completed job,
+            // kept a day by JOB_RETENTION, swallows this one until the reconciler's retry.
+            since: now.toISOString(),
           },
           type: 'sandbox.op.requested',
         });
         return { because: 'resuming', ready: false };
+      }
       default:
         // `pooled` and `archived` are never written to this table (data-model.md).
         throw noSandbox();

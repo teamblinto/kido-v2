@@ -312,7 +312,8 @@ export class SandboxService implements SandboxPort {
    * project, and both are "no sandbox" to the caller — then the touch (014 contract § 1: every
    * port call is a sign of use, and it flips `idle → active` before the call is served, FR-004),
    * then the row under the same transaction. A row mid-transition or `hibernated` is refused
-   * naming the state (FR-008/FR-009), never resumed from here; a lost one is no sandbox at all.
+   * naming the state (FR-008/FR-009), never resumed from here; so is a lost one, which a wake
+   * replaces.
    */
   private async resolve(ref: SandboxRef): Promise<Located> {
     try {
@@ -326,7 +327,11 @@ export class SandboxService implements SandboxPort {
     const row = await this.tenant.tx.query.sandboxes.findFirst({
       where: and(eq(sandboxes.orgId, ref.orgId), eq(sandboxes.projectId, ref.projectId)),
     });
-    if (row?.lostAt !== null) throw noSandbox();
+    if (row === undefined) throw noSandbox();
+    // Not "no sandbox": a wake replaces it and restores the workspace, so callers offer one.
+    if (row.lostAt !== null) {
+      throw new SandboxGuardError('sandbox-not-ready', 'The sandbox was lost.', { state: 'lost' });
+    }
     if (row.transition !== null) {
       throw new SandboxGuardError('sandbox-not-ready', `The sandbox is ${row.transition}.`, {
         transition: row.transition,

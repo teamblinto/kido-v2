@@ -196,7 +196,7 @@ services:
       timeout: 3s
       retries: 5
       start_period: 15s
-    # 768m: a 64 MiB upload is buffered 2-3x (multipart parse + exec stdin), and an OOM kill here
+    # 768m: a 128 MiB upload is buffered 2-3x (multipart parse + exec stdin), and an OOM kill here
     # drops every live preview and HMR socket at once.
     mem_limit: 768m
     network_mode: host

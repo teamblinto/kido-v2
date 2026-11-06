@@ -25,6 +25,8 @@ import {
 } from '../../../test/support/fake-daytona';
 import { holdOutboxSuiteLock } from '../../../test/support/outbox-suite-lock';
 import { AppModule } from '../../app.module';
+import { MemoryObjectStore } from '../../common/object-store/memory-object-store';
+import { mirrorKey, OBJECT_STORE } from '../../common/object-store/object-store.port';
 import { QUEUE_REDIS } from '../../common/redis/redis.constants';
 import { APP_DATABASE } from '../../database/database.constants';
 import type { ForgeDatabase } from '../../database/database.types';
@@ -93,6 +95,7 @@ describe('SandboxOpsConsumer', () => {
       let userId: string;
       let suiteLock: { release: () => Promise<void> } | undefined;
       const poolIds: string[] = [];
+      const repos = new MemoryObjectStore();
 
       function envelope(payload: Payload): Envelope<'sandbox.op.requested'> {
         return {
@@ -215,6 +218,8 @@ describe('SandboxOpsConsumer', () => {
         suiteLock = await holdOutboxSuiteLock(DATABASE_URL);
         fake = await startFakeDaytona({ port: FAKE.port });
         moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+          .overrideProvider(OBJECT_STORE)
+          .useValue(repos)
           .overrideProvider(DAYTONA_TIMINGS)
           .useValue({ ...DEFAULT_DAYTONA_TIMINGS, lookupTtlMs: 0 })
           .overrideProvider(SANDBOX_TIMINGS)
@@ -344,6 +349,96 @@ describe('SandboxOpsConsumer', () => {
             workspaceRoot: fake.workDir,
           });
           expect(row.stateEnteredAt.getTime()).toBeGreaterThanOrEqual(before.getTime());
+        });
+
+        describe('restoring a replaced sandbox (a project with checkpoints)', () => {
+          // The app role cannot delete a checkpoint, so each test seeds its own.
+          let HEAD = '';
+          const key = () => mirrorKey(orgId, projectId);
+          const commands = () => launches().map(({ command }) => command);
+
+          async function seedCheckpoint() {
+            HEAD = randomUUID().replaceAll('-', '').padEnd(40, '0');
+            await transactions.runInTenantTransaction(orgId, (tx) =>
+              tx.insert(schema.checkpoints).values({
+                files: [],
+                gitSha: HEAD,
+                kind: 'baseline',
+                label: 'Baseline',
+                orgId,
+                projectId,
+              }),
+            );
+          }
+
+          async function create(id: string, daytonaId: string, attempt?: number) {
+            const prepared = await handle({ op: 'create', orgId, sandboxId: id });
+            fake.settle(daytonaId);
+            await consumer.effect(
+              envelope({ op: 'create', orgId, sandboxId: id }),
+              prepared,
+              attempt,
+            );
+          }
+
+          afterEach(() => repos.delete(key()));
+
+          it('puts the mirror back before the dev server starts and before the row settles', async () => {
+            await seedCheckpoint();
+            await repos.put(key(), Buffer.from('bundle'), { head: HEAD });
+            fake.onExecute(() => ({ exitCode: 0, result: '' }));
+            const { daytonaId, id } = await seedProjectRow('creating');
+
+            await create(id, daytonaId);
+
+            const ran = commands();
+            const reset = ran.indexOf(`git reset -q --hard ${HEAD}`);
+
+            expect(ran.indexOf('git init -q')).toBeLessThan(reset);
+            expect(reset).toBeGreaterThan(-1);
+            expect(ran.indexOf('git clean -fdq')).toBeGreaterThan(reset);
+            expect(ran.indexOf('npm ci')).toBeGreaterThan(reset);
+            expect(ran.findIndex((command) => command.includes('devserver'))).toBeGreaterThan(
+              reset,
+            );
+            expect(await projectRow(id)).toMatchObject({ state: 'active', transition: null });
+          });
+
+          it('retries a restore that fails, keeping the row in transition', async () => {
+            await seedCheckpoint();
+            await repos.put(key(), Buffer.from('bundle'), { head: HEAD });
+            fake.onExecute(() => ({ exitCode: 128, result: 'fatal: bad bundle' }));
+            const { daytonaId, id } = await seedProjectRow('creating');
+
+            await expect(create(id, daytonaId, 1)).rejects.toBeInstanceOf(RetryableFailure);
+
+            expect(await projectRow(id)).toMatchObject({ lostAt: null, transition: 'creating' });
+          });
+
+          it('on the last attempt loses the row rather than serve a blank template', async () => {
+            await seedCheckpoint();
+            await repos.put(key(), Buffer.from('bundle'), { head: HEAD });
+            fake.onExecute(() => ({ exitCode: 128, result: 'fatal: bad bundle' }));
+            const { daytonaId, id } = await seedProjectRow('creating');
+
+            await expect(create(id, daytonaId, consumer.attempts)).rejects.toBeDefined();
+
+            const row = await projectRow(id);
+
+            expect(row.lostAt).not.toBeNull();
+            expect(row).toMatchObject({ transition: null });
+          });
+
+          it('comes up without a restore when no mirror exists', async () => {
+            await seedCheckpoint();
+            fake.onExecute(() => ({ exitCode: 0, result: '' }));
+            const { daytonaId, id } = await seedProjectRow('creating');
+
+            await create(id, daytonaId);
+
+            expect(commands()).not.toContain('git init -q');
+            expect(await projectRow(id)).toMatchObject({ lostAt: null, state: 'active' });
+          });
         });
 
         it('writes the project env file on create, empty for a project with no bindings (spec 030)', async () => {
@@ -570,19 +665,6 @@ describe('SandboxOpsConsumer', () => {
       describe('resume', () => {
         const starts = () => fake.requests.filter((r) => r.path.endsWith('/start'));
 
-        /** A `resume` op as `ensureReady` appends it, straight into the outbox. */
-        async function recordResumeOp(sandboxId: string, leaseEpoch: number) {
-          await database.insert(schema.outbox).values({
-            aggregate: 'sandbox',
-            aggregateId: sandboxId,
-            occurredAt: new Date(),
-            originOrgId: orgId,
-            payload: { leaseEpoch, op: 'resume', orgId, sandboxId },
-            publishedAt: new Date(),
-            type: 'sandbox.op.requested',
-          });
-        }
-
         it('handle returns early for a missing row, a row not hibernated and a row not in the resuming transition', async () => {
           expect(await handle({ op: 'resume', orgId, sandboxId: randomUUID() })).toBeUndefined();
 
@@ -601,24 +683,67 @@ describe('SandboxOpsConsumer', () => {
           expect(starts()).toEqual([]);
         });
 
-        it('handle returns early on a leaseEpoch older than the newest resume recorded for the sandbox', async () => {
+        it('is a new job every cycle: the last wake’s finished job cannot swallow this one', () => {
+          const at = (since: string) =>
+            consumer.jobId(envelope({ op: 'resume', orgId, sandboxId: projectId, since }));
+
+          expect(at('2026-11-05T09:52:03.000Z')).not.toBe(at('2026-11-06T03:21:26.000Z'));
+        });
+
+        it('handle returns early for a cycle the row has left, and takes the one it is in', async () => {
+          const since = new Date('2026-11-06T03:21:26.779Z');
           const { id } = await seedRow(
             {
               hibernatedAt: new Date(),
               state: 'hibernated',
               transition: 'resuming',
-              transitionSince: new Date(),
+              transitionSince: since,
             },
             'stopped',
           );
-          await recordResumeOp(id, 4);
-          await recordResumeOp(id, 5);
+          const ask = (at: string | undefined) =>
+            handle({
+              op: 'resume',
+              orgId,
+              sandboxId: id,
+              ...(at === undefined ? {} : { since: at }),
+            });
+
+          expect(await ask('2026-11-06T03:00:00.000Z')).toBeUndefined();
+          expect(await ask(since.toISOString())).toBeDefined();
+          expect(await ask(undefined)).toBeDefined();
+        });
+
+        it('takes a wake at epoch 0 after a run resumed the sandbox at a higher epoch', async () => {
+          const since = new Date();
+          const { id } = await seedRow(
+            {
+              hibernatedAt: new Date(),
+              state: 'hibernated',
+              transition: 'resuming',
+              transitionSince: since,
+            },
+            'stopped',
+          );
+          await database.insert(schema.outbox).values({
+            aggregate: 'sandbox',
+            aggregateId: id,
+            occurredAt: new Date(),
+            originOrgId: orgId,
+            payload: { leaseEpoch: 7, op: 'resume', orgId, sandboxId: id },
+            publishedAt: new Date(),
+            type: 'sandbox.op.requested',
+          });
 
           expect(
-            await handle({ leaseEpoch: 4, op: 'resume', orgId, sandboxId: id }),
-          ).toBeUndefined();
-          expect(await handle({ leaseEpoch: 5, op: 'resume', orgId, sandboxId: id })).toBeDefined();
-          expect(await handle({ op: 'resume', orgId, sandboxId: id })).toBeDefined();
+            await handle({
+              leaseEpoch: 0,
+              op: 'resume',
+              orgId,
+              sandboxId: id,
+              since: since.toISOString(),
+            }),
+          ).toBeDefined();
         });
 
         it('starts the sandbox, polls until started, asks the work dir, then settles active with hibernated_at cleared', async () => {

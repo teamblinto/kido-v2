@@ -12,7 +12,7 @@ import {
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
-import { useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { ApiProblem } from '@/lib/api/problem';
 import { listFiles, readFile, wakeSandbox, writeFile } from '../api';
@@ -37,6 +37,71 @@ export function isAsleep(error: unknown): boolean {
     extensions !== null &&
     (extensions as { kind?: unknown }).kind === 'sandbox-not-ready'
   );
+}
+
+/** Between asks while the sandbox comes up; the endpoint answers rather than waits. */
+export const WAKE_RETRY_MS = 3_000;
+
+/** A resume or a restore that takes longer than this has failed: back to the Wake button. */
+export const WAKE_PATIENCE_MS = 5 * 60_000;
+
+/**
+ * Wake a project found asleep when it is opened, and keep asking until it is up.
+ *
+ * The asking is what makes a wake reliable: one answered `hibernating` starts nothing, and a resume
+ * that finds the sandbox gone leaves the row to be replaced by the next ask. Only on opening,
+ * though: a sandbox that goes to sleep under an open tab stays asleep until someone asks, or a tab
+ * left open would keep it awake forever. `asleep` is `undefined` until it is known; `tick` moves
+ * with each fresh answer, so an ask follows an answer rather than a clock.
+ */
+export function useWakeWhileAsleep(
+  wake: UseMutationResult<WakeResponse, Error, void>,
+  asleep: boolean | undefined,
+  tick: number,
+): { readonly isWaking: boolean; readonly start: () => void } {
+  const { mutate, submittedAt } = wake;
+  const [wanted, setWanted] = useState(false);
+  const [opened, setOpened] = useState(false);
+
+  // Adjusted during render (React's "storing information from previous renders"), as the panes do.
+  if (asleep !== undefined && !opened) {
+    setOpened(true);
+    setWanted(asleep);
+  } else if (asleep === false && wanted) {
+    setWanted(false);
+  }
+
+  useEffect(() => {
+    if (!wanted || asleep !== true) return undefined;
+    const timer = setTimeout(
+      () => {
+        mutate();
+      },
+      submittedAt === 0 ? 0 : WAKE_RETRY_MS,
+    );
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [asleep, mutate, submittedAt, tick, wanted]);
+
+  useEffect(() => {
+    if (!wanted) return undefined;
+    const timer = setTimeout(() => {
+      setWanted(false);
+    }, WAKE_PATIENCE_MS);
+
+    return () => {
+      clearTimeout(timer);
+    };
+  }, [wanted]);
+
+  const start = useCallback(() => {
+    setWanted(true);
+    mutate();
+  }, [mutate]);
+
+  return { isWaking: wanted, start };
 }
 
 /** One directory of the working tree. `''` is the root, and `undefined` asks nothing. */

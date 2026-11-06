@@ -21,6 +21,7 @@ import {
   type RunEventsResponse,
   type RunInputRequest,
   type RunListResponse,
+  type RunMessagesResponse,
   type RunResponse,
   type SiteResponse,
   type UpdateSiteRequest,
@@ -46,6 +47,7 @@ import {
   runEventsResponseSchema,
   runInputRequestSchema,
   runListResponseSchema,
+  runMessagesResponseSchema,
   runResponseSchema,
   setPreviewVisibilityRequestSchema,
   siteResponseSchema,
@@ -197,6 +199,19 @@ export async function listRuns(
 ): Promise<RunListResponse> {
   return apiRequest('GET', `${runsPath(orgId, projectId)}${search(query)}`, {
     schema: runListResponseSchema,
+    signal,
+  });
+}
+
+/** The project's conversation across its runs, newest first. */
+export async function listRunMessages(
+  orgId: string,
+  projectId: string,
+  query: { readonly cursor?: string | undefined; readonly limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<RunMessagesResponse> {
+  return apiRequest('GET', `${runsPath(orgId, projectId)}/messages${search(query)}`, {
+    schema: runMessagesResponseSchema,
     signal,
   });
 }

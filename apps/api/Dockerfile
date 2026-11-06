@@ -25,7 +25,9 @@ WORKDIR /app
 ENV AGENT_HOME_RUNNER_BUNDLE=/app/runner/main.js
 
 # git: the connector shells out to it for push and pull bundles (spec 018, plan § Ask-first).
-RUN apk add --no-cache git && addgroup -S app && adduser -S app -G app
+# /var/lib/forge/repos: owned here so a fresh named volume mounted on it inherits the owner.
+RUN apk add --no-cache git && addgroup -S app && adduser -S app -G app \
+  && mkdir -p /var/lib/forge/repos && chown app:app /var/lib/forge/repos
 COPY --from=builder --chown=app:app /output/api ./
 
 # Which build this is (spec 025 FR-033, research R7). Declared in the runner stage only — the

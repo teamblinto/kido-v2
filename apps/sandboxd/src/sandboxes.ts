@@ -8,6 +8,7 @@ import type { Config } from './config.ts';
 import type { ContainerStatus, DockerPort } from './docker.ts';
 import { readJson } from './exec.ts';
 import { HttpError, type router, sendJson } from './http.ts';
+import { log } from './log.ts';
 import type { SandboxRow, Store } from './store.ts';
 
 const SNAP_NAME = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
@@ -57,8 +58,22 @@ export function registerSandboxRoutes(
   };
 
   /**
-   * Daytona's state. A container gone from Docker is `error`; one that exited on its own while
-   * wanted running is `stopped`, so the API's start/reconcile path brings it back.
+   * The row, unless its container has been removed behind our back: then the sandbox no longer
+   * exists, and the 404 is what tells the API to replace it. The row is forgotten so nothing polls
+   * it. `inspect` answers null only for Docker's own 404, so a Docker blip loses nothing.
+   */
+  async function live(id: string): Promise<SandboxRow> {
+    const r = row(id);
+    if (r.containerId === null || (await docker.inspect(r.containerId)) !== null) return r;
+    admission.cancel(id);
+    store.remove(id);
+    log('warn', 'container gone, sandbox forgotten', { 'sandboxd.id': id });
+    throw new HttpError(404, 'Sandbox not found');
+  }
+
+  /**
+   * Daytona's state. One that exited on its own while wanted running is `stopped`, so the API's
+   * start/reconcile path brings it back.
    */
   function stateOf(r: SandboxRow, c: { status: ContainerStatus } | null): string {
     if (!c) return 'error';
@@ -140,11 +155,11 @@ export function registerSandboxRoutes(
   });
 
   api.route('GET', '/sandbox/:id', async (_req, res, p) => {
-    sendJson(res, 200, await dto(row(p.id!)));
+    sendJson(res, 200, await dto(await live(p.id!)));
   });
 
   api.route('POST', '/sandbox/:id/start', async (_req, res, p) => {
-    row(p.id!);
+    await live(p.id!);
     await admission.request(p.id!);
     void admission.tick();
     empty(res);
@@ -202,8 +217,15 @@ export function registerSandboxRoutes(
       }
     }
     // shortcut: one page, never a cursor; a node holds a few dozen sandboxes.
-    const items = await Promise.all(store.byLabels(match).map(dto));
-    sendJson(res, 200, { items, nextCursor: null });
+    const rows = store.byLabels(match);
+    const items = await Promise.all(rows.map(dto));
+    // Left out, so the reconciler asks for it by id and gets the 404 that writes it off.
+    const present = await Promise.all(
+      rows.map(
+        async (r) => r.containerId === null || (await docker.inspect(r.containerId)) !== null,
+      ),
+    );
+    sendJson(res, 200, { items: items.filter((_, index) => present[index]), nextCursor: null });
   });
 
   api.route('POST', '/sandbox/:id/snapshot', async (req, res, p) => {

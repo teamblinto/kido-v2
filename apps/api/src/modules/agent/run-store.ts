@@ -25,6 +25,7 @@ import {
   isNotNull,
   isNull,
   lt,
+  ne,
   notInArray,
   or,
   sql,
@@ -942,6 +943,52 @@ export class RunStore {
       .where(and(eq(runEvents.orgId, orgId), eq(runEvents.runId, runId), gt(runEvents.seq, after)))
       .orderBy(asc(runEvents.seq))
       .limit(limit);
+  }
+
+  /**
+   * The project's conversation, newest first, keyset on `(at, id)` as `listRuns` is on its own.
+   * Empty assistant rows are a turn that only called tools.
+   */
+  async listProjectMessages(
+    tx: TenantTransaction,
+    orgId: string,
+    projectId: string,
+    page: { cursor?: string; limit: number },
+  ): Promise<{ messages: RunMessage[]; nextCursor: string | null }> {
+    const after = page.cursor === undefined ? undefined : decodeCursor(page.cursor);
+    const rows = await tx
+      .select(getTableColumns(runMessages))
+      .from(runMessages)
+      .innerJoin(
+        agentRuns,
+        and(eq(agentRuns.orgId, runMessages.orgId), eq(agentRuns.id, runMessages.runId)),
+      )
+      .where(
+        and(
+          eq(runMessages.orgId, orgId),
+          eq(agentRuns.projectId, projectId),
+          inArray(runMessages.role, ['assistant', 'user']),
+          ne(runMessages.content, ''),
+          after === undefined
+            ? undefined
+            : or(
+                lt(runMessages.at, after.at),
+                and(eq(runMessages.at, after.at), lt(runMessages.id, after.id)),
+              ),
+        ),
+      )
+      .orderBy(desc(runMessages.at), desc(runMessages.id))
+      .limit(page.limit + 1);
+    const messages = rows.slice(0, page.limit);
+    const last = messages.at(-1);
+
+    return {
+      messages,
+      nextCursor:
+        rows.length > page.limit && last !== undefined
+          ? encodeCursor({ createdAt: last.at, id: last.id })
+          : null,
+    };
   }
 
   /** The run's rows in conversation order — what `toMessages` and the summary marker index. */

@@ -61,7 +61,18 @@ const WAKING_RETRY_AFTER_SECONDS = 5;
  * What every workspace ignores (R10, FR-026): build output and env files. A scaffold without a
  * `.gitignore` gets these; one with its own gains the rules it lacks.
  */
-const DEFAULT_GITIGNORE = ['node_modules/', 'dist/', '.next/', '__pycache__/', '.venv/', '.env*'];
+// `.npm/` and `.cache/`: the workspace root is $HOME, and npm's cache alone took a nextjs bundle
+// past sandboxd's transfer cap, so that project could never be mirrored.
+const DEFAULT_GITIGNORE = [
+  'node_modules/',
+  'dist/',
+  '.next/',
+  '__pycache__/',
+  '.venv/',
+  '.env*',
+  '.npm/',
+  '.cache/',
+];
 
 /**
  * A git step answered on its own terms — a non-zero exit, a timeout, a clipped output — as

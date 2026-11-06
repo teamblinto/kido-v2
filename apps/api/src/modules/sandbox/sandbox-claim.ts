@@ -106,7 +106,7 @@ export class SandboxClaim {
     const snapshot = cold ? source.snapshot : source.row.snapshot;
 
     // A lost row is replaced, not repaired (FR-026).
-    await tx
+    const replaced = await tx
       .delete(sandboxes)
       .where(
         and(
@@ -114,7 +114,11 @@ export class SandboxClaim {
           eq(sandboxes.projectId, ref.projectId),
           isNotNull(sandboxes.lostAt),
         ),
-      );
+      )
+      .returning({ id: sandboxes.id });
+    // A replacement goes through the `create` op even from the pool: that op restores the project's
+    // files, and until it has the sandbox is a blank template no run may write to.
+    const creating = cold || replaced.length > 0;
 
     const [row] = await tx
       .insert(sandboxes)
@@ -127,15 +131,15 @@ export class SandboxClaim {
         state: 'active',
         stateEnteredAt: now,
         templateSnapshot: snapshot,
-        transition: cold ? 'creating' : null,
-        transitionSince: cold ? now : null,
+        transition: creating ? 'creating' : null,
+        transitionSince: creating ? now : null,
         workspaceRoot: cold ? null : source.row.workspaceRoot,
       })
       .returning({ id: sandboxes.id });
     const sandboxId = row!.id;
 
     const base = { orgId: ref.orgId, sandboxId };
-    if (cold) {
+    if (creating) {
       await this.outbox.append(tx, {
         aggregateId: sandboxId,
         orgId: ref.orgId,
@@ -165,7 +169,7 @@ export class SandboxClaim {
       target: sandboxId,
     });
 
-    return cold ? { because: 'creating', ready: false } : { ready: true };
+    return creating ? { because: 'creating', ready: false } : { ready: true };
   }
 
   /**

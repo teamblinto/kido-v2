@@ -239,10 +239,12 @@ describe('SandboxService', () => {
       expect(fake.requests).toEqual([]);
     });
 
-    it('refuses a lost row as no-sandbox', async () => {
+    it('refuses a lost row as not ready, so the caller offers the wake that replaces it', async () => {
       rows.findFirst.mockResolvedValue({ ...row(), lostAt: new Date(START) });
 
-      await expect(service.read(REF, 'real.txt')).rejects.toMatchObject({ kind: 'no-sandbox' });
+      await expect(service.read(REF, 'real.txt')).rejects.toMatchObject({
+        kind: 'sandbox-not-ready',
+      });
       expect(fake.requests).toEqual([]);
     });
   });

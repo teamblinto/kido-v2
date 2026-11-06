@@ -376,12 +376,14 @@ describe('SandboxClaim', () => {
       const id = await poolRow();
       await queue.rpush(FRONT, id);
 
+      // Not ready at once as a first claim is: the `create` op restores the workspace first.
       expect(await inTenant((tx) => claim.claim(tx, ref(), TEMPLATE, CTX))).toEqual({
-        ready: true,
+        because: 'creating',
+        ready: false,
       });
 
       const row = await sandboxRow();
-      expect(row).toMatchObject({ lostAt: null, state: 'active' });
+      expect(row).toMatchObject({ lostAt: null, state: 'active', transition: 'creating' });
       expect(row!.daytonaId).not.toBe(lostDaytonaId);
       const all = await inTenant((tx) => tx.select().from(schema.sandboxes));
       expect(all).toHaveLength(1);

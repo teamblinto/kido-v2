@@ -32,6 +32,7 @@ describe('RunController', () => {
     await expect(controller.line(ORG, PROJECT)).resolves.toBe(answer);
     expect(read).toHaveBeenCalledWith(TX, ORG, PROJECT);
     expect(permissionOf('line')).toMatchObject({ permission: 'project:read' });
+    expect(permissionOf('messages')).toMatchObject({ permission: 'project:read' });
   });
 
   it('keeps project:agent.run on start and cancel', () => {

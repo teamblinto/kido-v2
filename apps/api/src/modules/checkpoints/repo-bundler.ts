@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 
 import {
+  mirrorKey,
   OBJECT_STORE,
   type ObjectStorePort,
   ObjectStoreUnconfigured,
@@ -13,15 +14,18 @@ import {
   type SandboxPort,
   type SandboxRef,
 } from '../sandbox/sandbox.port';
-import { SANDBOX_LIFECYCLE, type SandboxLifecycle } from '../sandbox/sandbox-lifecycle';
+import {
+  type Readiness,
+  SANDBOX_LIFECYCLE,
+  type SandboxLifecycle,
+} from '../sandbox/sandbox-lifecycle';
 import { CheckpointRepository } from './checkpoint.repository';
 import { gitBundle } from './git-commands';
 
+export { mirrorKey };
+
 /** Where the bundle lands inside the sandbox: under `.git`, so git never sees it (research R6). */
 export const BUNDLE_PATH = '.git/forge-mirror.bundle';
-
-/** The one object per project in the `forge-repos` bucket (data-model § Object store). */
-export const mirrorKey = (orgId: string, projectId: string): string => `${orgId}/${projectId}.git`;
 
 export interface RepoBundle {
   readonly body: Buffer;
@@ -55,6 +59,14 @@ export class RepoBundler {
     if (mirror?.meta.head === head.gitSha) return { body: mirror.body, head: head.gitSha };
 
     return { body: await this.bundle(tx, ref, ctx), head: head.gitSha };
+  }
+
+  /**
+   * `ensureReady` for a caller to commit before it gives up on a sleeping sandbox: a wake recorded
+   * inside a transaction that then throws "not ready" is rolled back with it, and nothing resumes.
+   */
+  wake(tx: TenantTransaction, ref: SandboxRef, ctx: MutationContext): Promise<Readiness> {
+    return this.lifecycle.ensureReady(tx, ref, ctx);
   }
 
   /** `ensureReady` (→ retry while waking) + `git bundle create --all` + download. */

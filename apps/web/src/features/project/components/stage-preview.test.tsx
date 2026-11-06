@@ -5,7 +5,8 @@ import { HttpResponse, http } from 'msw';
 import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { PREVIEW_IDLE_POLL_MS, PREVIEW_POLL_MS } from '../hooks/use-preview';
+import { WAKE_RETRY_MS } from '../hooks/use-files';
+import { PREVIEW_IDLE_POLL_MS, PREVIEW_POLL_MS, PREVIEW_READY_POLL_MS } from '../hooks/use-preview';
 
 import { API, server } from '@/test/server';
 import { renderScreen } from '@/test/render';
@@ -229,7 +230,7 @@ describe('StagePreview', () => {
     await waitFor(() => expect(frame()).toHaveAttribute('src', 'https://a.preview.test/?code=2'));
   });
 
-  it('SC-005: an asleep project offers one wake and populates after', async () => {
+  it('SC-005: an asleep project wakes itself on opening and populates after', async () => {
     let woken = false;
 
     server.use(
@@ -252,18 +253,73 @@ describe('StagePreview', () => {
 
     renderScreen(stage());
 
-    expect(await screen.findByText('This project is asleep')).toBeInTheDocument();
-    expect(document.querySelector('iframe')).toBeNull();
-
-    const wake = screen.getAllByRole('button', { name: /^Wak/ });
-
-    expect(wake).toHaveLength(1);
-
-    await userEvent.click(wake[0]!);
-
     expect(await screen.findByText('https://a.preview.test')).toBeInTheDocument();
     await waitFor(() => expect(frame()).toHaveAttribute('src', 'https://a.preview.test/?code=1'));
     expect(screen.queryByText('This project is asleep')).not.toBeInTheDocument();
+  });
+
+  it('keeps asking past an answer that starts nothing, until the sandbox is up', async () => {
+    let woken = 0;
+
+    server.use(
+      http.get(PREVIEW, () =>
+        woken > 1
+          ? HttpResponse.json({
+              port: 3000,
+              stage: 'ready',
+              url: 'https://a.preview.test',
+              visibility: 'private',
+            })
+          : asleep(),
+      ),
+      http.post(WAKE, () => {
+        woken += 1;
+
+        return HttpResponse.json({ because: 'hibernating', ready: false });
+      }),
+    );
+
+    renderScreen(stage());
+
+    await waitFor(() => expect(frame()).toHaveAttribute('src', 'https://a.preview.test/?code=1'), {
+      timeout: WAKE_RETRY_MS * 2,
+    });
+    expect(woken).toBe(2);
+  });
+
+  it('leaves a sandbox that went to sleep under an open tab asleep until asked', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let sleeping = false;
+    let woken = 0;
+
+    server.use(
+      http.get(PREVIEW, () =>
+        HttpResponse.json({
+          port: 3000,
+          stage: sleeping ? 'asleep' : 'ready',
+          url: 'https://a.preview.test',
+          visibility: 'public',
+        }),
+      ),
+      http.post(WAKE, () => {
+        woken += 1;
+
+        return HttpResponse.json({ because: 'resuming', ready: false });
+      }),
+    );
+
+    renderScreen(stage());
+    await waitFor(() => expect(frame()).toBeInTheDocument());
+
+    sleeping = true;
+    await act(() => vi.advanceTimersByTimeAsync(PREVIEW_READY_POLL_MS));
+
+    expect(await screen.findByText('This project is asleep')).toBeInTheDocument();
+    await act(() => vi.advanceTimersByTimeAsync(WAKE_RETRY_MS * 3));
+    expect(woken).toBe(0);
+
+    await userEvent.click(screen.getByRole('button', { name: 'Wake' }));
+    await waitFor(() => expect(woken).toBe(1));
   });
 
   it('FR-017: the frame’s sandbox attribute is unchanged', async () => {
@@ -418,7 +474,7 @@ describe('StagePreview start-up', () => {
     expect(minted).toBe(0);
   });
 
-  it('polls until ready, then mounts the frame and stops asking', async () => {
+  it('polls until ready, then mounts the frame and asks far less often', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const served = stages('creating', 'installing', 'ready');
 
@@ -440,6 +496,9 @@ describe('StagePreview start-up', () => {
 
     await act(() => vi.advanceTimersByTimeAsync(PREVIEW_POLL_MS * 4));
     expect(served.count).toBe(asked);
+
+    await act(() => vi.advanceTimersByTimeAsync(PREVIEW_READY_POLL_MS));
+    await waitFor(() => expect(served.count).toBe(asked + 1));
   });
 
   it('names the step a failure stopped on and retries with a wake', async () => {

@@ -163,6 +163,7 @@ export const EVENTS = {
         'deploy.sweep',
         'domain.check',
         'webhook.redeliver',
+        'repo.mirror-sweep',
       ]),
       periodStart: z.iso.datetime(),
     }),

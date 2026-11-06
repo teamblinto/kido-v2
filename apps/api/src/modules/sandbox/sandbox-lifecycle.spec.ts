@@ -200,9 +200,35 @@ describe('SandboxLifecycleService', () => {
           operationId: CTX.operationId,
           orgId,
           sandboxId: id,
+          since: clock.now().toISOString(),
         },
       ]);
       expect(claim).not.toHaveBeenCalled();
+    });
+
+    it('stamps each resume with its own cycle, so a later wake is never the same job', async () => {
+      const id = await seed({ hibernatedAt: new Date(START), state: 'hibernated' });
+
+      await ensureReady();
+      await inTenant((tx) =>
+        tx.update(schema.sandboxes).set({ transition: null, transitionSince: null }),
+      );
+      clock.advance(60_000);
+      await ensureReady();
+
+      const [first, second] = (await opsFor(id)) as { since: string }[];
+
+      expect(first?.since).toBeDefined();
+      expect(second?.since).not.toBe(first?.since);
+    });
+
+    it('enqueues one resume for concurrent wakes', async () => {
+      const id = await seed({ hibernatedAt: new Date(START), state: 'hibernated' });
+
+      const answers = await Promise.all([ensureReady(), ensureReady(), ensureReady()]);
+
+      expect(answers).toEqual(Array(3).fill({ because: 'resuming', ready: false }));
+      expect(await opsFor(id)).toHaveLength(1);
     });
 
     it('answers the transition of a row in flight without touching it', async () => {

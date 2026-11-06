@@ -13,6 +13,7 @@ import { CheckpointsController } from './controllers/checkpoints.controller';
 import { FileWriteController } from './controllers/file-write.controller';
 import { RepoBundler } from './repo-bundler';
 import { RepoMirrorConsumer } from './repo-mirror.consumer';
+import { RepoMirrorSweep } from './repo-mirror-sweep';
 
 /**
  * Checkpoints and revert (spec 016). `SandboxModule` for the port the git steps run through,
@@ -33,6 +34,7 @@ import { RepoMirrorConsumer } from './repo-mirror.consumer';
     CheckpointService,
     RepoBundler,
     RepoMirrorConsumer,
+    RepoMirrorSweep,
     {
       inject: [ConfigService],
       provide: OBJECT_STORE,

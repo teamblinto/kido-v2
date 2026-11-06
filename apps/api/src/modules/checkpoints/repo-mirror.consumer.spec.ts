@@ -246,6 +246,15 @@ describe('RepoMirrorConsumer', () => {
     expect(row.mirroredAt).toBeNull();
   });
 
+  it('asks a sleeping sandbox to wake outside the scope that would roll the wake back', async () => {
+    readiness = { because: 'resuming', ready: false };
+
+    await expect(mirror(build(), checkpoint('2026-09-17T09:00:00.000Z'))).rejects.toBeInstanceOf(
+      RetryableFailure,
+    );
+    expect(trace).toEqual([]);
+  });
+
   it('a git failure, a bundle over the cap and a store 4xx are terminal', async () => {
     const consumer = build();
     const row = checkpoint('2026-09-17T09:00:00.000Z');

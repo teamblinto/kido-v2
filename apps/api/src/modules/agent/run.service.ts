@@ -7,6 +7,7 @@ import {
   type RunEvent,
   type RunEventsResponse,
   type RunListResponse,
+  type RunMessagesResponse,
   type RunResponse,
   type UsagePaidWith,
   type UsageRun,
@@ -403,6 +404,33 @@ export class RunService {
     const { nextCursor, runs } = await this.store.listUsage(this.tenant.tx, orgId, userId, page);
 
     return { nextCursor, runs: runs.map(toUsageRun) };
+  }
+
+  /** The project's conversation (`RunStore.listProjectMessages`), for the screen to read back. */
+  async messages(
+    orgId: string,
+    projectId: string,
+    page: { cursor?: string; limit: number },
+  ): Promise<RunMessagesResponse> {
+    await this.projects.read(orgId, projectId);
+    const { messages, nextCursor } = await this.store.listProjectMessages(
+      this.tenant.tx,
+      orgId,
+      projectId,
+      page,
+    );
+
+    return {
+      messages: messages.map(({ at, content, id, role, runId }) => ({
+        at: at.toISOString(),
+        content,
+        id,
+        // The store's filter narrows this; the column's type does not know it.
+        role: role as 'assistant' | 'user',
+        runId,
+      })),
+      nextCursor,
+    };
   }
 
   async events(

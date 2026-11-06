@@ -166,7 +166,8 @@ export type MaintenanceJob =
   | 'webhook.retention'
   | 'deploy.sweep'
   | 'domain.check'
-  | 'webhook.redeliver';
+  | 'webhook.redeliver'
+  | 'repo.mirror-sweep';
 
 /**
  * The scheduler's catalogue: `periodStart = floor(now / periodMs) × periodMs` per job.
@@ -182,7 +183,8 @@ export type MaintenanceJob =
  * `domain.check` spec 028's custom-domain check routine, every 60 s, consumed by `deploy`;
  * `webhook.redeliver` spec 029's outbound redelivery sweep (R6), every 60 s, consumed by
  * `webhooks`: it finds pending sends whose `next_attempt_at` has passed and re-appends their
- * `webhook.attempt-due`.
+ * `webhook.attempt-due`;
+ * `repo.mirror-sweep` every 5 min, consumed by `checkpoints`: heads with no durable mirror.
  */
 // ponytail: job catalogue lives in sandbox; move to outbox when a third module needs it
 export const MAINTENANCE_JOBS: readonly {
@@ -201,6 +203,7 @@ export const MAINTENANCE_JOBS: readonly {
   { job: 'deploy.sweep', periodMs: 300_000 },
   { job: 'domain.check', periodMs: 60_000 },
   { job: 'webhook.redeliver', periodMs: 60_000 },
+  { job: 'repo.mirror-sweep', periodMs: 300_000 },
 ] as const);
 
 export const SANDBOX_OPS_QUEUE = 'sandbox.ops';
