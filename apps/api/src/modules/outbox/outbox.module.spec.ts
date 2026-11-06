@@ -76,7 +76,7 @@ describe('OutboxModule', () => {
    * appearing here is a review point, not a surprise.
    */
   it.skipIf(!redis)(
-    'builds exactly the mail, agent.run, byok.health, byos.health, agent.line, repo.mirror, maintenance, sandbox.ops, connector.health, connector.autosync, connector.sync, connector.webhook, build.deploy, deploy.lifecycle, deploy.sweep, domain.check, domain.sweep, integration.out, webhook.fanout, webhook.notice and webhook.sweep queues and their DLQs in shipped code',
+    'builds exactly the mail, agent.run, byok.health, byos.health, agent.line, repo.mirror, repo.mirror-sweep, maintenance, sandbox.ops, connector.health, connector.autosync, connector.sync, connector.webhook, build.deploy, deploy.lifecycle, deploy.sweep, domain.check, domain.sweep, integration.out, webhook.fanout, webhook.notice and webhook.sweep queues and their DLQs in shipped code',
     async () => {
       const start = vi.spyOn(OutboxRelay.prototype, 'start');
       moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
@@ -98,6 +98,8 @@ describe('OutboxModule', () => {
         'agent.line.dlq',
         'repo.mirror',
         'repo.mirror.dlq',
+        'repo.mirror-sweep',
+        'repo.mirror-sweep.dlq',
         'maintenance',
         'maintenance.dlq',
         'sandbox.ops',
@@ -138,6 +140,7 @@ describe('OutboxModule', () => {
         'byos.health',
         'agent.line',
         'repo.mirror',
+        'repo.mirror-sweep',
         'maintenance',
         'sandbox.ops',
         'build.deploy',
@@ -220,6 +223,8 @@ describe('OutboxModule', () => {
         'agent.line.dlq',
         'repo.mirror',
         'repo.mirror.dlq',
+        'repo.mirror-sweep',
+        'repo.mirror-sweep.dlq',
         'maintenance',
         'maintenance.dlq',
         'sandbox.ops',
@@ -277,6 +282,8 @@ describe('OutboxModule', () => {
         'agent.line.dlq',
         'repo.mirror',
         'repo.mirror.dlq',
+        'repo.mirror-sweep',
+        'repo.mirror-sweep.dlq',
         'maintenance',
         'maintenance.dlq',
         'sandbox.ops',
@@ -364,6 +371,8 @@ describe('OutboxModule', () => {
         'agent.line.dlq',
         'repo.mirror',
         'repo.mirror.dlq',
+        'repo.mirror-sweep',
+        'repo.mirror-sweep.dlq',
         'maintenance',
         'maintenance.dlq',
         'sandbox.ops',
@@ -405,6 +414,7 @@ describe('OutboxModule', () => {
         'byos.health',
         'agent.line',
         'repo.mirror',
+        'repo.mirror-sweep',
         'maintenance',
         'sandbox.ops',
         'build.deploy',

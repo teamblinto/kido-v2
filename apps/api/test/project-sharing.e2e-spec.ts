@@ -23,6 +23,7 @@ import type { Envelope } from '../src/modules/outbox/envelope';
 import { ProjectInvitationMailConsumer } from '../src/modules/tenancy/services/project-invitation-mail.consumer';
 import { ProjectService } from '../src/modules/tenancy/services/project.service';
 import { unsafe } from './support/csrf-client';
+import { holdOutboxSuiteLock } from './support/outbox-suite-lock';
 
 vi.hoisted(() => {
   process.env.NODE_ENV = 'test';
@@ -33,6 +34,9 @@ vi.hoisted(() => {
   process.env.LOGIN_THROTTLE_ACCOUNT_BURST = '100';
   process.env.LOGIN_THROTTLE_IP_BURST = '4000';
 });
+
+/** Booting waits on the outbox suite lock, which another relay suite may hold for minutes. */
+const LOCKED_BOOT_TIMEOUT_MS = 600_000;
 
 const postgres = inject('postgresReachable');
 const redis = inject('redisReachable');
@@ -77,6 +81,7 @@ interface Tenant {
 describe('Project sharing (e2e)', () => {
   describe.skipIf(!postgres || !redis)('against Postgres and both Redis roles', () => {
     let app: INestApplication;
+    let suiteLock: { release: () => Promise<void> } | undefined;
     let database: ForgeDatabase;
     let hasher: PasswordHasher;
     let transactions: TenantTransactionRunner;
@@ -217,6 +222,8 @@ describe('Project sharing (e2e)', () => {
     }
 
     beforeAll(async () => {
+      // This suite reads a mail's single-use token itself; another suite's relay must not get there first.
+      suiteLock = await holdOutboxSuiteLock(process.env.DATABASE_URL ?? '');
       const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
         .overrideProvider(BREACHED_PASSWORD_PORT)
         .useClass(ScriptedBreachPort)
@@ -230,7 +237,7 @@ describe('Project sharing (e2e)', () => {
       hasher = app.get(PasswordHasher);
       transactions = app.get(TenantTransactionRunner);
       projects = app.get(ProjectService);
-    }, 60_000);
+    }, LOCKED_BOOT_TIMEOUT_MS);
 
     afterAll(async () => {
       if (orgIds.length > 0) {
@@ -242,6 +249,7 @@ describe('Project sharing (e2e)', () => {
       }
 
       await app?.close();
+      await suiteLock?.release();
     });
 
     it('invite → mail job → accept as a new account → GET /orgs lists the org as guest → the project is readable', async () => {

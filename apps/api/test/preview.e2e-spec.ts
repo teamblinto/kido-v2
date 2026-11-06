@@ -736,6 +736,7 @@ describe('Preview grant exchange (e2e)', () => {
               operationId: `preview/${label}`,
               orgId: world.alpha.orgId,
               sandboxId,
+              since: expect.any(String) as string,
             },
           ]);
           // A resolve after the first committed is answered `waking` by the row's transition alone.

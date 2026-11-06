@@ -1105,7 +1105,7 @@ describe('Sandbox lifecycle (e2e)', () => {
 
         /** SC-010, quickstart row US5 · SC-010 (FR-010, FR-011). */
         it(
-          'the same hibernate op twice stops once; a stale-epoch resume settles nothing',
+          'the same hibernate op twice stops once; a resume for an earlier cycle settles nothing',
           async () => {
             const { daytonaId, projectId } = await activeProject('Twice');
             await backdate(projectId, { state: 'idle', stateEnteredAt: ago(61 * MINUTE) });
@@ -1132,30 +1132,19 @@ describe('Sandbox lifecycle (e2e)', () => {
             expect(fake.requests.filter((r) => r.path.endsWith('/stop'))).toHaveLength(1);
             expect(fake.sandboxes.get(daytonaId)!.state).toBe('stopped');
 
-            // A resume for epoch 2 is on record (already published); epoch 1 arrives after it.
+            // The row is in a later cycle than the one this request was made for.
             await backdate(projectId, { transition: 'resuming', transitionSince: new Date() });
             const resuming = (await sandboxRow(projectId))!;
-            await db.insert(schema.outbox).values({
-              aggregate: 'sandbox',
-              aggregateId: row.id,
-              occurredAt: new Date(),
-              originOrgId: world.alpha.orgId,
-              payload: {
-                leaseEpoch: 2,
-                op: 'resume',
-                orgId: world.alpha.orgId,
-                sandboxId: row.id,
-              },
-              publishedAt: new Date(),
-              type: 'sandbox.op.requested',
-            });
+            const earlier = new Date(resuming.transitionSince!.getTime() - MINUTE).toISOString();
             fake.requests.splice(0);
-            await appendOp(row.id, { leaseEpoch: 1, op: 'resume' });
+            await appendOp(row.id, { op: 'resume', since: earlier });
             await until('the stale resume to be published', () => published(row.id));
             await until(
               'the stale resume job to complete',
               async () =>
-                (await (await opsQueue().getJob(`${row.id}.resume`))?.getState()) === 'completed',
+                (await (
+                  await opsQueue().getJob(`${row.id}.resume.${String(Date.parse(earlier))}`)
+                )?.getState()) === 'completed',
             );
 
             expect(fake.requests.filter((r) => r.path.endsWith('/start'))).toEqual([]);
@@ -1320,17 +1309,19 @@ describe('Sandbox lifecycle (e2e)', () => {
                 to: 'failed',
               });
 
+              const resumed = (await opsFor(row.id)).at(-1) as unknown as { since: string };
+              const jobId = `${row.id}.resume.${String(Date.parse(resumed.since))}`;
               let letter: DeadLetter | undefined;
               await until(
                 'the resume job to be dead-lettered',
                 async () => {
-                  letter = (await opsDlq().getJob(`${row.id}.resume`))?.data;
+                  letter = (await opsDlq().getJob(jobId))?.data;
                   return letter !== undefined;
                 },
                 RUN_TIMEOUT_MS * 2,
               );
               expect(letter).toMatchObject({
-                jobId: `${row.id}.resume`,
+                jobId,
                 payload: {
                   payload: { op: 'resume', orgId: world.alpha.orgId, sandboxId: row.id },
                   type: 'sandbox.op.requested',
