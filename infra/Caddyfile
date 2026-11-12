@@ -54,7 +54,11 @@
 	# Caddy sets no response timeout of its own, which is the other half of FR-014: a
 	# run is minutes long and spec 009 heartbeats every 15 s, so nothing here caps the
 	# connection's life. `flush_interval -1` alone would not be enough on nginx.
-	@stream path /api/v1/*/stream
+	# Spec 046: the MCP endpoint answers a tool call over SSE when it streams progress, so it
+	# is flushed like the run stream. OAuth discovery lives at the origin root because RFC 8414
+	# and RFC 9728 put it there; only those two documents go to the API, the rest of
+	# /.well-known stays the web app's.
+	@stream path /api/v1/*/stream /api/v1/mcp
 	handle @stream {
 		reverse_proxy api:3000 {
 			flush_interval -1
@@ -67,6 +71,11 @@
 	# reverse_proxy already forwards the client's Host and appends X-Forwarded-For,
 	# -Host and -Proto, which is the set the API's `trust proxy`, throttler and absolute
 	# URLs read (CHK002.2 to CHK002.6).
+	@discovery path /.well-known/oauth-authorization-server /.well-known/oauth-protected-resource*
+	handle @discovery {
+		reverse_proxy api:3000
+	}
+
 	handle /api/* {
 		reverse_proxy api:3000
 	}

@@ -36,11 +36,20 @@ http://127.0.0.1:9123 {
 		respond 404
 	}
 
-	@stream path /api/v1/*/stream
+	# Spec 046: the MCP endpoint answers a tool call over SSE when it streams progress, so it
+	# is flushed like the run stream. OAuth discovery lives at the origin root because RFC 8414
+	# and RFC 9728 put it there; only those two documents go to the API, the rest of
+	# /.well-known stays the web app's.
+	@stream path /api/v1/*/stream /api/v1/mcp
 	handle @stream {
 		reverse_proxy api:3000 {
 			flush_interval -1
 		}
+	}
+
+	@discovery path /.well-known/oauth-authorization-server /.well-known/oauth-protected-resource*
+	handle @discovery {
+		reverse_proxy api:3000
 	}
 
 	handle /api/* {
