@@ -7,11 +7,13 @@ import { describe, expect, it } from 'vitest';
 import { problemResponse, renderScreen } from '@/test/render';
 import { API, server } from '@/test/server';
 import { DISCLOSURE, IntegrationsPanel, RESEND_WAITING, RESET_NOTICE } from './integrations-panel';
+import { MIGRATIONS_ASLEEP, NO_MIGRATIONS } from './migrations-section';
 
 const ORG_ID = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
 const PROJECT_ID = '7c9e6679-7425-40de-944b-e07fc1f90ae7';
 const CONNECTORS = `${API}/orgs/${ORG_ID}/connectors`;
 const BINDINGS = `${API}/orgs/${ORG_ID}/projects/${PROJECT_ID}/connectors`;
+const FILES = `${API}/orgs/${ORG_ID}/projects/${PROJECT_ID}/files`;
 const ACTOR = { id: ORG_ID, name: 'Rakibul' };
 const NEON_CONNECTION_ID = 'c7e1b2a3-4d5f-4e6a-8b9c-0d1e2f3a4b5c';
 const NETLIFY_CONNECTION_ID = 'e7e1b2a3-4d5f-4e6a-8b9c-0d1e2f3a4b5c';
@@ -94,8 +96,29 @@ const NEON_PROJECTS: NeonProjectPage = {
 function world({
   bindings = [],
   connections = [aConnection('neon')],
-}: { bindings?: Binding[]; connections?: Connection[] } = {}) {
+  role = 'owner',
+}: { bindings?: Binding[]; connections?: Connection[]; role?: string } = {}) {
   server.use(
+    http.get(`${API}/orgs`, () =>
+      HttpResponse.json({
+        orgs: [
+          {
+            access: 'member',
+            createdAt: '2026-08-01T09:00:00.000Z',
+            id: ORG_ID,
+            name: 'Blinto',
+            plan: 'free',
+            role,
+            slug: 'blinto',
+          },
+        ],
+      }),
+    ),
+    // A live database lists its migrations; by default none applied and no directory yet.
+    http.get(`${BINDINGS}/:provider/migrations`, () =>
+      HttpResponse.json({ applied: [], directory: 'db/migrations' }),
+    ),
+    http.get(FILES, () => problemResponse('not-found', 404)),
     http.get(CONNECTORS, () => HttpResponse.json({ connections })),
     http.get(BINDINGS, () => HttpResponse.json({ items: bindings })),
     http.get(`${CONNECTORS}/${NEON_CONNECTION_ID}/neon/projects`, () =>
@@ -236,6 +259,9 @@ describe('IntegrationsPanel', () => {
         await screen.findByText(/The Neon connection needs to be reconnected/u),
       ).toBeInTheDocument();
       expect(screen.queryByText(/Supabase connection needs to be reconnected/u)).toBeNull();
+      expect(screen.getByRole('button', { name: 'Create preview database' })).toBeDisabled();
+      expect(screen.getByLabelText('Neon project')).toBeDisabled();
+      expect(screen.queryByRole('button', { name: 'Reconnect Supabase' })).toBeNull();
     });
 
     it('shows the unavailable banner while a provider circuit is open', async () => {
@@ -459,9 +485,220 @@ describe('IntegrationsPanel — Netlify', () => {
       const section = screen.getByRole('heading', { name: 'Resend' }).parentElement!;
       await user.click(within(section).getByRole('button', { name: 'Unbind' }));
 
+      // Nothing is sent until the dialog, which says what goes, is confirmed.
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).getByText(/sending key is deleted at Resend/u)).toBeInTheDocument();
+      await user.click(within(dialog).getByRole('button', { name: 'Cancel' }));
+      expect(released).toBe(false);
+
+      await user.click(within(section).getByRole('button', { name: 'Unbind' }));
+      await user.click(await screen.findByRole('button', { name: 'Unbind Resend' }));
+
       await waitFor(() => {
         expect(released).toBe(true);
       });
     });
+  });
+});
+
+/** The bound database's SQL migrations: listed from the files, applied in version order. */
+describe('IntegrationsPanel — migrations', () => {
+  const INIT = '20260101000000';
+  const TODOS = '20260201000000';
+  const USERS = '20260301000000';
+
+  function migrationsWorld(role = 'owner') {
+    world({ bindings: [aNeonBinding()], role });
+    server.use(
+      http.get(`${BINDINGS}/neon/migrations`, () =>
+        HttpResponse.json({ applied: [INIT], directory: 'db/migrations' }),
+      ),
+      http.get(FILES, () =>
+        HttpResponse.json({
+          entries: [
+            { kind: 'file', name: `${USERS}_users.sql`, size: 10 },
+            { kind: 'file', name: `${INIT}_init.sql`, size: 10 },
+            { kind: 'file', name: 'README.md', size: 10 },
+            { kind: 'file', name: `${TODOS}_todos.sql`, size: 10 },
+          ],
+          path: 'db/migrations',
+        }),
+      ),
+      http.get(`${FILES}/content`, ({ request }) => {
+        const path = new URL(request.url).searchParams.get('path') ?? '';
+
+        return HttpResponse.json({
+          baseCheckpointId: '22222222-2222-4222-8222-222222222222',
+          bytes: 10,
+          content: `-- ${path}`,
+          path,
+          renderable: true,
+        });
+      }),
+    );
+  }
+
+  it('lists each file applied or pending, applies the pending in order, and names a failure', async () => {
+    const user = userEvent.setup();
+    let sent: unknown;
+
+    migrationsWorld();
+    server.use(
+      http.post(`${BINDINGS}/neon/migrations`, async ({ request }) => {
+        sent = await request.json();
+
+        return HttpResponse.json({
+          applied: [TODOS],
+          failed: { message: 'relation "users" already exists', version: USERS },
+          skipped: [],
+        });
+      }),
+    );
+    render();
+
+    const list = await screen.findByRole('list', { name: 'Migrations' });
+    const rows = within(list).getAllByRole('listitem');
+    expect(rows.map((row) => row.textContent)).toEqual([
+      `Applied${INIT}_init.sql`,
+      `Pending${TODOS}_todos.sql`,
+      `Pending${USERS}_users.sql`,
+    ]);
+    expect(screen.getByText(/apply to the preview database/u)).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Apply 2 pending' }));
+
+    expect(
+      await screen.findByText(`${USERS} failed: relation "users" already exists`),
+    ).toBeInTheDocument();
+    expect(sent).toEqual({
+      migrations: [
+        { name: 'todos', sql: `-- db/migrations/${TODOS}_todos.sql`, version: TODOS },
+        { name: 'users', sql: `-- db/migrations/${USERS}_users.sql`, version: USERS },
+      ],
+    });
+  });
+
+  it('asks for the preview while the sandbox is asleep', async () => {
+    world({ bindings: [aNeonBinding()] });
+    server.use(
+      http.get(FILES, () =>
+        problemResponse('conflict', 409, { extensions: { kind: 'sandbox-not-ready' } }),
+      ),
+    );
+    render();
+
+    expect(await screen.findByText(MIGRATIONS_ASLEEP)).toBeInTheDocument();
+  });
+
+  it('says when the database is not ready yet (409 not-ready)', async () => {
+    world({ bindings: [aNeonBinding()] });
+    server.use(
+      http.get(`${BINDINGS}/neon/migrations`, () =>
+        problemResponse('conflict', 409, { reason: 'not-ready' }),
+      ),
+    );
+    render();
+
+    expect(
+      await screen.findByText('The database is not ready yet; try again once it is.'),
+    ).toBeInTheDocument();
+  });
+
+  it('links a missing permission (422 missing-scope) to settings', async () => {
+    world({ bindings: [aNeonBinding()] });
+    server.use(
+      http.get(`${BINDINGS}/neon/migrations`, () =>
+        problemResponse('validation-failed', 422, { reason: 'missing-scope' }),
+      ),
+    );
+    render();
+
+    expect(await screen.findByText(/missing a permission/u)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open settings' })).toHaveAttribute(
+      'href',
+      '/settings/connectors',
+    );
+  });
+
+  it('says there are none while the directory does not exist', async () => {
+    world({ bindings: [aNeonBinding()] });
+    render();
+
+    expect(await screen.findByText(NO_MIGRATIONS)).toBeInTheDocument();
+  });
+
+  it('shows a member the list but no apply, unbind or bind controls', async () => {
+    migrationsWorld('member');
+    render();
+
+    await screen.findByRole('list', { name: 'Migrations' });
+    expect(screen.queryByRole('button', { name: /Apply/u })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Unbind' })).toBeNull();
+    expect(screen.getByText(/Only organisation owners and admins/u)).toBeInTheDocument();
+  });
+
+  it('hides the bind form from a member', async () => {
+    world({ role: 'member' });
+    render();
+
+    await screen.findByText('Neon preview database');
+    expect(screen.queryByLabelText('Neon project')).toBeNull();
+  });
+});
+
+/** The resource pickers' loading, error, empty and paged states. */
+describe('IntegrationsPanel — pickers', () => {
+  it('offers a retry when the list fails, and fills it in once it answers', async () => {
+    const user = userEvent.setup();
+    let fail = true;
+
+    world();
+    server.use(
+      http.get(`${CONNECTORS}/${NEON_CONNECTION_ID}/neon/projects`, () =>
+        fail ? problemResponse('provider-unavailable', 503) : HttpResponse.json(NEON_PROJECTS),
+      ),
+    );
+    render();
+
+    const retry = await screen.findByRole('button', { name: 'Retry' });
+    fail = false;
+    await user.click(retry);
+
+    expect(await screen.findByRole('option', { name: 'acme-db' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Retry' })).toBeNull();
+  });
+
+  it('says when the account has nothing to pick', async () => {
+    world({ connections: [aConnection('netlify')] });
+    server.use(
+      http.get(`${CONNECTORS}/${NETLIFY_CONNECTION_ID}/netlify/sites`, () =>
+        HttpResponse.json({ items: [] }),
+      ),
+    );
+    render();
+
+    expect(await screen.findByText('This Netlify account has no sites yet.')).toBeInTheDocument();
+  });
+
+  it('loads the next page by its cursor', async () => {
+    const user = userEvent.setup();
+
+    world();
+    server.use(
+      http.get(`${CONNECTORS}/${NEON_CONNECTION_ID}/neon/projects`, ({ request }) =>
+        new URL(request.url).searchParams.get('cursor') === 'page-2'
+          ? HttpResponse.json({
+              items: [{ ...NEON_PROJECTS.items[0]!, id: 'proj-2', name: 'second-db' }],
+            })
+          : HttpResponse.json({ ...NEON_PROJECTS, nextCursor: 'page-2' }),
+      ),
+    );
+    render();
+
+    await user.click(await screen.findByRole('button', { name: 'Load more' }));
+
+    expect(await screen.findByRole('option', { name: 'second-db' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'acme-db' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Load more' })).toBeNull();
   });
 });

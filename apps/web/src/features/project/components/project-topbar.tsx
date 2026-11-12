@@ -50,6 +50,8 @@ const PANEL_PARAM = 'panel';
 const DOMAINS_PANEL = 'domains';
 /** Spec 031: `?panel=share` opens the share sheet, on the Domains pattern. */
 const SHARE_PANEL = 'share';
+/** `?panel=integrations` opens Integrations — where a Supabase connect begun there comes back to. */
+const INTEGRATIONS_PANEL = 'integrations';
 
 /** Panes reachable below `lg`, where the chat and the stage cannot share a row. */
 export type MobilePane = 'chat' | StageTab;
@@ -115,7 +117,7 @@ export function ProjectTopbar({
   const canDeploy = permissions.includes('project:deploy');
   const [isDomainsToggled, setDomainsToggled] = useState(false);
   // Spec 030 US3: the project's Neon and Supabase bindings, for anyone who may read the project.
-  const [isIntegrationsOpen, setIntegrationsOpen] = useState(false);
+  const [isIntegrationsToggled, setIntegrationsToggled] = useState(false);
   const showIntegrations =
     permissions.includes('project:read') && orgId !== undefined && projectId !== undefined;
   // Domains are offered only where one could serve something: a deployable project (spec 028).
@@ -130,6 +132,24 @@ export function ProjectTopbar({
     setDomainsToggled(open);
     // Closing spends the link, so the panel stays closed rather than reopening from the URL.
     if (!open && isDomainsLinked) {
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+
+          next.delete(PANEL_PARAM);
+
+          return next;
+        },
+        { replace: true },
+      );
+    }
+  };
+
+  const isIntegrationsLinked = searchParams.get(PANEL_PARAM) === INTEGRATIONS_PANEL;
+  const isIntegrationsOpen = showIntegrations && (isIntegrationsToggled || isIntegrationsLinked);
+  const setIntegrationsOpen = (open: boolean): void => {
+    setIntegrationsToggled(open);
+    if (!open && isIntegrationsLinked) {
       setSearchParams(
         (current) => {
           const next = new URLSearchParams(current);

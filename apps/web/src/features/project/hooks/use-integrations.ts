@@ -1,10 +1,16 @@
 import {
+  type ApplyMigrationsResponse,
+  applyMigrationsResponseSchema,
   type Binding,
   type BindingList,
   bindingListSchema,
   bindingSchema,
   type ConnectionList,
   connectionListSchema,
+  MIGRATION_DIRECTORIES,
+  type MigrationProvider,
+  type MigrationStatus,
+  migrationStatusSchema,
   type NeonBindRequest,
   type NeonProjectPage,
   neonProjectPageSchema,
@@ -19,18 +25,25 @@ import {
   type ResendDomainPage,
   resendDomainPageSchema,
   type SupabaseBindRequest,
+  supabaseInstallResponseSchema,
   type SupabaseProjectPage,
   supabaseProjectPageSchema,
 } from '@repo/contracts';
 import {
+  type UseInfiniteQueryResult,
   type UseMutationResult,
   type UseQueryResult,
+  useInfiniteQuery,
   useMutation,
   useQuery,
   useQueryClient,
 } from '@tanstack/react-query';
 
+import type { z } from 'zod';
+
 import { apiRequest } from '@/lib/api/client';
+import { projectPath } from '@/lib/routes';
+import { readFile } from '../api';
 
 /** How often the bindings are re-read while a branch or key is on its way. */
 export const BINDING_POLL_MS = 2000;
@@ -78,68 +91,163 @@ export function useBindings(orgId: string, projectId: string): UseQueryResult<Bi
   });
 }
 
+interface ListingPage<T> {
+  items: T[];
+  nextCursor?: string | undefined;
+}
+
+/** A bind form's listing, a page at a time: `nextCursor` is the next page's `?cursor=`. */
+function useListing<T>(
+  key: string,
+  orgId: string,
+  connectionId: string | undefined,
+  path: string,
+  schema: z.ZodType<ListingPage<T>>,
+): UseInfiniteQueryResult<T[], Error> {
+  return useInfiniteQuery<ListingPage<T>, Error, T[], readonly unknown[], string | undefined>({
+    enabled: connectionId !== undefined,
+    getNextPageParam: (last) => last.nextCursor,
+    initialPageParam: undefined,
+    queryFn: ({ pageParam, signal }) =>
+      apiRequest(
+        'GET',
+        `${org(orgId)}/connectors/${encodeURIComponent(connectionId ?? '')}/${path}${
+          pageParam === undefined ? '' : `?cursor=${encodeURIComponent(pageParam)}`
+        }`,
+        { schema, signal },
+      ),
+    queryKey: [key, orgId, connectionId],
+    select: (data) => data.pages.flatMap((row) => row.items),
+  });
+}
+
 export function useNeonProjects(
   orgId: string,
   connectionId: string | undefined,
-): UseQueryResult<NeonProjectPage, Error> {
-  return useQuery({
-    enabled: connectionId !== undefined,
-    queryFn: ({ signal }) =>
-      apiRequest(
-        'GET',
-        `${org(orgId)}/connectors/${encodeURIComponent(connectionId ?? '')}/neon/projects`,
-        { schema: neonProjectPageSchema, signal },
-      ),
-    queryKey: ['neon-projects', orgId, connectionId],
-  });
+): UseInfiniteQueryResult<NeonProjectPage['items'], Error> {
+  return useListing('neon-projects', orgId, connectionId, 'neon/projects', neonProjectPageSchema);
 }
 
 export function useSupabaseProjects(
   orgId: string,
   connectionId: string | undefined,
-): UseQueryResult<SupabaseProjectPage, Error> {
-  return useQuery({
-    enabled: connectionId !== undefined,
-    queryFn: ({ signal }) =>
-      apiRequest(
-        'GET',
-        `${org(orgId)}/connectors/${encodeURIComponent(connectionId ?? '')}/supabase/projects`,
-        { schema: supabaseProjectPageSchema, signal },
-      ),
-    queryKey: ['supabase-projects', orgId, connectionId],
-  });
+): UseInfiniteQueryResult<SupabaseProjectPage['items'], Error> {
+  return useListing(
+    'supabase-projects',
+    orgId,
+    connectionId,
+    'supabase/projects',
+    supabaseProjectPageSchema,
+  );
 }
 
 export function useNetlifySites(
   orgId: string,
   connectionId: string | undefined,
-): UseQueryResult<NetlifySitePage, Error> {
-  return useQuery({
-    enabled: connectionId !== undefined,
-    queryFn: ({ signal }) =>
-      apiRequest(
-        'GET',
-        `${org(orgId)}/connectors/${encodeURIComponent(connectionId ?? '')}/netlify/sites`,
-        { schema: netlifySitePageSchema, signal },
-      ),
-    queryKey: ['netlify-sites', orgId, connectionId],
-  });
+): UseInfiniteQueryResult<NetlifySitePage['items'], Error> {
+  return useListing('netlify-sites', orgId, connectionId, 'netlify/sites', netlifySitePageSchema);
 }
 
 /** Spec 030 US5: the Resend domains to bind — never the platform's own (FR-021). */
 export function useResendDomains(
   orgId: string,
   connectionId: string | undefined,
-): UseQueryResult<ResendDomainPage, Error> {
+): UseInfiniteQueryResult<ResendDomainPage['items'], Error> {
+  return useListing(
+    'resend-domains',
+    orgId,
+    connectionId,
+    'resend/domains',
+    resendDomainPageSchema,
+  );
+}
+
+/** Where a Supabase connect begun in the integrations panel comes back to, read by its callback. */
+export const SUPABASE_RETURN_KEY = 'supabase-return-to';
+
+/** The project with the integrations panel open. */
+export function integrationsPanelPath(projectId: string): string {
+  return `${projectPath(projectId)}?panel=integrations`;
+}
+
+/** `POST connectors/supabase/install` from the panel: off to Supabase, and back to this project. */
+export function useSupabaseConnect(
+  orgId: string,
+  projectId: string,
+): UseMutationResult<string, Error, void> {
+  return useMutation({
+    mutationFn: async () =>
+      (
+        await apiRequest('POST', `${org(orgId)}/connectors/supabase/install`, {
+          schema: supabaseInstallResponseSchema,
+        })
+      ).url,
+    onSuccess: (url) => {
+      window.sessionStorage.setItem(SUPABASE_RETURN_KEY, integrationsPanelPath(projectId));
+      window.location.assign(url);
+    },
+  });
+}
+
+const migrationsKey = (orgId: string, projectId: string, provider: MigrationProvider) =>
+  ['migrations', orgId, projectId, provider] as const;
+
+/** `GET …/connectors/:provider/migrations`: the versions the database says it has applied. */
+export function useMigrationStatus(
+  orgId: string,
+  projectId: string,
+  provider: MigrationProvider,
+): UseQueryResult<MigrationStatus, Error> {
   return useQuery({
-    enabled: connectionId !== undefined,
     queryFn: ({ signal }) =>
-      apiRequest(
-        'GET',
-        `${org(orgId)}/connectors/${encodeURIComponent(connectionId ?? '')}/resend/domains`,
-        { schema: resendDomainPageSchema, signal },
-      ),
-    queryKey: ['resend-domains', orgId, connectionId],
+      apiRequest('GET', `${bindingsPath(orgId, projectId)}/${provider}/migrations`, {
+        schema: migrationStatusSchema,
+        signal,
+      }),
+    queryKey: migrationsKey(orgId, projectId, provider),
+  });
+}
+
+/** One pending file, as the directory listing names it. */
+export interface PendingMigration {
+  readonly fileName: string;
+  readonly name: string;
+  readonly version: string;
+}
+
+/**
+ * Read each pending file, then `POST …/migrations` with them in the order given (ascending
+ * version). The run stops at the database's first refusal, which the answer names.
+ */
+export function useApplyMigrations(
+  orgId: string,
+  projectId: string,
+  provider: MigrationProvider,
+): UseMutationResult<ApplyMigrationsResponse, Error, readonly PendingMigration[]> {
+  const client = useQueryClient();
+  const directory = MIGRATION_DIRECTORIES[provider];
+
+  return useMutation({
+    mutationFn: async (pending) => {
+      const migrations = await Promise.all(
+        pending.map(async ({ fileName, name, version }) => {
+          const file = await readFile(orgId, projectId, `${directory}/${fileName}`);
+
+          if (!file.renderable) throw new Error(`${fileName} is too large or not text.`);
+
+          return { name, sql: file.content, version };
+        }),
+      );
+
+      return apiRequest('POST', `${bindingsPath(orgId, projectId)}/${provider}/migrations`, {
+        body: { migrations },
+        schema: applyMigrationsResponseSchema,
+      });
+    },
+    // A partial run applied something, so the status is re-read whatever the answer was.
+    onSettled: () =>
+      client.invalidateQueries({ queryKey: migrationsKey(orgId, projectId, provider) }),
+    retry: false,
   });
 }
 

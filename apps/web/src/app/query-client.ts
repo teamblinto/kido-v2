@@ -64,7 +64,9 @@ export function createQueryClient(): QueryClient {
 
   holder.current = new QueryClient({
     defaultOptions: {
-      mutations: { retry: shouldRetry },
+      // Never retried: a bind, publish or migration the server applied before the 5xx would be
+      // applied twice.
+      mutations: { retry: false },
       queries: {
         refetchOnWindowFocus: false,
         retry: shouldRetry,

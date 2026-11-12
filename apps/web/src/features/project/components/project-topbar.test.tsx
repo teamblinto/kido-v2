@@ -108,6 +108,18 @@ describe('ProjectTopbar sharing', () => {
   });
 });
 
+describe('ProjectTopbar integrations', () => {
+  it('opens the integrations panel from ?panel=integrations', async () => {
+    server.use(
+      http.get(`${API}/orgs`, () => HttpResponse.json({ orgs: [] })),
+      http.get(`${PROJECT_URL}/connectors`, () => HttpResponse.json({ items: [] })),
+    );
+    renderTopbar(['project:read'], '/?panel=integrations');
+
+    expect(await screen.findByText(/No Neon connection/u)).toBeInTheDocument();
+  });
+});
+
 /** Spec 036: rename and delete from the project name menu. */
 describe('ProjectTopbar project management', () => {
   const WORKSPACE = 'c7e1b2a3-4d5f-4e6a-8b9c-0d1e2f3a4b5c';

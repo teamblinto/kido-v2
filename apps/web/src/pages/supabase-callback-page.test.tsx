@@ -1,6 +1,8 @@
 import { screen, waitFor } from '@testing-library/react';
 import { HttpResponse, http } from 'msw';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+
+import { SUPABASE_RETURN_KEY } from '@/features/project/hooks/use-integrations';
 
 import { routes } from '@/lib/routes';
 import { problemResponse, renderScreen } from '@/test/render';
@@ -37,13 +39,25 @@ const aConnection = {
 const PATH = `${routes.supabaseCallback}?code=c0de&state=st4te`;
 
 beforeEach(() => {
-  server.use(http.get(`${API}/orgs`, () => HttpResponse.json({ orgs: [anOrg] })));
+  server.use(
+    http.get(`${API}/orgs`, () => HttpResponse.json({ orgs: [anOrg] })),
+    http.post(`${API}/orgs/${ORG_ID}/connectors/supabase/complete`, () =>
+      HttpResponse.json(aConnection, { status: 201 }),
+    ),
+  );
+});
+
+afterEach(() => {
+  window.sessionStorage.clear();
 });
 
 function renderCallback(path = PATH) {
   return renderScreen(<SupabaseCallbackPage />, {
     path,
-    routes: { [routes.connectorsSettings]: <p>Connectors settings</p> },
+    routes: {
+      [routes.connectorsSettings]: <p>Connectors settings</p>,
+      [routes.project]: <p>The project</p>,
+    },
   });
 }
 
@@ -65,6 +79,26 @@ describe('SupabaseCallbackPage', () => {
     expect(await screen.findByText('Connectors settings')).toBeInTheDocument();
     expect(bodies).toEqual([{ code: 'c0de', state: 'st4te' }]);
   });
+
+  it('returns to the project panel that began the connect, and forgets it', async () => {
+    window.sessionStorage.setItem(SUPABASE_RETURN_KEY, '/projects/p-1?panel=integrations');
+
+    renderCallback();
+
+    expect(await screen.findByText('The project')).toBeInTheDocument();
+    expect(window.sessionStorage.getItem(SUPABASE_RETURN_KEY)).toBeNull();
+  });
+
+  it.each(['//evil.example/x', 'https://evil.example/x', '/\\evil.example', 'projects/p-1'])(
+    'ignores a stored return path that could leave the origin (%s)',
+    async (stored) => {
+      window.sessionStorage.setItem(SUPABASE_RETURN_KEY, stored);
+
+      renderCallback();
+
+      expect(await screen.findByText('Connectors settings')).toBeInTheDocument();
+    },
+  );
 
   it('renders the catalogue message for a refused state', async () => {
     server.use(

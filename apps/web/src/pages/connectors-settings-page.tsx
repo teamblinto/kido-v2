@@ -17,6 +17,7 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { StepUpDialog } from '@/features/auth/components/two-factor-dialog';
 import { PersonalAccountsPolicySwitch } from '@/features/settings/personal-accounts-policy';
+import { SUPABASE_RETURN_KEY } from '@/features/project/hooks/use-integrations';
 import { GITHUB_RETURN_KEY } from '@/features/project/lib/github-sync';
 import { PasteTokenDialog } from '@/features/settings/paste-token-dialog';
 import { ProviderKeysSection } from '@/features/settings/provider-keys-section';
@@ -87,6 +88,7 @@ export function ConnectorsSettingsPage(): React.JSX.Element {
     mutationFn: async (provider: 'github' | 'supabase') => {
       // A connect abandoned from a project must not carry this one back there.
       window.sessionStorage.removeItem(GITHUB_RETURN_KEY);
+      window.sessionStorage.removeItem(SUPABASE_RETURN_KEY);
 
       return provider === 'github'
         ? (

@@ -5,11 +5,13 @@ import {
 } from '@repo/contracts';
 import { useMutation } from '@tanstack/react-query';
 import { AlertTriangle, Loader2 } from 'lucide-react';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Navigate, useSearchParams } from 'react-router-dom';
 
 import { AuthHeading } from '@/features/auth/components/auth-heading';
 import { AuthLayout } from '@/features/auth/components/auth-layout';
+import { SUPABASE_RETURN_KEY } from '@/features/project/hooks/use-integrations';
+import { safeReturnPath } from '@/features/project/lib/github-sync';
 import { useOrgs } from '@/features/workspace/hooks/use-orgs';
 import { apiRequest } from '@/lib/api/client';
 import { messageFor } from '@/lib/api/problem';
@@ -18,13 +20,17 @@ import { routes } from '@/lib/routes';
 /**
  * Supabase's OAuth redirect (spec 030 research R1): Supabase lands here with `code` and `state`,
  * or with `error` when the user declined. The page echoes both to `POST connectors/supabase/
- * complete` once — the API holds the PKCE verifier — and returns to the settings page.
+ * complete` once — the API holds the PKCE verifier — and returns to the project panel that began
+ * the connect (only a same-origin path), else the settings page.
  */
 export function SupabaseCallbackPage(): React.JSX.Element {
   const [params] = useSearchParams();
   const { activeOrg, isLoading } = useOrgs();
   const orgId = activeOrg?.id;
   const declined = params.get('error');
+  const [returnTo] = useState(() =>
+    safeReturnPath(window.sessionStorage.getItem(SUPABASE_RETURN_KEY)),
+  );
 
   const parsed = supabaseCompleteRequestSchema.safeParse({
     code: params.get('code') ?? '',
@@ -39,6 +45,9 @@ export function SupabaseCallbackPage(): React.JSX.Element {
         body: input,
         schema: connectionSchema,
       }),
+    onSuccess: () => {
+      window.sessionStorage.removeItem(SUPABASE_RETURN_KEY);
+    },
   });
 
   // Once: the state is single-use, and React's development double-invoke would spend it twice.
@@ -52,7 +61,7 @@ export function SupabaseCallbackPage(): React.JSX.Element {
   }, [body, complete, orgId]);
 
   if (complete.isSuccess) {
-    return <Navigate to={routes.connectorsSettings} replace />;
+    return <Navigate to={returnTo ?? routes.connectorsSettings} replace />;
   }
 
   if (body === undefined || complete.isError) {
