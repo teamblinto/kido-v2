@@ -785,3 +785,19 @@ export {
   webhookEndpointStateSchema,
   webhookSecretResponseSchema,
 } from './webhooks/endpoint';
+export {
+  type ApplyMigrationsRequest,
+  type ApplyMigrationsResponse,
+  type Migration,
+  type MigrationProvider,
+  type MigrationStatus,
+  MIGRATION_DIRECTORIES,
+  MIGRATION_PROVIDERS,
+  MIGRATION_SQL_MAX_BYTES,
+  applyMigrationsRequestSchema,
+  applyMigrationsResponseSchema,
+  migrationProviderSchema,
+  migrationSchema,
+  migrationStatusSchema,
+  parseMigrationFileName,
+} from './connectors/migrations';
