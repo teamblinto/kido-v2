@@ -10,6 +10,7 @@ import type { TenantTransaction } from '../../database/database.types';
 import { TenantTransactionRunner } from '../../database/tenant-transaction';
 import { EventConsumer, RetryableFailure } from '../outbox/consumer';
 import type { Envelope } from '../outbox/envelope';
+import { OutboxWriter } from '../outbox/outbox-writer';
 import { ConnectionService } from './connection.service';
 import { OperationRepository } from './operation.repository';
 import { type ProviderCategory, ProviderFailure } from './providers/provider';
@@ -70,6 +71,18 @@ const RELEASE_KINDS: ReadonlySet<ConnectorOpKind> = new Set([
   'resource_release',
 ]);
 
+/**
+ * Kinds whose success changes what the project's preview env holds (a value went live or was
+ * released): the running preview is told to restart with it (`project.env.changed`).
+ */
+const ENV_KINDS: ReadonlySet<ConnectorOpKind> = new Set([
+  'neon_branch_create',
+  'neon_branch_reset',
+  'resend_key_mint',
+  'resource_release',
+  'supabase_key_fetch',
+]);
+
 /** R5: a terminal category's reason on the row. */
 const TERMINAL_REASON: Readonly<Partial<Record<ProviderCategory, ConnectorOpReason>>> = {
   conflict: 'provider-refused',
@@ -116,6 +129,7 @@ export class ConnectorOpsConsumer extends EventConsumer<'connector.op.requested'
     @Inject(TenantTransactionRunner) private readonly transactions: TenantTransactionRunner,
     @Inject(CLOCK) private readonly clock: ClockPort,
     @Inject(CONNECTOR_OP_HANDLERS) private readonly handlers: OperationHandlers,
+    @Inject(OutboxWriter) private readonly outbox: OutboxWriter,
   ) {
     super();
   }
@@ -359,6 +373,19 @@ export class ConnectorOpsConsumer extends EventConsumer<'connector.op.requested'
 
       if (!closed) {
         this.logger.warn(`operation ${operation.id} was already closed (the timeout sweep)`);
+      }
+
+      if (closed && outcome.state === 'succeeded' && ENV_KINDS.has(operation.kind)) {
+        const { orgId, projectId } = operation;
+
+        if (projectId !== null) {
+          await this.outbox.append(tx, {
+            aggregateId: projectId,
+            orgId,
+            payload: { orgId, projectId },
+            type: 'project.env.changed',
+          });
+        }
       }
     });
   }

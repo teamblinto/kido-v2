@@ -48,7 +48,7 @@ import {
   poolFrontKey,
 } from './sandbox.constants';
 import { DaytonaError } from './sandbox.errors';
-import { SandboxOpsConsumer } from './sandbox-ops.consumer';
+import { SandboxOpsConsumer, STOP_DEV_SUPERVISOR } from './sandbox-ops.consumer';
 
 /** Before any import, as `sandbox-registration.e2e-spec.ts`: `ConfigModule` reads the env once. */
 const FAKE = vi.hoisted(() => {
@@ -894,6 +894,45 @@ describe('SandboxOpsConsumer', () => {
           expectDelivered(daytonaId);
           // Spec 030: the project env file is rewritten at resume as well.
           expect(uploadsTo(SANDBOX_PROJECT_ENV_PATH)).toHaveLength(1);
+        });
+
+        it('env: rewrites the project values, stops the old supervisor group, then launches a fresh one', async () => {
+          const { daytonaId, id } = await seedRow({ state: 'active', transition: null });
+          const since = new Date().toISOString();
+
+          await process({ op: 'env', orgId, sandboxId: id, since });
+
+          expect(uploadsTo(SANDBOX_PROJECT_ENV_PATH)).toHaveLength(1);
+          expect(launches().map((launch) => launch.command)).toEqual([
+            STOP_DEV_SUPERVISOR,
+            `node ${SANDBOX_DEV_SUPERVISOR_PATH}`,
+          ]);
+          expect(uploadsTo(SANDBOX_DEV_SUPERVISOR_PATH)[0]!.path).toContain(daytonaId);
+        });
+
+        it('env: leaves a hibernated or transitioning sandbox to its next start', async () => {
+          const { id } = await seedRow(
+            { hibernatedAt: new Date(), state: 'hibernated', transition: null },
+            'stopped',
+          );
+          expect(await handle({ op: 'env', orgId, sandboxId: id })).toBeUndefined();
+
+          const busy = await seedRow({
+            state: 'active',
+            transition: 'hibernating',
+            transitionSince: new Date(),
+          });
+          expect(await handle({ op: 'env', orgId, sandboxId: busy.id })).toBeUndefined();
+        });
+
+        it('env: does not launch over a supervisor it could not stop', async () => {
+          const { id } = await seedRow({ state: 'active', transition: null });
+          fake.onExecute(() => ({ exitCode: 1, result: '' }));
+
+          await process({ op: 'env', orgId, sandboxId: id });
+
+          expect(launches()).toHaveLength(1);
+          expect(launches()[0]!.command).toBe(STOP_DEV_SUPERVISOR);
         });
 
         it('clears the last start’s dev server reports on resume, so a hibernated listening never reads as ready', async () => {

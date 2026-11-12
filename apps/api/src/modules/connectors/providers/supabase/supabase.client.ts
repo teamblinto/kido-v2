@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
-import type { Plaintext } from '../../../../common/crypto/branded';
+import { type Plaintext, revealPlaintext } from '../../../../common/crypto/branded';
 import type { Environment } from '../../../../config/environment';
 import {
   failureFromStatus,
@@ -25,8 +25,19 @@ import {
 
 export const SUPABASE_CLIENT = Symbol('forge.connectors.supabaseClient');
 
-/** R6: the grant's scopes — the project list and the (unrevealed) API-keys read. */
-const SUPABASE_SCOPES = ['projects:read', 'secrets:read'] as const;
+/**
+ * R6: the grant's scopes — the project list, the (unrevealed) API-keys read, and the database write
+ * the migrations panel runs SQL with. Scopes are set on the OAuth app in Supabase's dashboard; a
+ * grant made before `database:write` was added answers 403 there, which reads as `missing-scope`.
+ */
+const SUPABASE_SCOPES = ['projects:read', 'secrets:read', 'database:write'] as const;
+
+/** A migration may take a while; the SQL endpoint holds the request until it is done. */
+const QUERY_TIMEOUT_MS = 120_000;
+
+export type SqlOutcome =
+  | { readonly ok: true; readonly rows: readonly Record<string, unknown>[] }
+  | { readonly ok: false; readonly message: string };
 
 /** The web page Supabase sends the browser back to (apps/web `routes.supabaseCallback`). */
 export const SUPABASE_CALLBACK_PATH = '/connectors/supabase/callback';
@@ -170,6 +181,46 @@ export class SupabaseClient implements ProviderVerifier {
     return chosen.api_key;
   }
 
+  /**
+   * Runs `sql` on the project's database (`POST /v1/projects/{ref}/database/query`). The SQL's own
+   * error — a 400 with the database's message — is the person's to read, so it is answered, not
+   * thrown; a refused credential or an unavailable provider is a {@link ProviderFailure}.
+   */
+  async query(accessToken: Plaintext, projectRef: string, sql: string): Promise<SqlOutcome> {
+    const response = await providerFetch(
+      endpoint(this.baseUrl, `/v1/projects/${encodeURIComponent(projectRef)}/database/query`),
+      {
+        body: JSON.stringify({ query: sql }),
+        headers: {
+          accept: 'application/json',
+          authorization: `Bearer ${revealPlaintext(accessToken).toString('utf8')}`,
+          'content-type': 'application/json',
+        },
+        method: 'POST',
+      },
+      { readErrorBody: true, timeoutMs: QUERY_TIMEOUT_MS },
+    );
+
+    switch (response.kind) {
+      case 'unreachable':
+      case 'unparseable':
+        throw new ProviderFailure('unavailable');
+      case 'status':
+        if (response.status === 400) return { message: sqlMessage(response.errorBody), ok: false };
+        throw failureFromStatus(response.status, retryAfterHeader(response.headers));
+      case 'ok':
+        return {
+          ok: true,
+          rows: Array.isArray(response.body)
+            ? (response.body.filter((row) => typeof row === 'object' && row !== null) as Record<
+                string,
+                unknown
+              >[])
+            : [],
+        };
+    }
+  }
+
   private async token(form: Record<string, string>): Promise<SupabaseGrant> {
     const basic = Buffer.from(`${this.clientId ?? ''}:${this.clientSecret ?? ''}`).toString(
       'base64',
@@ -204,4 +255,19 @@ export class SupabaseClient implements ProviderVerifier {
       }
     }
   }
+}
+
+/** The database's message from a 400 body (`{ "message": "ERROR: …" }`), else the body itself. */
+function sqlMessage(body: string | undefined): string {
+  if (body === undefined || body === '') return 'The database refused the SQL.';
+  try {
+    const parsed = JSON.parse(body) as unknown;
+    if (typeof parsed === 'object' && parsed !== null && 'message' in parsed) {
+      const { message } = parsed;
+      if (typeof message === 'string' && message !== '') return message;
+    }
+  } catch {
+    // Not JSON: the text is the message.
+  }
+  return body;
 }

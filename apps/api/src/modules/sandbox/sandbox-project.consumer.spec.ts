@@ -124,7 +124,7 @@ describe('SandboxProjectConsumer', () => {
     it('rides the sandbox ops queue on the events profile with no effect', () => {
       expect(consumer.queue).toBe(SANDBOX_OPS_QUEUE);
       expect(consumer.profile).toBe('events');
-      expect(consumer.types).toEqual(['project.archived']);
+      expect(consumer.types).toEqual(['project.archived', 'project.env.changed']);
       expect('effect' in consumer).toBe(false);
     });
 
@@ -151,6 +151,58 @@ describe('SandboxProjectConsumer', () => {
         ),
       ).toMatchObject({ transition: 'releasing', transitionSince: clock.now() });
       expect(await opsFor(row!.id)).toEqual([{ op: 'release', orgId, sandboxId: row!.id }]);
+    });
+
+    function envChanged(): Envelope<'project.env.changed'> {
+      return {
+        aggregateId: projectId,
+        eventId: randomUUID(),
+        occurredAt: clock.now().toISOString(),
+        orgId,
+        payload: { orgId, projectId },
+        traceId: null,
+        type: 'project.env.changed',
+      } as Envelope<'project.env.changed'>;
+    }
+
+    async function sandboxIn(state: 'active' | 'hibernated', transition: 'resuming' | null = null) {
+      const [row] = await inTenant((tx) =>
+        tx
+          .insert(schema.sandboxes)
+          .values({
+            daytonaId: `proj-${randomUUID()}`,
+            orgId,
+            projectId,
+            state,
+            transition,
+            hibernatedAt: state === 'hibernated' ? clock.now() : null,
+            transitionSince: transition === null ? null : clock.now(),
+            workspaceRoot: '/home/daytona',
+          })
+          .returning({ id: schema.sandboxes.id }),
+      );
+      return row!.id;
+    }
+
+    it('a changed env asks a running sandbox for an env op, its own job per change', async () => {
+      const id = await sandboxIn('active');
+
+      await database.transaction((tx) => consumer.handle(envChanged(), tx));
+
+      expect(await opsFor(id)).toEqual([
+        { op: 'env', orgId, sandboxId: id, since: clock.now().toISOString() },
+      ]);
+    });
+
+    it('a changed env leaves a hibernated or transitioning sandbox to its next start', async () => {
+      const asleep = await sandboxIn('hibernated');
+      await database.transaction((tx) => consumer.handle(envChanged(), tx));
+      expect(await opsFor(asleep)).toEqual([]);
+
+      await inTenant((tx) => tx.delete(schema.sandboxes).where(eq(schema.sandboxes.orgId, orgId)));
+      const waking = await sandboxIn('hibernated', 'resuming');
+      await database.transaction((tx) => consumer.handle(envChanged(), tx));
+      expect(await opsFor(waking)).toEqual([]);
     });
 
     it('does nothing for a project with no sandbox row', async () => {

@@ -1052,7 +1052,7 @@ describe('ConnectionService', () => {
         expect(row).toMatchObject({
           accountRef: 'sb-org-1',
           authType: 'oauth',
-          grantedScopes: ['projects:read', 'secrets:read'],
+          grantedScopes: ['projects:read', 'secrets:read', 'database:write'],
           provider: 'supabase',
         });
         expect(row.tokenExpiresAt!.getTime()).toBeGreaterThanOrEqual(before + 3_590_000);

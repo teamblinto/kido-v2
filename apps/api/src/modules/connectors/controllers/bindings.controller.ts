@@ -12,7 +12,16 @@ import {
   Query,
 } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import type { Binding, BindingList, Operation, OperationPage } from '@repo/contracts';
+import {
+  type ApplyMigrationsResponse,
+  type Binding,
+  type BindingList,
+  type MigrationProvider,
+  type MigrationStatus,
+  MIGRATION_PROVIDERS,
+  type Operation,
+  type OperationPage,
+} from '@repo/contracts';
 
 import { NotFoundError } from '../../../common/errors/domain-error';
 import { ZodValidationPipe } from '../../../common/validation/zod-validation.pipe';
@@ -22,8 +31,12 @@ import type { AuthenticatedUser } from '../../identity/services/session.service'
 import { RequirePermission } from '../../rbac/decorators/require-permission.decorator';
 import { ResourceOrg } from '../../rbac/resource-org.resolver';
 import { BindingService } from '../binding.service';
+import { DatabaseMigrationService } from '../database-migrations';
 import {
+  ApplyMigrationsRequestDto,
+  ApplyMigrationsResponseDto,
   BindingListResponseDto,
+  MigrationStatusResponseDto,
   NeonBindRequestDto,
   NetlifyBindRequestDto,
   NetlifyPublishRequestDto,
@@ -44,6 +57,14 @@ const BIND_BODIES = {
 } as const;
 
 type BindableProvider = keyof typeof BIND_BODIES;
+
+function migratable(provider: string): MigrationProvider {
+  if (!(MIGRATION_PROVIDERS as readonly string[]).includes(provider)) {
+    throw new NotFoundError('No such database connector.');
+  }
+
+  return provider as MigrationProvider;
+}
 
 function bindable(provider: string): BindableProvider {
   if (!Object.hasOwn(BIND_BODIES, provider)) throw new NotFoundError('No such connector.');
@@ -66,6 +87,7 @@ export class BindingsController {
     @Inject(TenantContext) private readonly tenant: TenantContext,
     @Inject(BindingService) private readonly bindings: BindingService,
     @Inject(OperationService) private readonly operations: OperationService,
+    @Inject(DatabaseMigrationService) private readonly migrations: DatabaseMigrationService,
   ) {}
 
   @Get()
@@ -131,6 +153,55 @@ export class BindingsController {
       { orgId, projectId },
       caller.userId,
       deploymentId,
+    );
+  }
+
+  @Get(':provider/migrations')
+  @RequirePermission('project:read')
+  @ApiOperation({
+    summary: 'The migration versions the bound Neon or Supabase database has applied',
+  })
+  @ApiResponse({ status: 200, type: MigrationStatusResponseDto })
+  @ApiResponse({ description: 'The project is not bound to that database.', status: 404 })
+  @ApiResponse({ description: '`needs-reauth`, `disconnected`, `not-ready`.', status: 409 })
+  migrationStatus(
+    @Param('orgId') orgId: string,
+    @Param('projectId') projectId: string,
+    @Param('provider') provider: string,
+  ): Promise<MigrationStatus> {
+    return this.migrations.status(this.tenant.tx, { orgId, projectId }, migratable(provider));
+  }
+
+  @Post(':provider/migrations')
+  @HttpCode(HttpStatus.OK)
+  @RequirePermission('org:connectors.manage')
+  @ApiOperation({
+    summary: 'Apply pending SQL migrations, in version order, stopping at the first failure',
+  })
+  @ApiResponse({ status: 200, type: ApplyMigrationsResponseDto })
+  @ApiResponse({
+    description: '`missing-scope`: reconnect Supabase for database access.',
+    status: 422,
+  })
+  async applyMigrations(
+    @CurrentUser() caller: AuthenticatedUser,
+    @Param('orgId') orgId: string,
+    @Param('projectId') projectId: string,
+    @Param('provider') provider: string,
+    @Body() body: unknown,
+  ): Promise<ApplyMigrationsResponse> {
+    const which = migratable(provider);
+    const { migrations } = this.pipe.transform(body, {
+      metatype: ApplyMigrationsRequestDto,
+      type: 'body',
+    }) as ApplyMigrationsRequestDto;
+
+    return this.migrations.apply(
+      this.tenant.tx,
+      { orgId, projectId },
+      caller.userId,
+      which,
+      migrations,
     );
   }
 

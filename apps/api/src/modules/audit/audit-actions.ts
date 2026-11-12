@@ -39,6 +39,8 @@ export const AUDIT_ACTIONS = Object.freeze({
   'connector.dns-written': "A domain's records were written into the tenant's Cloudflare zone.",
   'connector.health-changed':
     "A connection's health moved between healthy, unavailable and needs-reauth.",
+  'connector.migrations-applied':
+    "SQL migrations from the project's files were applied to its bound Neon or Supabase database.",
   'connector.published': "A project's release was published to its bound Netlify site.",
   'connector.reconnected': 'A connection in needs-reauth was reinstalled and its token re-minted.',
   'connector.removed': 'A connection was removed, with its sealed token and repo links.',

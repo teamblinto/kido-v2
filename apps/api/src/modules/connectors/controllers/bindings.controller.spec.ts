@@ -10,6 +10,7 @@ import { REQUIRED_PERMISSION } from '../../rbac/decorators/require-permission.de
 import { PROJECT_ROLE_PERMISSIONS, WORKSPACE_ROLE_PERMISSIONS } from '../../rbac/permissions';
 import type { BindingService } from '../binding.service';
 import type { ConnectorListings } from '../connector-listings';
+import type { DatabaseMigrationService } from '../database-migrations';
 import type { OperationService } from '../operation.service';
 import { BindingsController } from './bindings.controller';
 import { ConnectorListingsController } from './connector-listings.controller';
@@ -35,13 +36,18 @@ function build() {
     unbind: vi.fn(() => Promise.resolve({ id: 'op' })),
   };
   const operations = { list: vi.fn(() => Promise.resolve({ items: [] })) };
+  const migrations = {
+    apply: vi.fn(() => Promise.resolve({ applied: ['1'], failed: null, skipped: [] })),
+    status: vi.fn(() => Promise.resolve({ applied: [], directory: 'db/migrations' })),
+  };
   const controller = new BindingsController(
     { tx: TX } as unknown as TenantContext,
     bindings as unknown as BindingService,
     operations as unknown as OperationService,
+    migrations as unknown as DatabaseMigrationService,
   );
 
-  return { bindings, controller, operations };
+  return { bindings, controller, migrations, operations };
 }
 
 /** Spec 030 T074, contracts/bindings.md §§ 1–2. */
@@ -151,6 +157,37 @@ describe('BindingsController', () => {
       CALLER.userId,
       'neon',
     );
+  });
+
+  it('migrations: status for project:read, apply for org:connectors.manage', () => {
+    const proto = BindingsController.prototype;
+
+    expect(permissionOf(proto, 'migrationStatus')).toBe('project:read');
+    expect(permissionOf(proto, 'applyMigrations')).toBe('org:connectors.manage');
+  });
+
+  it('migrations: only Neon and Supabase, a strict body, then the service', async () => {
+    const { controller, migrations } = build();
+    const body = { migrations: [{ name: 'todos', sql: 'create table t ()', version: '1' }] };
+
+    await expect(
+      controller.applyMigrations(CALLER, ORG, PROJECT, 'supabase', body),
+    ).resolves.toEqual({ applied: ['1'], failed: null, skipped: [] });
+    expect(migrations.apply).toHaveBeenCalledWith(
+      TX,
+      { orgId: ORG, projectId: PROJECT },
+      CALLER.userId,
+      'supabase',
+      body.migrations,
+    );
+    await expect(
+      controller.applyMigrations(CALLER, ORG, PROJECT, 'neon', {
+        migrations: [{ name: 'x', sql: 'select 1', version: "1'; drop" }],
+      }),
+    ).rejects.toBeInstanceOf(ValidationFailedError);
+    expect(() => controller.migrationStatus(ORG, PROJECT, 'netlify')).toThrow(NotFoundError);
+    await controller.migrationStatus(ORG, PROJECT, 'neon');
+    expect(migrations.status).toHaveBeenCalledWith(TX, { orgId: ORG, projectId: PROJECT }, 'neon');
   });
 
   it('GET /operations checks the project, then pages the operations', async () => {

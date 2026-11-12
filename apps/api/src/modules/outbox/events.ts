@@ -217,6 +217,11 @@ export const EVENTS = {
       workspaceId: z.uuid(),
     }),
   },
+  /** A connector resource went live or was released: a running preview should restart with it. */
+  'project.env.changed': {
+    aggregate: 'project',
+    payload: z.strictObject({ orgId: z.uuid(), projectId: z.uuid() }),
+  },
   'project.preview-label.rotated': {
     aggregate: 'project',
     payload: z.strictObject({ orgId: z.uuid(), previousLabel: z.string(), projectId: z.uuid() }),
@@ -225,7 +230,8 @@ export const EVENTS = {
     aggregate: 'sandbox',
     payload: z.strictObject({
       leaseEpoch: z.number().int().optional(),
-      op: z.enum(['create', 'resume', 'hibernate', 'release', 'label']),
+      // `env`: rewrite the project's connector values in a running sandbox and restart its dev server.
+      op: z.enum(['create', 'resume', 'hibernate', 'release', 'label', 'env']),
       operationId: z.string().optional(),
       orgId: z.uuid().optional(), // present for a project row, absent for a pool row
       poolId: z.uuid().optional(),

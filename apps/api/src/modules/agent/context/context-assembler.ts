@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 
 import type { TenantContext } from '../../../database/tenant-context';
 import { gitRevParse, gitStatus, parseSha } from '../../checkpoints/git-commands';
@@ -8,6 +8,8 @@ import {
   type SandboxPort,
   type SandboxRef,
 } from '../../sandbox/sandbox.port';
+import { integrationNote } from '../../sandbox/integration-note';
+import { PREVIEW_ENV_SOURCE, type PreviewEnvSource } from '../../sandbox/sandbox.constants';
 import { AGENT_TIMINGS, type AgentTimings, MAP_EXPORT_CAP_BYTES } from '../agent.constants';
 import {
   type ConversationMessage,
@@ -44,6 +46,8 @@ interface AttemptState {
   dirtyDigest: string;
   /** The three `agent_runs` columns as last persisted; a crossing in this attempt extends them. */
   summary: SummaryState;
+  /** The project's connected services, by env name only (never a value); '' when none. */
+  integrations: string;
 }
 
 const NO_SUMMARY: SummaryState = { summary: null, throughMessageId: null, tokens: 0 };
@@ -70,6 +74,9 @@ export class ContextAssembler {
     private readonly store: RunStore,
     @Inject(LLM_PROVIDER) private readonly provider: LlmProvider,
     @Inject(AGENT_TIMINGS) private readonly timings: AgentTimings,
+    @Optional()
+    @Inject(PREVIEW_ENV_SOURCE)
+    private readonly previewEnv?: PreviewEnvSource,
   ) {}
 
   /**
@@ -90,7 +97,13 @@ export class ContextAssembler {
         scope.ref.projectId,
         scope.run.id,
       );
+      // The source never throws; only the names reach the prompt.
+      const env =
+        this.previewEnv === undefined
+          ? {}
+          : await this.previewEnv(scope.tenantTx(), scope.ref.orgId, scope.ref.projectId);
       const state: AttemptState = {
+        integrations: integrationNote(Object.keys(env)),
         dirtyDigest: stored?.dirtyDigest ?? '',
         map: stored?.repoMap ?? EMPTY_MAP_NOTICE,
         summary: row
@@ -195,7 +208,8 @@ export class ContextAssembler {
       }
     }
     return {
-      context: { excerpts: '', map: state?.map ?? '' },
+      // The integrations note is project state that can change between turns: the uncached block.
+      context: { excerpts: state?.integrations ?? '', map: state?.map ?? '' },
       messages,
       system: SYSTEM_PROMPT,
     };

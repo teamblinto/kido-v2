@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger, type OnModuleInit } from '@nestjs/common';
+import { Inject, Injectable, Logger, type OnModuleInit, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   type CompanionPolicy,
@@ -23,6 +23,8 @@ import { failed, SandboxTools, toolContent } from '../agent/sandbox-tools';
 import type { BrokerResult, ToolBroker } from '../agent/tool-broker';
 import { PermissionResolutionService } from '../rbac/permission-resolution.service';
 import { scoped } from '../rbac/permissions';
+import { integrationNote } from '../sandbox/integration-note';
+import { PREVIEW_ENV_SOURCE, type PreviewEnvSource } from '../sandbox/sandbox.constants';
 import { AgentHomeService } from './agent-home.service';
 import {
   LOCAL_FAILURES,
@@ -42,6 +44,20 @@ import {
 import { COMPANION_POLICY } from './policy';
 
 const PROMPT_LIMIT = 32_000;
+
+/**
+ * The CLI has no system prompt of ours, so the project's connected-services note leads the turn's
+ * prompt; the whole stays within the command's limit, the person's words cut before the note.
+ */
+export function framePrompt(note: string, prompt: string): string {
+  if (note === '') return prompt.slice(0, PROMPT_LIMIT);
+  const head = `${note}
+
+The user's request:
+`;
+
+  return `${head}${prompt}`.slice(0, PROMPT_LIMIT);
+}
 
 /**
  * `run.start`'s `conversationKey`: opaque and stable per project, so the runner can give the CLI
@@ -98,6 +114,9 @@ export class LocalAgentExecutor implements LocalRunExecutor, OnModuleInit {
     @Inject(ConfigService) config: ConfigService<Environment, true>,
     @Inject(SandboxTools) private readonly sandbox: SandboxTools,
     @Inject(AgentHomeService) private readonly homes: AgentHomeService,
+    @Optional()
+    @Inject(PREVIEW_ENV_SOURCE)
+    private readonly previewEnv?: PreviewEnvSource,
   ) {
     this.enabled = config.get('LOCAL_AGENT_ENABLED', { infer: true });
   }
@@ -198,6 +217,12 @@ export class LocalAgentExecutor implements LocalRunExecutor, OnModuleInit {
         clock: this.clock,
         policy: this.policy,
         reader,
+        integrations: async () =>
+          this.previewEnv === undefined
+            ? ''
+            : integrationNote(
+                Object.keys(await this.previewEnv(this.tenant.tx, run.orgId, run.projectId)),
+              ),
         sandbox: this.sandbox,
         timings: this.timings,
       }).execute();
@@ -246,6 +271,8 @@ interface LocalRunDeps {
   readonly reader: RunReader;
   readonly sandbox: SandboxTools;
   readonly timings: LocalAgentTimings;
+  /** The project's connected-services note (env names only); called inside a dispatch. */
+  readonly integrations: () => Promise<string>;
 }
 
 /** One attempt at one turn: the state the loop keeps between reads. */
@@ -439,11 +466,12 @@ class LocalRun {
 
     this.turnStartedAt = this.now();
     await this.context.dispatch(async () => {
+      const note = await this.deps.integrations();
       await this.channel.beginTurn(this.runId, this.turn, this.turnStartedAt);
       await this.channel.publish(deviceId, {
         conversationKey: conversationKeyOf(run.orgId, run.projectId),
         model: run.model === provider ? null : run.model,
-        prompt: prompt.slice(0, PROMPT_LIMIT),
+        prompt: framePrompt(note, prompt),
         provider,
         resume:
           this.target.providerSessionId === null

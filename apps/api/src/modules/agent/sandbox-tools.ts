@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import type { CompanionToolDefinition } from '@repo/contracts';
 
 import type { ClockPort } from '../../common/clock/clock.port';
+import { scrubSecrets } from '../../common/telemetry/scrubber';
 import type { TenantContext } from '../../database/tenant-context';
 import { type CheckpointService, GitStepError } from '../checkpoints/checkpoint.service';
 import type { SandboxLifecycle } from '../sandbox/sandbox-lifecycle';
@@ -160,9 +161,18 @@ export class SandboxTools {
       data: { input: call.input, stepId, tool: call.name },
       type: 'tool.start',
     });
-    const result = await broker.handle(call, { leaseEpoch: run.epoch, operationId: stepId }, (fn) =>
-      context.dispatch(fn),
+    const handled = await broker.handle(
+      call,
+      { leaseEpoch: run.epoch, operationId: stepId },
+      (fn) => context.dispatch(fn),
     );
+    // A shell can print the dev server's connector values (`cat`, `node -e`): the shapes are
+    // censored before the output reaches the model, the event stream or `run_messages`. File reads
+    // stay exact — the agent edits what it read.
+    const result: BrokerResult =
+      handled.ok && call.name === 'exec'
+        ? { ...handled, output: scrubSecrets(handled.output) }
+        : handled;
     await context.emit({
       data: result.ok
         ? { ok: true, output: result.output, stepId }

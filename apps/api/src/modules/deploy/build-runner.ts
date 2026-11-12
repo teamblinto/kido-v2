@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import type { DeploymentFailureReason, ProjectTemplate } from '@repo/contracts';
 
 import { CLOCK, type ClockPort } from '../../common/clock/clock.port';
@@ -11,6 +11,11 @@ import {
   BuildSandboxError,
   type BuildSandboxHandle,
 } from '../sandbox/build-sandbox.service';
+import {
+  isBuildPublicKey,
+  PREVIEW_ENV_SOURCE,
+  type PreviewEnvSource,
+} from '../sandbox/sandbox.constants';
 import type { MutationContext } from '../sandbox/sandbox.port';
 import { TemplateCatalogue } from '../sandbox/template-catalogue';
 import {
@@ -88,6 +93,9 @@ export class BuildRunner {
     @Inject(TenantTransactionRunner) private readonly transactions: TenantTransactionRunner,
     @Inject(TemplateCatalogue) private readonly catalogue: TemplateCatalogue,
     @Inject(CLOCK) private readonly clock: ClockPort,
+    @Optional()
+    @Inject(PREVIEW_ENV_SOURCE)
+    private readonly previewEnv?: PreviewEnvSource,
   ) {}
 
   async run(input: BuildInput): Promise<BuildOutcome> {
@@ -110,6 +118,7 @@ export class BuildRunner {
     const bundle = await this.transactions.runInTenantScope({ orgId, userId: null }, (tx) =>
       this.bundler.current(tx, { orgId, projectId }, ctx),
     );
+    const publicEnv = await this.publicEnv(orgId, projectId);
 
     let handle: BuildSandboxHandle;
     try {
@@ -140,7 +149,7 @@ export class BuildRunner {
       await this.step(handle, `git checkout -q -f --detach ${sha}`, 'platform', deadline, log);
       await this.step(handle, 'git clean -q -f -d -x', 'platform', deadline, log);
       await this.step(handle, 'npm ci', 'install-failed', deadline, log);
-      await this.step(handle, build.command, 'build-failed', deadline, log);
+      await this.step(handle, build.command, 'build-failed', deadline, log, publicEnv);
       // A missing output directory makes tar exit non-zero: that is `no-output` (R5).
       await this.step(
         handle,
@@ -176,6 +185,7 @@ export class BuildRunner {
     reason: BuildFailureReason,
     deadline: number,
     log: LogBuffer,
+    env?: Readonly<Record<string, string>>,
   ): Promise<void> {
     const remaining = deadline - this.clock.now().getTime();
     if (remaining <= 0) {
@@ -184,7 +194,7 @@ export class BuildRunner {
     }
 
     log.note(`$ ${command}`);
-    const outcome = await this.sandbox.run(handle, command, remaining);
+    const outcome = await this.sandbox.run(handle, command, remaining, env);
     if (outcome.timedOut) {
       log.note(`\`${command}\` timed out`);
       throw new StepFailed('timeout');
@@ -194,6 +204,20 @@ export class BuildRunner {
       log.note(`exit ${String(outcome.exitCode)}`);
       throw new StepFailed(reason);
     }
+  }
+
+  /**
+   * The connector values a bundler inlines into the shipped files (`VITE_*`, `NEXT_PUBLIC_*`: the
+   * Supabase URL and publishable key), so a deployed app reaches the same project its preview does.
+   * Server secrets never enter a build (SC-012 holds for them); the source never throws.
+   */
+  private async publicEnv(orgId: string, projectId: string): Promise<Record<string, string>> {
+    if (this.previewEnv === undefined) return {};
+    const values = await this.transactions.runInTenantTransaction(orgId, (tx) =>
+      this.previewEnv!(tx, orgId, projectId),
+    );
+
+    return Object.fromEntries(Object.entries(values).filter(([key]) => isBuildPublicKey(key)));
   }
 
   private async download(handle: BuildSandboxHandle, log: LogBuffer): Promise<Buffer> {

@@ -1,4 +1,7 @@
 import {
+  applyMigrationsRequestSchema,
+  applyMigrationsResponseSchema,
+  migrationStatusSchema,
   bindingListSchema,
   listingQuerySchema,
   neonBindRequestSchema,
@@ -17,6 +20,17 @@ import {
 import type { ZodType } from 'zod';
 
 import { ApiZodSchema, createZodDto, type ZodDtoClass } from '../../../common/validation/zod-dto';
+
+/** `GET …/connectors/:provider/migrations`: what the bound database records as applied. */
+@ApiZodSchema()
+export class MigrationStatusResponseDto extends createZodDto(migrationStatusSchema) {}
+
+/** `POST …/connectors/:provider/migrations`: the pending files, read from the workspace. */
+@ApiZodSchema()
+export class ApplyMigrationsRequestDto extends createZodDto(applyMigrationsRequestSchema) {}
+
+@ApiZodSchema()
+export class ApplyMigrationsResponseDto extends createZodDto(applyMigrationsResponseSchema) {}
 
 /** Spec 030 contracts/bindings.md § 2: the project's bindings, values never included. */
 @ApiZodSchema()

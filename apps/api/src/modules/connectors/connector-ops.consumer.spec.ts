@@ -25,6 +25,7 @@ import { ReleaseReader } from '../deploy/release-reader';
 import { MailModule } from '../mail/mail.module';
 import { RetryableFailure } from '../outbox/consumer';
 import type { Envelope } from '../outbox/envelope';
+import { OutboxWriter } from '../outbox/outbox-writer';
 import { PreviewModule } from '../preview/preview.module';
 import { OrgService } from '../tenancy/services/org.service';
 import { ProjectService } from '../tenancy/services/project.service';
@@ -267,6 +268,7 @@ describe('ConnectorOpsConsumer', () => {
         transactions,
         moduleRef.get<ClockPort>(CLOCK),
         handlers,
+        moduleRef.get(OutboxWriter, { strict: false }),
       );
 
       const [user] = await database
@@ -342,6 +344,37 @@ describe('ConnectorOpsConsumer', () => {
       expect(seen).toEqual([{ credential: KEY, operationId: id }]);
       expect(await operation(id)).toMatchObject({ reason: null, state: 'succeeded' });
       expect((await connection()).health).toBe('healthy');
+    });
+
+    it('a succeeded value-changing kind tells the project to refresh its preview env, in the settle transaction', async () => {
+      const envChanges = async (projectId: string) =>
+        (
+          await database
+            .select({ payload: schema.outbox.payload })
+            .from(schema.outbox)
+            .where(
+              and(
+                eq(schema.outbox.type, 'project.env.changed'),
+                eq(schema.outbox.aggregateId, projectId),
+              ),
+            )
+        ).map((row) => row.payload);
+      const ok = await queued();
+      const okProject = (await operation(ok))!.projectId!;
+      // The projects are shared across this suite's tests: count what this run adds.
+      const before = (await envChanges(okProject)).length;
+
+      await run(ok);
+      const after = await envChanges(okProject);
+      expect(after).toHaveLength(before + 1);
+      expect(after.at(-1)).toEqual({ orgId, projectId: okProject });
+
+      behaviour = () => Promise.reject(new OperationFailure('disconnected'));
+      const refused = await queued();
+      const refusedProject = (await operation(refused))!.projectId!;
+      const refusedBefore = (await envChanges(refusedProject)).length;
+      await run(refused);
+      expect(await envChanges(refusedProject)).toHaveLength(refusedBefore);
     });
 
     it('a kind with no handler closes failed as provider-unavailable without calling anything', async () => {

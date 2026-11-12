@@ -31,6 +31,7 @@ import {
   SANDBOX_CALLBACK_ENV_PATH,
   SANDBOX_PROJECT_ENV_PATH,
   SANDBOX_CALLBACK_MINTER,
+  SANDBOX_DEV_PID_PATH,
   SANDBOX_DEV_SUPERVISOR_PATH,
   SANDBOX_OPS_QUEUE,
   SANDBOX_TIMINGS,
@@ -49,6 +50,17 @@ type OpEvent = Envelope<'sandbox.op.requested'>;
  * (contracts/dev-supervisor § 2) — so ten seconds is a ceiling, not a budget.
  */
 const DEV_LAUNCH_TIMEOUT_SECONDS = 10;
+
+/**
+ * TERM the supervisor's process group (its pid is the group's: it runs detached in its own
+ * session), wait up to 5 s for it to go, then KILL what is left. No pidfile, or a dead pid, is
+ * nothing to stop. A fixed string: no tenant input reaches it.
+ */
+export const STOP_DEV_SUPERVISOR =
+  `p=$(cat ${SANDBOX_DEV_PID_PATH} 2>/dev/null | tr -cd 0-9); [ -n "$p" ] || exit 0; ` +
+  `kill -TERM -"$p" 2>/dev/null; i=0; ` +
+  `while kill -0 "$p" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i+1)); done; ` +
+  `kill -KILL -"$p" 2>/dev/null; exit 0`;
 
 /** Dependencies can take minutes under gVisor; a restore is rare and a run waits on it anyway. */
 const RESTORE_INSTALL_TIMEOUT_SECONDS = 300;
@@ -184,6 +196,12 @@ export class SandboxOpsConsumer extends EventConsumer<
           target.row.transition === 'hibernating'
           ? target
           : undefined;
+      case 'env':
+        return target.kind === 'project' &&
+          target.row.state === 'active' &&
+          target.row.transition === null
+          ? target
+          : undefined;
       case 'resume':
         return target.kind === 'project' &&
           target.row.state === 'hibernated' &&
@@ -215,6 +233,9 @@ export class SandboxOpsConsumer extends EventConsumer<
           return;
         case 'release':
           await this.release(target);
+          return;
+        case 'env':
+          if (target.kind === 'project') await this.refreshEnv(target);
           return;
       }
     } catch (error) {
@@ -516,6 +537,36 @@ export class SandboxOpsConsumer extends EventConsumer<
       await this.settleProject(target, { ports: {} });
       await this.launchDevServer(target, dev, workspaceRoot);
     }
+  }
+
+  /**
+   * A connector resource went live or was released while the sandbox runs: rewrite the values file,
+   * then stop the supervisor's whole process group (it leads its own session, so the dev server
+   * and its children go with it) and launch a fresh supervisor, whose child reads the new file.
+   * The pidfile then names a dead pid, so the new supervisor claims it. Nothing here fails: a
+   * restart that does not happen leaves the old values until the next start.
+   */
+  private async refreshEnv(target: Extract<OpTarget, { kind: 'project' }>): Promise<void> {
+    await this.deliverProjectEnv(target);
+    const dev = await this.devServer(target);
+    const { workspaceRoot } = target.row;
+
+    if (dev === undefined || workspaceRoot === null) return;
+
+    const stopped = await this.daytona.execute(target.row.daytonaId, {
+      command: STOP_DEV_SUPERVISOR,
+      cwd: workspaceRoot,
+      timeoutSeconds: DEV_LAUNCH_TIMEOUT_SECONDS,
+    });
+
+    if (stopped.timedOut || stopped.exitCode !== 0) {
+      this.warnLaunch(target, dev.port, stopped.timedOut ? 'stop-timeout' : 'stop-failed');
+
+      return;
+    }
+
+    await this.settleProject(target, { ports: {} });
+    await this.launchDevServer(target, dev, workspaceRoot);
   }
 
   /**

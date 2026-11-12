@@ -266,11 +266,23 @@ export const PREVIEW_ENV_KEYS = [
   'NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY',
   'VITE_SUPABASE_URL',
   'VITE_SUPABASE_PUBLISHABLE_KEY',
+  // The same publishable key under the names most Supabase code and imported repositories read.
+  'SUPABASE_ANON_KEY',
+  'NEXT_PUBLIC_SUPABASE_ANON_KEY',
+  'VITE_SUPABASE_ANON_KEY',
   'RESEND_API_KEY',
   'RESEND_FROM_DOMAIN',
 ] as const;
 
 export type PreviewEnvKey = (typeof PREVIEW_ENV_KEYS)[number];
+
+/**
+ * The keys a production build may see: browser-public by construction (a bundler inlines them
+ * into the shipped files). Server secrets — `DATABASE_URL`, `RESEND_API_KEY` — never reach a build.
+ */
+export function isBuildPublicKey(key: string): boolean {
+  return key.startsWith('VITE_') || key.startsWith('NEXT_PUBLIC_');
+}
 
 /**
  * The project's preview values, read from its bindings' live resources (contracts/preview-env.md

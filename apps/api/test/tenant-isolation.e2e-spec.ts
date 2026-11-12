@@ -252,6 +252,10 @@ const READS_BETA_CANNOT_COMPLETE_HERE = new Set([
   // `files.e2e-spec.ts` exercises them against a sandbox that exists.
   'GET /api/v1/orgs/:orgId/projects/:projectId/files',
   'GET /api/v1/orgs/:orgId/projects/:projectId/files/content',
+  // Spec 045: the migration status reads the project's bound database, and beta's project here has
+  // no Neon or Supabase binding: its own read ends `404` after the binding lookup under RLS.
+  // Excused from the control only; alpha and the outsider still sweep it for leaks.
+  'GET /api/v1/orgs/:orgId/projects/:projectId/connectors/:provider/migrations',
 ]);
 
 /**

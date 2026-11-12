@@ -38,10 +38,13 @@ function contribution(
       const url = `https://${String(config.projectRef)}.supabase.co`;
 
       return {
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: value,
         NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: value,
         NEXT_PUBLIC_SUPABASE_URL: url,
+        SUPABASE_ANON_KEY: value,
         SUPABASE_PUBLISHABLE_KEY: value,
         SUPABASE_URL: url,
+        VITE_SUPABASE_ANON_KEY: value,
         VITE_SUPABASE_PUBLISHABLE_KEY: value,
         VITE_SUPABASE_URL: url,
       };

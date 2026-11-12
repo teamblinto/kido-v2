@@ -143,7 +143,7 @@ describe('SupabaseClient', () => {
       accountName: 'Acme Supabase',
       accountRef: 'sb-org-1',
       kind: 'verified',
-      scopes: ['projects:read', 'secrets:read'],
+      scopes: ['projects:read', 'secrets:read', 'database:write'],
     });
     expect(fixture.requests.map((r) => r.path)).toEqual(['/v1/profile', '/v1/organizations']);
   });
@@ -213,5 +213,34 @@ describe('SupabaseClient projects and the publishable key', () => {
     keys([{ api_key: 'eyJservice', name: 'service_role', type: 'legacy' }]);
 
     expect(await failureOf(client.publishableKey(token(), 'abcref'))).toBe('not-found');
+  });
+
+  it('query sends the SQL, answers rows, and answers a SQL error instead of throwing it', async () => {
+    await expect(
+      client.query(
+        token(),
+        'abcref',
+        "insert into supabase_migrations.schema_migrations (version, name) values ('5', 'x')",
+      ),
+    ).resolves.toEqual({ ok: true, rows: [] });
+    expect(fixture.queries).toHaveLength(1);
+    await expect(
+      client.query(token(), 'abcref', 'select version from supabase_migrations.schema_migrations'),
+    ).resolves.toEqual({
+      ok: true,
+      rows: [{ version: '5' }],
+    });
+    await expect(client.query(token(), 'abcref', 'RAISE_ERROR')).resolves.toEqual({
+      message: 'ERROR:  syntax error at or near "RAISE_ERROR"',
+      ok: false,
+    });
+  });
+
+  it('query throws a refused credential or a missing database scope as a provider failure', async () => {
+    expect(await failureOf(client.query(plaintext('sbp_nope'), 'abcref', 'select 1'))).toBe(
+      'unauthorized',
+    );
+    fixture.mode = 'missing-scope';
+    expect(await failureOf(client.query(token(), 'abcref', 'select 1'))).toBe('forbidden-scope');
   });
 });

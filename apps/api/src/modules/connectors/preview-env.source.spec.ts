@@ -231,10 +231,13 @@ describe.skipIf(!postgres || !redis)('PREVIEW_ENV_SOURCE', () => {
     ).toBe(true);
     expect(env).toEqual({
       DATABASE_URL: URI,
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: PUBLISHABLE,
       NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: PUBLISHABLE,
       NEXT_PUBLIC_SUPABASE_URL: 'https://abcref.supabase.co',
+      SUPABASE_ANON_KEY: PUBLISHABLE,
       SUPABASE_PUBLISHABLE_KEY: PUBLISHABLE,
       SUPABASE_URL: 'https://abcref.supabase.co',
+      VITE_SUPABASE_ANON_KEY: PUBLISHABLE,
       VITE_SUPABASE_PUBLISHABLE_KEY: PUBLISHABLE,
       VITE_SUPABASE_URL: 'https://abcref.supabase.co',
     });

@@ -438,14 +438,19 @@ export class DaytonaAdapter {
    */
   async execute(
     daytonaId: string,
-    request: { readonly command: string; readonly cwd: string; readonly timeoutSeconds: number },
+    request: {
+      readonly command: string;
+      readonly cwd: string;
+      readonly timeoutSeconds: number;
+      readonly env?: Readonly<Record<string, string>>;
+    },
     ctx?: MutationContext,
   ): Promise<ExecuteOutcome> {
     const response = await this.send(daytonaId, {
       body: JSON.stringify({
         command: request.command,
         cwd: request.cwd,
-        envs: { LC_ALL: 'C' },
+        envs: { ...request.env, LC_ALL: 'C' },
         timeout: request.timeoutSeconds,
       }),
       ctx,

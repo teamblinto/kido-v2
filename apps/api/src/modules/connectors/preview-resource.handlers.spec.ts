@@ -34,6 +34,7 @@ import { TenantTransactionRunner } from '../../database/tenant-transaction';
 import { AuditService } from '../audit/audit.service';
 import { MailModule } from '../mail/mail.module';
 import type { Envelope } from '../outbox/envelope';
+import { OutboxWriter } from '../outbox/outbox-writer';
 import { PreviewModule } from '../preview/preview.module';
 import { OrgService } from '../tenancy/services/org.service';
 import { ProjectService } from '../tenancy/services/project.service';
@@ -270,6 +271,7 @@ describe.skipIf(!postgres || !redis)('US3 operation handlers', () => {
       transactions,
       clock,
       handlers,
+      moduleRef.get(OutboxWriter, { strict: false }),
     );
 
     const [user] = await database

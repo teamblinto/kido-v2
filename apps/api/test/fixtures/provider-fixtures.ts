@@ -687,6 +687,10 @@ export interface SupabaseFixture extends ProviderFixture {
   refreshCount: number;
   /** Issues a code for a challenge, as the authorize page does once the user consents. */
   authorize(challenge: string, redirectUri: string): string;
+  /** Every `database/query` body, in order. */
+  readonly queries: string[];
+  /** Migration versions the fake database holds; an `insert … values ('<v>'` adds one. */
+  readonly migrations: Set<string>;
 }
 
 function issued(): string {
@@ -779,6 +783,32 @@ export async function startSupabaseFixture({
           status: 201,
         };
       });
+      // A fake of just enough database for the migrations panel: `RAISE_ERROR` in the SQL is a
+      // syntax error, the existence probe and the version list read `migrations`.
+      f.route('POST', '/v1/projects/:ref/database/query', (_params, request) => {
+        const raw = ((request.body ?? {}) as { query?: unknown }).query;
+        const query = typeof raw === 'string' ? raw : '';
+        fixture.queries.push(query);
+        if (query.includes('RAISE_ERROR')) {
+          return {
+            body: { message: 'ERROR:  syntax error at or near "RAISE_ERROR"' },
+            status: 400,
+          };
+        }
+        if (query.includes('to_regclass')) {
+          return { body: [{ present: fixture.migrations.size > 0 }], status: 201 };
+        }
+        if (query.startsWith('select version from ')) {
+          return {
+            body: [...fixture.migrations].sort().map((version) => ({ version })),
+            status: 201,
+          };
+        }
+        const inserted =
+          /insert into \w+\.schema_migrations \(version, name\) values \('(\d+)'/u.exec(query);
+        if (inserted !== null) fixture.migrations.add(inserted[1]!);
+        return { body: [], status: 201 };
+      });
       f.route('POST', '/v1/oauth/revoke', (_params, request) => {
         const body = (request.body ?? {}) as Record<string, string>;
         refreshTokens.delete(body.refresh_token ?? '');
@@ -797,6 +827,8 @@ export async function startSupabaseFixture({
     },
     codes,
     expiresIn: 3600,
+    migrations: new Set<string>(),
+    queries: [] as string[],
     refreshCount: 0,
     refreshTokens,
   });
@@ -810,6 +842,8 @@ export async function startSupabaseFixture({
     codes.clear();
     fixture.expiresIn = 3600;
     fixture.refreshCount = 0;
+    fixture.queries.length = 0;
+    fixture.migrations.clear();
   };
 
   return fixture;

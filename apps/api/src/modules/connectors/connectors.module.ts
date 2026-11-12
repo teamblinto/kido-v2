@@ -35,6 +35,7 @@ import { ConnectorDomainConsumer } from './connector-domain.consumer';
 import { ConnectorListings } from './connector-listings';
 import { ConnectorProjectConsumer } from './connector-project.consumer';
 import { BindingsController } from './controllers/bindings.controller';
+import { DatabaseMigrationService } from './database-migrations';
 import { CloudflareDnsController } from './controllers/cloudflare-dns.controller';
 import { ConnectorListingsController } from './controllers/connector-listings.controller';
 import { ConnectorsController } from './controllers/connectors.controller';
@@ -136,6 +137,7 @@ import { SyncService } from './sync.service';
     BindingReleaseHandler,
     BindingRepository,
     BindingService,
+    DatabaseMigrationService,
     // Spec 030 US2: the Cloudflare offer and write on a custom domain, its release on removal.
     CloudflareDnsService,
     CloudflareRecordReleaser,

@@ -39,7 +39,13 @@ export class BuildSandboxError extends Error {
 /** What `deploy` sees of a build sandbox: five calls and no Daytona type beyond the outcome. */
 export interface BuildSandbox {
   create(template: ProjectTemplate, deploymentId: string): Promise<BuildSandboxHandle>;
-  run(handle: BuildSandboxHandle, command: string, timeoutMs: number): Promise<ExecuteOutcome>;
+  /** `env`: browser-public values only (`isBuildPublicKey`), added beside the adapter's `LC_ALL`. */
+  run(
+    handle: BuildSandboxHandle,
+    command: string,
+    timeoutMs: number,
+    env?: Readonly<Record<string, string>>,
+  ): Promise<ExecuteOutcome>;
   put(handle: BuildSandboxHandle, path: string, body: Buffer): Promise<void>;
   get(handle: BuildSandboxHandle, path: string, capBytes: number): Promise<Buffer>;
   remove(handle: BuildSandboxHandle): Promise<void>;
@@ -105,10 +111,16 @@ export class BuildSandboxService implements BuildSandbox {
   }
 
   /** A timeout is the outcome (`timedOut: true`), not a throw; the daemon takes whole seconds. */
-  run(handle: BuildSandboxHandle, command: string, timeoutMs: number): Promise<ExecuteOutcome> {
+  run(
+    handle: BuildSandboxHandle,
+    command: string,
+    timeoutMs: number,
+    env?: Readonly<Record<string, string>>,
+  ): Promise<ExecuteOutcome> {
     return this.daytona.execute(handle.id, {
       command,
       cwd: handle.workDir,
+      env,
       timeoutSeconds: Math.max(1, Math.ceil(timeoutMs / 1000)),
     });
   }

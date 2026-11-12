@@ -440,6 +440,19 @@ export class ConnectorHealthConsumer extends EventConsumer<
     if (!settled) return;
 
     for (const row of await this.connectionRows.forOrg(tx, orgId)) {
+      // As a removal does: the grant (Supabase) or installation (GitHub) is revoked at the
+      // provider, best effort — a credential that will not open is one nothing can use anyway.
+      try {
+        // A savepoint: a failed read must not abort the sweep's transaction.
+        const credential = await tx.transaction((savepoint) =>
+          this.connections.openCredential(savepoint, row),
+        );
+        await this.connections.revokeAtProvider(row, credential);
+      } catch (error) {
+        this.logger.warn(
+          `deleted org ${orgId}: ${row.provider} not revoked: ${(error as Error).name}`,
+        );
+      }
       await this.connectionRows.disconnectBindings(tx, orgId, row.id);
       await this.connectionRows.dropResourceValues(tx, orgId, row.id);
       await this.connectionRows.delete(tx, orgId, row.id);
