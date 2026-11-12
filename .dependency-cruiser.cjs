@@ -227,6 +227,19 @@ module.exports = {
     // `TemplateVersions` (never its repository). The reverse edge is refused: `sandbox` knows
     // nothing of homes, and its reconciler leaves them alone (they carry no `forge.owner` label).
     moduleEdges('local-agent', ['agent', 'audit', 'identity', 'rbac', 'sandbox', 'tenancy']),
+    // Spec 046: the MCP surface calls the product's services; nothing imports it back.
+    moduleEdges('mcp', [
+      'agent',
+      'audit',
+      'checkpoints',
+      'connectors',
+      'deploy',
+      'identity',
+      'preview',
+      'rbac',
+      'sandbox',
+      'tenancy',
+    ]),
     moduleEdges('mail', []),
     moduleEdges('outbox', []),
     // Spec 017 contract § 9: the four edges the route broker needs; `tenancy → preview` is not

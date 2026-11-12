@@ -91,6 +91,11 @@ export const PROBLEM_TYPES = Object.freeze({
   'internal-server-error': { status: 500, title: 'Internal Server Error' },
   // Spec 040 § 6: the runner's device token is unknown, malformed or revoked — the 401 it stops on.
   'local-agent-revoked': { refines: 'unauthorized', status: 401, title: 'Local Agent Revoked' },
+  'mcp-authorization-invalid': {
+    refines: 'bad-request',
+    status: 400,
+    title: 'MCP Authorization Request Invalid',
+  },
   'method-not-allowed': { status: 405, title: 'Method Not Allowed' },
   // A 403 refinement, and `forbidden` rather than `unauthorized` for the same reason
   // `current-password-incorrect` is: the caller's session is perfectly good — the guard let them

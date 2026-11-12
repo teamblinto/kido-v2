@@ -68,6 +68,10 @@ export const AUDIT_ACTIONS = Object.freeze({
   'invitation.accepted': 'An invited address accepted and became a member.',
   'invitation.created': 'A member was invited to the organisation.',
   'invitation.revoked': 'A pending invitation was withdrawn before it was used.',
+  // Spec 046: an MCP client (Claude, ChatGPT, Cursor�) was let into, or shut out of, the org.
+  'mcp.client-authorized': 'A member consented to an MCP client acting in the org on their behalf.',
+  'mcp.client-revoked':
+    "An MCP client's grant was revoked by its member, by the client, or on a replayed token.",
   'membership.created': 'A user was added to the organisation.',
   'membership.removed': "A user's membership of the organisation was ended.",
   'membership.role-changed': "A member's organisation role was changed.",

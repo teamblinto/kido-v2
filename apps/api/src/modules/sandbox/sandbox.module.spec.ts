@@ -18,6 +18,7 @@ import {
   SANDBOX_OPS_QUEUE,
   SANDBOX_TIMINGS,
 } from './sandbox.constants';
+import { FilesService } from './files.service';
 import { SandboxModule } from './sandbox.module';
 import { SANDBOX_PORT } from './sandbox.port';
 import { SandboxService } from './sandbox.service';
@@ -41,6 +42,8 @@ describe('SandboxModule', () => {
 
   it('exports the build sandbox (027), the port, the lifecycle, the timings, and (for the preview broker) the adapter and the catalogue, and (041) the versions', () => {
     expect(Reflect.getMetadata('exports', SandboxModule)).toEqual([
+      // Spec 046: the MCP file tools read and list through the same service as the files routes.
+      FilesService,
       BUILD_SANDBOX,
       SANDBOX_PORT,
       SANDBOX_LIFECYCLE,

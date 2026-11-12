@@ -5,12 +5,10 @@ import {
   type AuthorizePreviewResponse,
   PREVIEW_LABEL_ROTATED,
   type PreviewResponse,
-  PROJECT_TEMPLATES,
-  type ProjectTemplate,
   type RotatePreviewResponse,
 } from '@repo/contracts';
-import { projects, sandboxes } from '@repo/db';
-import { and, eq, isNull } from 'drizzle-orm';
+import { projects } from '@repo/db';
+import { eq } from 'drizzle-orm';
 
 import { CLOCK, type ClockPort } from '../../../common/clock/clock.port';
 import type { Environment } from '../../../config/environment';
@@ -33,7 +31,7 @@ import {
 } from '../dto/preview.dto';
 import { GrantService } from '../grant.service';
 import { PreviewError } from '../preview.errors';
-import { previewStage } from '../preview-stage';
+import { PreviewReader } from '../preview-reader';
 
 /**
  * A project's preview as its readers see it (spec 017 US1, contracts § 2): the URL the gateway
@@ -54,8 +52,7 @@ import { previewStage } from '../preview-stage';
 @ResourceOrg()
 @Controller({ path: 'orgs/:orgId/projects/:projectId/preview', version: '1' })
 export class PreviewController {
-  private readonly domain: string;
-  private readonly gatewayPort: number | undefined;
+  private readonly reader: PreviewReader;
 
   constructor(
     @Inject(TenantContext) private readonly tenant: TenantContext,
@@ -66,8 +63,7 @@ export class PreviewController {
     @Inject(CLOCK) private readonly clock: ClockPort,
     config: ConfigService<Environment, true>,
   ) {
-    this.domain = config.get('PREVIEW_DOMAIN', { infer: true });
-    this.gatewayPort = config.get('PREVIEW_GATEWAY_PORT', { infer: true });
+    this.reader = new PreviewReader(catalogue, config);
   }
 
   @Get()
@@ -78,8 +74,7 @@ export class PreviewController {
     @Param('orgId') orgId: string,
     @Param('projectId') projectId: string,
   ): Promise<PreviewResponse> {
-    const row = await this.row(orgId, projectId);
-    return this.answer(orgId, projectId, row.template, row.previewLabel, row.previewVisibility);
+    return this.reader.read(this.tenant.tx, orgId, projectId);
   }
 
   @Post('rotate')
@@ -92,7 +87,7 @@ export class PreviewController {
     @Param('orgId') orgId: string,
     @Param('projectId') projectId: string,
   ): Promise<RotatePreviewResponse> {
-    const row = await this.row(orgId, projectId);
+    const row = await this.reader.row(this.tenant.tx, orgId, projectId);
     const tx = this.tenant.tx;
     const { label, previousLabel } = await this.projects.rotatePreviewLabel(
       { orgId, projectId },
@@ -113,7 +108,7 @@ export class PreviewController {
       type: 'project.preview-label.rotated',
     });
 
-    const { port, url } = this.link(row.template, label);
+    const { port, url } = this.reader.link(row.template, label);
     return { port, status: PREVIEW_LABEL_ROTATED, url };
   }
 
@@ -127,7 +122,7 @@ export class PreviewController {
     @Param('projectId') projectId: string,
     @Body() { visibility }: SetPreviewVisibilityRequestDto,
   ): Promise<PreviewResponse> {
-    const row = await this.row(orgId, projectId);
+    const row = await this.reader.row(this.tenant.tx, orgId, projectId);
 
     // The same value writes nothing, the way a same-name rename does (R10).
     if (visibility !== row.previewVisibility) {
@@ -145,57 +140,14 @@ export class PreviewController {
       });
     }
 
-    return this.answer(orgId, projectId, row.template, row.previewLabel, visibility);
-  }
-
-  /** The live row, or the one not-found every route here answers. */
-  private async row(orgId: string, projectId: string) {
-    const row = await this.tenant.tx.query.projects.findFirst({
-      columns: { previewLabel: true, previewVisibility: true, template: true },
-      where: and(eq(projects.orgId, orgId), eq(projects.id, projectId), isNull(projects.deletedAt)),
-    });
-
-    if (row === undefined) {
-      throw new PreviewError('project-not-found', 'No such project.');
-    }
-
-    return row;
-  }
-
-  private async answer(
-    orgId: string,
-    projectId: string,
-    template: string | null,
-    label: string,
-    visibility: PreviewResponse['visibility'],
-  ): Promise<PreviewResponse> {
-    const sandbox = await this.tenant.tx.query.sandboxes.findFirst({
-      columns: { lostAt: true, ports: true, state: true, transition: true, workspaceRoot: true },
-      where: and(eq(sandboxes.orgId, orgId), eq(sandboxes.projectId, projectId)),
-    });
-    const { port, url } = this.link(template, label);
-    return { port, stage: previewStage(sandbox, port), url, visibility };
-  }
-
-  private link(template: string | null, label: string): Pick<PreviewResponse, 'port' | 'url'> {
-    const port = this.devPort(template);
-    const host = `${label}-${String(port)}.${this.domain}`;
-    // The local gateway (`pnpm dev:gateway`) speaks plain HTTP on its own port, as the authorize
-    // answer below already assumes for a host with a port; a deployment sets no gateway port.
-    const url =
-      this.gatewayPort === undefined
-        ? `https://${host}`
-        : `http://${host}:${String(this.gatewayPort)}`;
-    return { port: port ?? null, url: port === undefined ? '' : url };
-  }
-
-  /** The same reading `RouteBrokerService.devPort` makes: no template or no `devPort` is no port. */
-  private devPort(template: string | null): number | undefined {
-    if (template === null || !(PROJECT_TEMPLATES as readonly string[]).includes(template)) {
-      return undefined;
-    }
-    const declared = this.catalogue.get(template as ProjectTemplate).manifest.devPort;
-    return declared === undefined ? undefined : Number(declared);
+    return this.reader.answer(
+      this.tenant.tx,
+      orgId,
+      projectId,
+      row.template,
+      row.previewLabel,
+      visibility,
+    );
   }
 }
 

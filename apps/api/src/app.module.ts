@@ -23,6 +23,7 @@ import { ConnectorsModule } from './modules/connectors/connectors.module';
 import { PreviewEnvModule } from './modules/connectors/preview-env.module';
 import { DeployModule } from './modules/deploy/deploy.module';
 import { LocalAgentModule } from './modules/local-agent/local-agent.module';
+import { McpModule } from './modules/mcp/mcp.module';
 import { HealthModule } from './modules/health/health.module';
 import { IdentityModule } from './modules/identity/identity.module';
 import { MailModule } from './modules/mail/mail.module';
@@ -128,6 +129,10 @@ import { WebhooksModule } from './modules/webhooks/webhooks.module';
     // Registers no guard (spec 029).
     WebhooksModule,
     IdempotencyModule,
+    // Spec 046: last, because it imports most domain modules and must not pull any of them (or their
+    // queue consumers) earlier in the bootstrap order. Registers no guard globally; its bearer and
+    // per-grant guards are controller-scoped.
+    McpModule,
   ],
   controllers: [AppController],
   providers: [

@@ -105,6 +105,9 @@ import { SyncService } from './sync.service';
     SyncController,
   ],
   exports: [
+    // Spec 046: the MCP tools call these directly.
+    ConnectorListings,
+    DatabaseMigrationService,
     BindingService,
     ConnectionService,
     GITHUB_APP_CLIENT,

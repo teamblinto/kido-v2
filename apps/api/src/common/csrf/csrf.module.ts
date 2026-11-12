@@ -45,6 +45,11 @@ export const DEVICE_TOKEN_PATHS: readonly RegExp[] = Object.freeze([
   // Spec 041: an agent home's runner reporting its sign-in URL and result.
   /^\/api\/v1\/local-agent\/auth$/,
   new RegExp(`^/api/v1/local-agent/runs/${UUID}/events$`),
+  // Spec 046: the MCP endpoint takes an OAuth bearer token and no cookie, so a forged cross-site
+  // request carries nothing to ride on. The three OAuth wire endpoints authenticate by the code,
+  // verifier or refresh token in the body; RFC 6749 clients send no Origin and no CSRF header.
+  /^\/api\/v1\/mcp$/,
+  /^\/api\/v1\/oauth\/(?:register|revoke|token)$/,
 ]);
 
 /**

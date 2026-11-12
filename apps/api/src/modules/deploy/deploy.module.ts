@@ -48,7 +48,15 @@ import { SiteRouteService } from './site-route.service';
  */
 @Module({
   controllers: [DeploymentsController, DomainsController, SiteController],
-  exports: [DomainRecordsReader, DomainRouteService, ReleaseReader, SiteRouteService],
+  exports: [
+    // Spec 046: the MCP tools call these directly.
+    DeploymentService,
+    SiteService,
+    DomainRecordsReader,
+    DomainRouteService,
+    ReleaseReader,
+    SiteRouteService,
+  ],
   imports: [
     AuditModule,
     CheckpointsModule,

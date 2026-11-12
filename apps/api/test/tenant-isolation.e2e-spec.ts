@@ -97,6 +97,7 @@ const TENANT_PARAMETERS: Readonly<Record<string, (target: Tenant, world: SweepWo
   deliveryId: (_target, world) => world.betaDeliveryId,
   /** `…/webhooks/endpoints/:endpointId` (spec 029): beta's webhook endpoint, created through the service. */
   endpointId: (_target, world) => world.betaEndpointId,
+  grantId: (_target, world) => world.betaMcpGrantId,
   /** `DELETE /auth/sessions/:id`. Not org-scoped, but a resource that belongs to another principal. */
   id: (_target, world) => world.betaSessionId,
   /** `…/invitations/:invitationId` (spec 031): an open invitation to beta's project, inserted as a row. */
@@ -224,6 +225,24 @@ const ROUTES_WITH_NO_TENANT_RESOURCE = new Set([
   'POST /api/v1/me/subscriptions/claude/code',
   'POST /api/v1/me/subscriptions/claude/cancel',
   'DELETE /api/v1/me/subscriptions/claude',
+  // Spec 046, the MCP endpoint and its OAuth server. Discovery is public and names nothing. The
+  // MCP endpoint takes a bearer token whose grant fixes the organisation, never the path or body;
+  // each tool re-checks the person's permission on the project it names, and `mcp.e2e-spec.ts`
+  // proves a tool aimed at another tenant's project is refused. Registration, token and revocation
+  // authenticate by what the body proves (a code and its PKCE verifier, a refresh token), and
+  // consent names the organisation in the body, where the service checks the caller belongs to it
+  // (`mcp.e2e-spec.ts`: "refuses to let a person connect an organization they do not belong to").
+  'GET /.well-known/oauth-authorization-server',
+  'GET /.well-known/oauth-protected-resource',
+  'GET /.well-known/oauth-protected-resource/api/v1/mcp',
+  'DELETE /api/v1/mcp',
+  'GET /api/v1/mcp',
+  'POST /api/v1/mcp',
+  'POST /api/v1/oauth/authorize',
+  'POST /api/v1/oauth/authorize/preview',
+  'POST /api/v1/oauth/register',
+  'POST /api/v1/oauth/revoke',
+  'POST /api/v1/oauth/token',
 ]);
 
 /**
@@ -315,6 +334,7 @@ interface SweepWorld extends TwoTenantWorld {
   readonly betaEndpointId: string;
   readonly betaInvitationId: string;
   readonly betaDomainHostname: string;
+  readonly betaMcpGrantId: string;
   readonly betaOperationId: string;
   readonly betaRunId: string;
   readonly betaSessionId: string;
@@ -521,9 +541,33 @@ describe('Tenant isolation (e2e) — the §17 gate', () => {
           .returning({ id: schema.projectInvitations.id }),
       );
 
+      // One MCP grant of beta's owner (046), so `…/mcp/grants/:grantId` aims at a row beta owns. The
+      // token hashes are random, so no bearer anywhere matches them.
+      const [mcpClient] = await app
+        .get<ForgeDatabase>(APP_DATABASE)
+        .insert(schema.mcpClients)
+        .values({ clientName: 'Isolation probe', redirectUris: ['https://probe.example.test/cb'] })
+        .returning({ id: schema.mcpClients.id });
+      const [mcpGrant] = await transactions.runInTenantTransaction(seeded.beta.orgId, (tx) =>
+        tx
+          .insert(schema.mcpGrants)
+          .values({
+            accessExpiresAt: new Date('2100-01-01T00:00:00.000Z'),
+            accessTokenHash: randomUUID(),
+            clientId: mcpClient!.id,
+            orgId: seeded.beta.orgId,
+            refreshExpiresAt: new Date('2100-01-01T00:00:00.000Z'),
+            refreshTokenHash: randomUUID(),
+            scopes: ['projects:read'],
+            userId: seeded.beta.owner.userId,
+          })
+          .returning({ id: schema.mcpGrants.id }),
+      );
+
       world = {
         ...seeded,
         betaInvitationId: invitation!.id,
+        betaMcpGrantId: mcpGrant!.id,
         betaDeliveryId: delivery!.id,
         betaEndpointId: endpoint.id,
         betaCheckpointId: checkpoint.id,
@@ -589,9 +633,12 @@ describe('Tenant isolation (e2e) — the §17 gate', () => {
         );
 
         // Post-prefix and post-version. A path missing `/api/v1` would mean the suite was probing a
-        // URL space nobody serves, and every probe would be refused for the wrong reason.
+        // URL space nobody serves, and every probe would be refused for the wrong reason. The one
+        // exception is spec 046's OAuth discovery, which RFC 8414 and 9728 fix at the origin root.
         for (const route of application) {
-          expect(route.path.startsWith('/api')).toBe(true);
+          expect(
+            route.path.startsWith('/api') || route.path.startsWith('/.well-known/oauth-'),
+          ).toBe(true);
         }
       });
 
@@ -605,7 +652,9 @@ describe('Tenant isolation (e2e) — the §17 gate', () => {
        * of them went back to a bare `'*'` and Nest auto-converted it (see `app.module.ts`).
        */
       it('skips only the prefix wildcards, and names them', () => {
+        // Plus the one the prefix's `.well-known` exclusion mounts the same middlewares on (046).
         expect([...new Set(scaffolding.map((route) => route.path))].sort()).toEqual([
+          '/.well-known/{*path}',
           '/api$',
           '/api/*splat',
         ]);

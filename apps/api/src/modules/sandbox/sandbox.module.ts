@@ -55,6 +55,8 @@ import { TemplatesController } from './controllers/templates.controller';
 @Module({
   controllers: [TemplatesController, FilesController],
   exports: [
+    // Spec 046: the MCP tools call these directly.
+    FilesService,
     BUILD_SANDBOX,
     SANDBOX_PORT,
     SANDBOX_LIFECYCLE,

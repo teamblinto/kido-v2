@@ -1,5 +1,5 @@
 import type { INestApplication, INestApplicationContext, LoggerService } from '@nestjs/common';
-import { VersioningType } from '@nestjs/common';
+import { RequestMethod, VersioningType } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import compression from 'compression';
@@ -77,7 +77,11 @@ export function configureApplication(app: INestApplication): void {
     defaultVersion: config.get('API_VERSION', { infer: true }),
     type: VersioningType.URI,
   });
-  app.setGlobalPrefix(prefix);
+  // Spec 046: RFC 8414 and RFC 9728 fix where an MCP client looks for the OAuth discovery
+  // documents, and it is the origin's root, not under the API prefix.
+  app.setGlobalPrefix(prefix, {
+    exclude: [{ method: RequestMethod.GET, path: '.well-known/{*path}' }],
+  });
   // The raw bytes the signature is over are kept by `rawBody: true` on the factory (`main.ts`,
   // research R8); this sets the ceiling on them. Registered here rather than left at the parser's
   // default so the limit is one number a reviewer can find beside the decision that needs it.
