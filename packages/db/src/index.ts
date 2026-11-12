@@ -9,6 +9,7 @@ import * as context from './schema/context';
 import * as deploy from './schema/deploy';
 import * as identity from './schema/identity';
 import * as localAgent from './schema/local-agent';
+import * as mcp from './schema/mcp';
 import * as oauth from './schema/oauth';
 import * as outbox from './schema/outbox';
 import * as rbac from './schema/rbac';
@@ -29,6 +30,7 @@ export * from './schema/context';
 export * from './schema/deploy';
 export * from './schema/identity';
 export * from './schema/local-agent';
+export * from './schema/mcp';
 export * from './schema/oauth';
 export * from './schema/outbox';
 export * from './schema/rbac';
@@ -53,6 +55,7 @@ export const schema = {
   ...deploy,
   ...identity,
   ...localAgent,
+  ...mcp,
   ...oauth,
   ...outbox,
   ...rbac,

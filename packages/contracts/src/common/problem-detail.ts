@@ -52,6 +52,10 @@ export const PROBLEM_TYPE_SLUGS = [
   'internal-server-error',
   // Spec 040 § 6: the runner's device token is unknown, malformed or revoked; it stops.
   'local-agent-revoked',
+  // Spec 046: an MCP client's authorization request names an unknown client, a redirect URI it did
+  // not register, or a resource this server is not. Never redirected back: RFC 6749 §4.1.2.1 forbids
+  // sending a browser to a redirect URI that has not been verified.
+  'mcp-authorization-invalid',
   'method-not-allowed',
   // The second factor was presented and was wrong, on a route whose caller already holds a good
   // session — confirming an enrolment (T20), or stepping up (T21). Deliberately not `unauthorized`,

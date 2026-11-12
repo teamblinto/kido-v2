@@ -312,6 +312,7 @@ describe.skipIf(!databaseReachable)('row-level security', () => {
       'domains',
       'invitations',
       'local_agent_runs',
+      'mcp_grants',
       'memberships',
       'org_data_keys',
       'project_context',

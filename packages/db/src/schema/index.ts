@@ -8,6 +8,7 @@ export * from './context';
 export * from './deploy';
 export * from './identity';
 export * from './local-agent';
+export * from './mcp';
 export * from './oauth';
 export * from './outbox';
 export * from './rbac';

@@ -58,6 +58,8 @@ const EXPECTED_TENANT_OWNED_TABLES = [
   'invitations',
   // Spec 040. Which device ran a run, keyed by the run (`0051_local_agent_runs_are_tenant_owned.sql`).
   'local_agent_runs',
+  // Spec 046. One person's consent for one MCP client in one org (`0059_mcp_grants_are_tenant_owned.sql`).
+  'mcp_grants',
   'memberships',
   'org_data_keys',
   // Spec 021. One row per project, keyed by the project (`0028_project_context_is_tenant_owned.sql`).
@@ -101,6 +103,8 @@ const ROOT_TABLES = [
   'linked_accounts',
   // Spec 040. A person's paired companion (ADR 015).
   'local_agent_devices',
+  // Spec 046. A dynamically registered MCP OAuth client: belongs to no person or org (0059).
+  'mcp_clients',
   'mfa_recovery_codes',
   'oauth_identities',
   'orgs',

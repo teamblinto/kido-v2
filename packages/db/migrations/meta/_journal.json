@@ -407,6 +407,20 @@
       "when": 1793764410244,
       "tag": "0057_github_sync",
       "breakpoints": true
+    },
+    {
+      "idx": 58,
+      "version": "7",
+      "when": 1794473520563,
+      "tag": "0058_mcp_oauth",
+      "breakpoints": true
+    },
+    {
+      "idx": 59,
+      "version": "7",
+      "when": 1794473524765,
+      "tag": "0059_mcp_grants_are_tenant_owned",
+      "breakpoints": true
     }
   ]
 }

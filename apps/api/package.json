@@ -26,6 +26,8 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "catalog:",
+    "@modelcontextprotocol/node": "catalog:",
+    "@modelcontextprotocol/server": "catalog:",
     "openai": "catalog:",
     "@aws-sdk/client-s3": "catalog:",
     "@nestjs/common": "catalog:",
