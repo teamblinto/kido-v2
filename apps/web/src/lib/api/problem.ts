@@ -114,6 +114,8 @@ const MESSAGES: Readonly<Record<ProblemTypeSlug, string>> = {
   'import-repo-too-large': 'That repository is too large to import.',
   'internal-server-error': 'Something went wrong on our side. Please try again.',
   'local-agent-revoked': 'That computer is no longer connected.',
+  'mcp-authorization-invalid':
+    'This connection request is not valid. Start connecting again from your AI tool.',
   'method-not-allowed': 'That action is not available here.',
   'mfa-code-incorrect': 'That code is incorrect. Check your authenticator app and try again.',
   'not-acceptable': 'That response format is not supported.',

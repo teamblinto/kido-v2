@@ -34,10 +34,17 @@ export const routes = {
    * `invitationUrl` puts the token in the query, unlike {@link routes.projectInvitationAccept}.
    */
   invitationAccept: '/invitations/accept',
+  /** Connect AI agents over MCP and revoke the connected ones (spec 046). */
+  mcpSettings: '/settings/mcp',
   /** The organisation's members, and the invite form (spec 033). */
   membersSettings: '/settings/members',
   /** Where a password-reset mail lands, carrying `?token=`. */
   newPassword: '/auth/password/reset',
+  /**
+   * The OAuth `authorization_endpoint` an MCP client sends the browser to (spec 046), carrying RFC
+   * 6749 §4.1.1's `response_type`, `client_id`, `redirect_uri`, `code_challenge`, `state`, `scope`…
+   */
+  oauthAuthorize: '/oauth/authorize',
   /** Where the preview gateway bounces a non-public preview, carrying `?label=` and `?return=`. */
   previewAuthorize: '/preview-authorize',
   project: '/projects/:projectId',

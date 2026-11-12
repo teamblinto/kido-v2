@@ -22,8 +22,10 @@ import { GithubAuthorizedPage } from '@/pages/github-authorized-page';
 import { GithubCallbackPage } from '@/pages/github-callback-page';
 import { SupabaseCallbackPage } from '@/pages/supabase-callback-page';
 import { InvitationAcceptPage } from '@/pages/invitation-accept-page';
+import { McpSettingsPage } from '@/pages/mcp-settings-page';
 import { MembersSettingsPage } from '@/pages/members-settings-page';
 import { NotFoundPage } from '@/pages/not-found-page';
+import { OauthAuthorizePage } from '@/pages/oauth-authorize-page';
 import { PreviewAuthorizePage } from '@/pages/preview-authorize-page';
 import { ProjectInvitationAcceptPage } from '@/pages/project-invitation-accept-page';
 import { UsageSettingsPage } from '@/pages/usage-settings-page';
@@ -71,6 +73,14 @@ export function App(): React.JSX.Element {
         element={
           <RequireAuth>
             <WebhooksSettingsPage />
+          </RequireAuth>
+        }
+      />
+      <Route
+        path={routes.mcpSettings}
+        element={
+          <RequireAuth>
+            <McpSettingsPage />
           </RequireAuth>
         }
       />
@@ -183,6 +193,8 @@ export function App(): React.JSX.Element {
         page itself sends a signed-out visitor to sign in with this address as the way back.
       */}
       <Route path={routes.previewAuthorize} element={<PreviewAuthorizePage />} />
+      {/* The MCP consent screen (spec 046): signs a visitor in and back here, as above. */}
+      <Route path={routes.oauthAuthorize} element={<OauthAuthorizePage />} />
       {/* Signs a visitor in (or up) and back here itself, as the preview page does (spec 031). */}
       <Route path={routes.projectInvitationAccept} element={<ProjectInvitationAcceptPage />} />
       <Route path={routes.invitationAccept} element={<InvitationAcceptPage />} />

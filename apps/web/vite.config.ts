@@ -19,6 +19,8 @@ export default defineConfig({
     host: true,
     port: 5173,
     proxy: {
+      // Spec 046: OAuth discovery for MCP clients is at the origin root, served by the API.
+      '/.well-known/oauth-': { changeOrigin: true, target: 'http://127.0.0.1:3000' },
       '/api': {
         changeOrigin: true,
         // Target the IPv4 loopback explicitly to match the API's 0.0.0.0 bind.

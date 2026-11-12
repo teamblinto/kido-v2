@@ -52,6 +52,7 @@ describe('messageFor', () => {
       'import-repo-too-large',
       'internal-server-error',
       'local-agent-revoked',
+      'mcp-authorization-invalid',
       'method-not-allowed',
       'mfa-code-incorrect',
       'not-acceptable',
