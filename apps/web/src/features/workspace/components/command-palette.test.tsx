@@ -4,10 +4,9 @@ import { describe, expect, it } from 'vitest';
 
 import { projectPath, routes } from '@/lib/routes';
 import { renderScreen } from '@/test/render';
-import type { Project } from '../types';
 import { CommandPalette } from './command-palette';
 
-const project = { activity: 'Created just now', id: 'p-1', name: 'Invoice tool' } as Project;
+const project = { activity: 'Created just now', id: 'p-1', name: 'Invoice tool' };
 
 function renderPalette(): void {
   renderScreen(
