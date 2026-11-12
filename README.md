@@ -135,6 +135,12 @@ Projects can link to a repository and push after every agent turn (spec 044,
 
 Then set the four `GITHUB_APP_*` values. `GITHUB_APP_CLIENT_SECRET` is optional and lets a personal account create a repository; without it, a personal account can only link an existing one.
 
+## AI agents (MCP)
+
+The platform is a remote MCP server at `/api/v1/mcp`, so Claude, ChatGPT, Cursor and VS Code can
+build, debug and deploy projects on a person's behalf after they approve it in the browser. Setup,
+scopes and the tool reference: [docs/mcp.md](docs/mcp.md); design: [spec 046](docs/specs/046-mcp-server/spec.md).
+
 ## Testing
 
 `pnpm test` runs everything. The API's suite is three layers in one command — unit, integration against real Postgres and Redis, and e2e through the full Nest pipeline — and how it behaves depends on whether those services are up.
