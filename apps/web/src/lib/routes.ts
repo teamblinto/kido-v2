@@ -40,6 +40,8 @@ export const routes = {
   membersSettings: '/settings/members',
   /** Where a password-reset mail lands, carrying `?token=`. */
   newPassword: '/auth/password/reset',
+  /** Create another organisation — the switcher's "Create new workspace" (ADR 007). */
+  newOrg: '/orgs/new',
   /**
    * The OAuth `authorization_endpoint` an MCP client sends the browser to (spec 046), carrying RFC
    * 6749 §4.1.1's `response_type`, `client_id`, `redirect_uri`, `code_challenge`, `state`, `scope`…
@@ -53,6 +55,8 @@ export const routes = {
   /** Import a GitHub repository into a new project (spec 026 US1). */
   projectNewImport: '/projects/new/import',
   resetLinkSent: '/forgot-password/sent',
+  /** Settings' front door: redirects to the first organisation page, {@link routes.membersSettings}. */
+  settings: '/settings',
   signIn: '/sign-in',
   /** The "you already have an account" mail points here; it redirects to {@link routes.signIn}. */
   signInAlias: '/auth/login',

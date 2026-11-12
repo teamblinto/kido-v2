@@ -2,6 +2,7 @@ import { ORG_NAME_MAX_LENGTH, createOrgRequestSchema, orgSlugSchema } from '@rep
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { AlertTriangleIcon, ArrowRightIcon, Loader2Icon, ZapIcon } from 'lucide-react';
 import { useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -9,8 +10,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Wordmark } from '@/components/wordmark';
 import { ApiProblem, messageFor } from '@/lib/api/problem';
+import { routes } from '@/lib/routes';
 import { createOrg } from '../api';
-import { ORGS_QUERY_KEY } from '../hooks/use-orgs';
+import { ORGS_QUERY_KEY, useOrgs } from '../hooks/use-orgs';
 
 /**
  * Derive a slug from the name, as a starting point the user can overrule.
@@ -35,8 +37,15 @@ export function slugify(name: string): string {
  * explicit, authenticated action"* — so this screen is that action. `GET /orgs` answers an account
  * in none with `200` and an empty array rather than a `404` for exactly this reason.
  */
-export function CreateOrgScreen(): React.JSX.Element {
+export function CreateOrgScreen({
+  isAdditional = false,
+}: {
+  /** Reached from the switcher by someone who already has an organisation: offer the way back. */
+  readonly isAdditional?: boolean;
+} = {}): React.JSX.Element {
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
+  const { selectOrg } = useOrgs();
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
   const [slugEdited, setSlugEdited] = useState(false);
@@ -49,11 +58,14 @@ export function CreateOrgScreen(): React.JSX.Element {
     onError: (error) => {
       setFieldErrors(error instanceof ApiProblem ? error.fieldErrors() : {});
     },
-    onSuccess: async () => {
+    onSuccess: async ({ org }) => {
+      // The one just made becomes the one being looked at, wherever the form was opened from.
+      selectOrg(org.id);
       // Refetched rather than pushed into the cache: `useOrgs` picks the active organisation from
       // the list, and the list is the thing that changed. Seeding one entry by hand would work
       // until the day the server returns something the client did not predict.
       await queryClient.invalidateQueries({ queryKey: ORGS_QUERY_KEY });
+      await navigate(routes.home);
     },
   });
 
@@ -98,11 +110,19 @@ export function CreateOrgScreen(): React.JSX.Element {
         </span>
 
         <h1 className="text-heading-xl text-foreground mt-6 font-semibold">
-          Create your organisation
+          {isAdditional ? 'Create a new organisation' : 'Create your organisation'}
         </h1>
         <p className="text-body-md text-subdued mt-2">
           Everything you build lives in an organisation. You can invite people to it later.
         </p>
+        {isAdditional ? (
+          <Link
+            to={routes.home}
+            className="text-label-sm text-subdued hover:text-foreground mt-3 inline-block"
+          >
+            Cancel and go back
+          </Link>
+        ) : null}
 
         {create.isError && !taken && Object.keys(fieldErrors).length === 0 ? (
           <Alert variant="danger" className="mt-6">

@@ -1,4 +1,3 @@
-import { PaperclipIcon } from 'lucide-react';
 import { useId, useState } from 'react';
 
 import {
@@ -107,14 +106,6 @@ export function ChatComposer({
         />
 
         <div className="flex min-w-0 items-center gap-2">
-          <button
-            type="button"
-            className="text-faint hover:text-subdued rounded-sm transition-colors"
-          >
-            <PaperclipIcon className="size-[15px]" aria-hidden="true" />
-            <span className="sr-only">Attach a file</span>
-          </button>
-
           <ModelPicker state={modelState} className="max-w-[200px]" />
 
           <span className="flex-1" />

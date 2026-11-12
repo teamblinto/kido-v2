@@ -1,12 +1,10 @@
 import {
-  BookOpenIcon,
   ChevronDownIcon,
-  ChevronRightIcon,
-  EyeIcon,
   LinkIcon,
   LogOutIcon,
   MonitorIcon,
   SearchIcon,
+  SettingsIcon,
   ShieldCheckIcon,
 } from 'lucide-react';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -131,10 +129,13 @@ export function AccountMenu({
             <LinkIcon aria-hidden="true" />
             Connected accounts
           </DropdownMenuItem>
-          <DropdownMenuItem>
-            <EyeIcon aria-hidden="true" />
-            <span className="flex-1">Appearance</span>
-            <ChevronRightIcon className="size-[13px]" aria-hidden="true" />
+          <DropdownMenuItem
+            onSelect={() => {
+              void navigate(routes.settings);
+            }}
+          >
+            <SettingsIcon aria-hidden="true" />
+            Organisation settings
           </DropdownMenuItem>
           <DropdownMenuItem onSelect={onOpenCommandPalette}>
             <SearchIcon aria-hidden="true" />
@@ -146,10 +147,6 @@ export function AccountMenu({
         <DropdownMenuSeparator />
 
         <DropdownMenuSection>
-          <DropdownMenuItem>
-            <BookOpenIcon aria-hidden="true" />
-            Documentation
-          </DropdownMenuItem>
           <DropdownMenuItem
             disabled={logout.isPending}
             onSelect={() => {

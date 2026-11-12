@@ -142,9 +142,17 @@ export function WorkspaceHomePage(): React.JSX.Element {
     [creation, modelState.needsConnection],
   );
 
+  // A project starts from what somebody asks for, so "New project" takes them to the composer
+  // rather than creating one whose first prompt would be the placeholder name.
   const createFromPrompt = useCallback(() => {
-    startProject('Untitled project');
-  }, [startProject]);
+    // Next frame: from the palette, its focus trap is still up until the close has rendered.
+    requestAnimationFrame(() => {
+      const composer = document.querySelector<HTMLTextAreaElement>('textarea[name="prompt"]');
+
+      composer?.scrollIntoView({ block: 'center' });
+      composer?.focus();
+    });
+  }, []);
 
   useCommandShortcut(openCommandPalette);
 

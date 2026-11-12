@@ -12,6 +12,7 @@ import { UnverifiedEmailPage } from '@/features/auth/pages/unverified-email-page
 import { VerifyEmailPage } from '@/features/auth/pages/verify-email-page';
 import { RequireAnon, RequireAuth } from '@/features/auth/session/route-guards';
 import { ProjectPage } from '@/features/project/pages/project-page';
+import { CreateOrgScreen } from '@/features/workspace/components/create-org-screen';
 import { WorkspaceHomePage } from '@/features/workspace/pages/workspace-home-page';
 import { routes } from '@/lib/routes';
 import { AccountSettingsPage } from '@/pages/account-settings-page';
@@ -60,6 +61,15 @@ export function App(): React.JSX.Element {
           </RequireAuth>
         }
       />
+      <Route
+        path={routes.newOrg}
+        element={
+          <RequireAuth>
+            <CreateOrgScreen isAdditional />
+          </RequireAuth>
+        }
+      />
+      <Route path={routes.settings} element={<Navigate to={routes.membersSettings} replace />} />
       <Route
         path={routes.connectorsSettings}
         element={

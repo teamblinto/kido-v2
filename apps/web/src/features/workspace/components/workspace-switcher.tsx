@@ -74,7 +74,14 @@ export function WorkspaceSwitcher({
             </div>
           </div>
           <div className="flex gap-2">
-            <Button variant="outline" size="sm" className="text-label-xs h-[30px] flex-1">
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-label-xs h-[30px] flex-1"
+              onClick={() => {
+                void navigate(routes.settings);
+              }}
+            >
               <SettingsIcon className="size-3.5" aria-hidden="true" />
               Settings
             </Button>
@@ -120,7 +127,11 @@ export function WorkspaceSwitcher({
         <DropdownMenuSeparator />
 
         <DropdownMenuSection>
-          <DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => {
+              void navigate(routes.newOrg);
+            }}
+          >
             <PlusIcon aria-hidden="true" />
             Create new workspace
           </DropdownMenuItem>

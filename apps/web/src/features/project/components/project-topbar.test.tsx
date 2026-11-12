@@ -159,7 +159,7 @@ describe('ProjectTopbar project management', () => {
     vi.spyOn(window, 'prompt').mockReturnValue('Relaunch site');
 
     renderTopbar(['project:read']);
-    await userEvent.click(screen.getByRole('button', { name: /switch project/i }));
+    await userEvent.click(screen.getByRole('button', { name: /project actions/i }));
     await userEvent.click(await screen.findByRole('menuitem', { name: 'Rename project' }));
 
     await waitFor(() => {
@@ -180,7 +180,7 @@ describe('ProjectTopbar project management', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
 
     renderTopbar(['project:read'], `/projects/${PROJECT}`, { '/': <p>Home screen</p> });
-    await userEvent.click(screen.getByRole('button', { name: /switch project/i }));
+    await userEvent.click(screen.getByRole('button', { name: /project actions/i }));
     await userEvent.click(await screen.findByRole('menuitem', { name: 'Delete project' }));
 
     expect(await screen.findByText('Home screen')).toBeInTheDocument();
@@ -191,7 +191,7 @@ describe('ProjectTopbar project management', () => {
     vi.spyOn(window, 'confirm').mockReturnValue(false);
 
     renderTopbar(['project:read']);
-    await userEvent.click(screen.getByRole('button', { name: /switch project/i }));
+    await userEvent.click(screen.getByRole('button', { name: /project actions/i }));
     await userEvent.click(await screen.findByRole('menuitem', { name: 'Delete project' }));
 
     // msw's `onUnhandledRequest: 'error'` would fail a DELETE nobody handled.

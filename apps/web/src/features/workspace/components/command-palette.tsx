@@ -1,16 +1,19 @@
 import {
-  BookOpenIcon,
+  DownloadIcon,
   LayoutGridIcon,
   type LucideIcon,
   PlusIcon,
   SearchIcon,
   SettingsIcon,
+  UserIcon,
   UsersIcon,
 } from 'lucide-react';
 import { useEffect, useId, useMemo, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { Kbd } from '@/components/ui/kbd';
+import { projectPath, routes } from '@/lib/routes';
 import { cn } from '@/lib/utils';
 import type { Project } from '../types';
 
@@ -46,13 +49,21 @@ export function CommandPalette({
   open,
   projects,
 }: CommandPaletteProps): React.JSX.Element {
+  const navigate = useNavigate();
   const listId = useId();
+  // A chosen item moves focus somewhere on purpose; the dialog must not pull it back on close.
+  const [choseItem, setChoseItem] = useState(false);
+  const choose = (item: PaletteItem): void => {
+    setChoseItem(true);
+    item.onSelect();
+  };
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
 
   const groups = useMemo<readonly PaletteGroup[]>(() => {
-    const close = (): void => {
+    const go = (to: string) => (): void => {
       onOpenChange(false);
+      void navigate(to);
     };
 
     const candidates: readonly PaletteGroup[] = [
@@ -61,7 +72,7 @@ export function CommandPalette({
           icon: LayoutGridIcon,
           id: project.id,
           meta: project.activity,
-          onSelect: close,
+          onSelect: go(projectPath(project.id)),
           title: project.name,
         })),
         title: 'Projects',
@@ -77,9 +88,30 @@ export function CommandPalette({
             },
             title: 'Create new project',
           },
-          { icon: BookOpenIcon, id: 'templates', onSelect: close, title: 'Browse templates' },
-          { icon: UsersIcon, id: 'invite', onSelect: close, title: 'Invite a teammate' },
-          { icon: SettingsIcon, id: 'settings', onSelect: close, title: 'Account settings' },
+          {
+            icon: DownloadIcon,
+            id: 'import',
+            onSelect: go(routes.projectNewImport),
+            title: 'Import a GitHub repository',
+          },
+          {
+            icon: UsersIcon,
+            id: 'invite',
+            onSelect: go(routes.membersSettings),
+            title: 'Invite a teammate',
+          },
+          {
+            icon: SettingsIcon,
+            id: 'settings',
+            onSelect: go(routes.settings),
+            title: 'Organisation settings',
+          },
+          {
+            icon: UserIcon,
+            id: 'account',
+            onSelect: go(routes.accountSettings),
+            title: 'Account settings',
+          },
         ],
         title: 'Actions',
       },
@@ -88,7 +120,7 @@ export function CommandPalette({
     return candidates
       .map((group) => ({ ...group, items: group.items.filter((item) => matches(item, query)) }))
       .filter((group) => group.items.length > 0);
-  }, [onNewProject, onOpenChange, projects, query]);
+  }, [navigate, onNewProject, onOpenChange, projects, query]);
 
   const flatItems = useMemo(() => groups.flatMap((group) => group.items), [groups]);
   // Clamp on read rather than storing a corrected index: the result set shrinks
@@ -115,7 +147,7 @@ export function CommandPalette({
       setActiveIndex((highlighted - 1 + flatItems.length) % flatItems.length);
     } else if (event.key === 'Enter') {
       event.preventDefault();
-      activeItem?.onSelect();
+      if (activeItem !== undefined) choose(activeItem);
     }
   }
 
@@ -133,6 +165,12 @@ export function CommandPalette({
       <DialogContent
         showCloseButton={false}
         aria-describedby={undefined}
+        onCloseAutoFocus={(event) => {
+          if (choseItem) {
+            setChoseItem(false);
+            event.preventDefault();
+          }
+        }}
         className="shadow-palette top-[8vh] max-h-[84vh] translate-y-0 rounded-[14px]"
       >
         <DialogTitle className="sr-only">Command palette</DialogTitle>
@@ -191,7 +229,9 @@ export function CommandPalette({
                       onMouseMove={() => {
                         setActiveIndex(flatItems.indexOf(item));
                       }}
-                      onClick={item.onSelect}
+                      onClick={() => {
+                        choose(item);
+                      }}
                     >
                       <item.icon className="text-subdued size-[15px] shrink-0" aria-hidden="true" />
                       <span className="text-label-sm text-foreground min-w-0 flex-1 truncate font-medium">

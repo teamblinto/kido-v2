@@ -11,7 +11,7 @@ import {
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Loader2 } from 'lucide-react';
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import { Alert } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -21,7 +21,7 @@ import { listWorkspaces } from '@/features/workspace/api';
 import { useOrgs } from '@/features/workspace/hooks/use-orgs';
 import { apiRequest } from '@/lib/api/client';
 import { messageFor } from '@/lib/api/problem';
-import { projectPath } from '@/lib/routes';
+import { projectPath, routes } from '@/lib/routes';
 
 const TEMPLATE_LABELS: Record<ProjectTemplate, string> = {
   nextjs: 'Next.js',
@@ -146,7 +146,10 @@ export function ProjectNewImportPage(): React.JSX.Element {
         </p>
       ) : connectionId === '' ? (
         <Alert variant="warning" className="mt-6">
-          Connect GitHub for this organisation first, then come back to import a repository.
+          <Link to={routes.connectorsSettings} className="font-medium underline">
+            Connect GitHub
+          </Link>{' '}
+          for this organisation first, then come back to import a repository.
         </Alert>
       ) : (
         <section className="mt-6" aria-labelledby="repositories-heading">

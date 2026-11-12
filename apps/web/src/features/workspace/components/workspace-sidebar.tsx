@@ -1,16 +1,16 @@
 import {
-  BookOpenIcon,
-  CompassIcon,
+  DownloadIcon,
   FolderIcon,
   HomeIcon,
-  LayoutGridIcon,
   type LucideIcon,
   SearchIcon,
-  StarIcon,
+  SettingsIcon,
   UsersIcon,
 } from 'lucide-react';
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 
+import { routes } from '@/lib/routes';
 import { cn } from '@/lib/utils';
 import type { Account, Workspace } from '../types';
 import { AccountMenu } from './account-menu';
@@ -22,6 +22,8 @@ interface NavItem {
   label: string;
   /** Present when the item runs a command rather than navigating. */
   onSelect?: () => void;
+  /** Where the item navigates; every item has this or `onSelect`. */
+  to?: string;
 }
 
 interface NavGroup {
@@ -55,15 +57,13 @@ export function WorkspaceSidebar({
   const navGroups: readonly NavGroup[] = [
     {
       items: [
-        { icon: HomeIcon, label: 'Home' },
+        { icon: HomeIcon, label: 'Home', to: routes.home },
         { icon: SearchIcon, label: 'Search', onSelect: onOpenCommandPalette },
       ],
     },
     {
       items: [
-        { icon: LayoutGridIcon, label: 'All projects' },
-        { icon: StarIcon, label: 'Starred' },
-        { icon: UsersIcon, label: 'Shared with me' },
+        { icon: DownloadIcon, label: 'Import from GitHub', to: routes.projectNewImport },
         {
           icon: FolderIcon,
           label: 'Workspaces',
@@ -76,10 +76,10 @@ export function WorkspaceSidebar({
     },
     {
       items: [
-        { icon: CompassIcon, label: 'Discover' },
-        { icon: BookOpenIcon, label: 'Templates' },
+        { icon: UsersIcon, label: 'Members', to: routes.membersSettings },
+        { icon: SettingsIcon, label: 'Settings', to: routes.settings },
       ],
-      title: 'Resources',
+      title: 'Organisation',
     },
   ];
 
@@ -152,8 +152,12 @@ function NavLink({ isActive, item }: { isActive: boolean; item: NavItem }): Reac
   }
 
   return (
-    <a href="#" aria-current={isActive ? 'page' : undefined} className={className}>
+    <Link
+      to={item.to ?? routes.home}
+      aria-current={isActive ? 'page' : undefined}
+      className={className}
+    >
       {content}
-    </a>
+    </Link>
   );
 }

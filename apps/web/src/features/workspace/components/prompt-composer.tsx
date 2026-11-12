@@ -1,13 +1,5 @@
 import type { CatalogueModel, CatalogueTemplate, ProjectTemplate } from '@repo/contracts';
-import {
-  ArrowUpIcon,
-  ChevronDownIcon,
-  LayoutGridIcon,
-  type LucideIcon,
-  MessageSquareIcon,
-  MicIcon,
-  PaperclipIcon,
-} from 'lucide-react';
+import { ArrowUpIcon, ChevronDownIcon, LayoutGridIcon } from 'lucide-react';
 import { useId, useRef, useState } from 'react';
 
 import {
@@ -124,6 +116,7 @@ export function PromptComposer({
         </label>
         <textarea
           id={id}
+          name="prompt"
           ref={textareaRef}
           rows={1}
           value={prompt}
@@ -158,7 +151,6 @@ export function PromptComposer({
           }}
         >
           <ModelPicker state={modelState} onOpenChange={setIsModelMenuOpen} />
-          <ComposerChip icon={PaperclipIcon} label="Attach" />
           <TemplatePicker
             isMenuOpen={isTemplateMenuOpen}
             templateId={templateId}
@@ -167,14 +159,6 @@ export function PromptComposer({
             onSelectTemplate={onSelectTemplate}
           />
           <span className="flex-1" />
-          <ComposerChip icon={MessageSquareIcon} label="Chat" className="max-sm:hidden" />
-          <button
-            type="button"
-            className="text-faint hover:text-subdued rounded-sm p-1 transition-colors"
-            aria-label="Dictate a prompt"
-          >
-            <MicIcon className="size-[17px]" aria-hidden="true" />
-          </button>
           <ComposerPrimaryAction disabledReason={disabledReason} label="Send prompt" />
         </div>
       </form>
@@ -332,29 +316,5 @@ function TemplatePicker({
         </DropdownMenuSection>
       </DropdownMenuContent>
     </DropdownMenu>
-  );
-}
-
-function ComposerChip({
-  className,
-  icon: Icon,
-  label,
-}: {
-  className?: string;
-  icon: LucideIcon;
-  label: string;
-}): React.JSX.Element {
-  return (
-    <button
-      type="button"
-      className={cn(
-        'bg-muted text-label-xs text-subdued hover:bg-secondary flex items-center gap-1.5',
-        'rounded-lg py-1.5 pr-2.5 pl-[9px] font-medium transition-colors',
-        className,
-      )}
-    >
-      <Icon className="size-[13px]" aria-hidden="true" />
-      {label}
-    </button>
   );
 }

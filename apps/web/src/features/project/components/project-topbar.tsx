@@ -247,10 +247,16 @@ export function ProjectTopbar({
           >
             <span className="truncate">{projectName}</span>
             <ChevronDownIcon className="size-3.5 shrink-0" aria-hidden="true" />
-            <span className="sr-only">Switch project</span>
+            <span className="sr-only">Project actions</span>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-[240px]">
-            <DropdownMenuItem>Project settings</DropdownMenuItem>
+            <DropdownMenuItem
+              onSelect={() => {
+                void navigate(routes.home);
+              }}
+            >
+              All projects
+            </DropdownMenuItem>
             <DropdownMenuItem
               disabled={!canManage || rename.isPending}
               onSelect={() => {
@@ -260,7 +266,6 @@ export function ProjectTopbar({
             >
               Rename project
             </DropdownMenuItem>
-            <DropdownMenuItem>Duplicate project</DropdownMenuItem>
             <DropdownMenuItem
               disabled={!canManage || remove.isPending}
               onSelect={() => {

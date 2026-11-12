@@ -3,9 +3,10 @@ import { useLocation } from 'react-router-dom';
 
 import { ChangePasswordSection } from '@/features/settings/change-password-section';
 import { ConnectedAccountsSection } from '@/features/settings/connected-accounts-section';
+import { SettingsNav } from '@/features/settings/settings-nav';
 import { SubscriptionCard } from '@/features/settings/subscription/subscription-card';
 
-/** The person's own settings (spec 032 US2); not `SettingsNav`, which is organisation-only. */
+/** The person's own settings (spec 032 US2), reachable from the organisation settings' nav. */
 export function AccountSettingsPage(): React.JSX.Element {
   const { hash } = useLocation();
 
@@ -16,6 +17,7 @@ export function AccountSettingsPage(): React.JSX.Element {
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
+      <SettingsNav />
       <h1 className="text-heading-lg font-semibold">Connected accounts</h1>
       <p className="text-body-sm text-subdued mt-1">
         Use your own Claude or OpenAI subscription for your runs. Only the account name is shown

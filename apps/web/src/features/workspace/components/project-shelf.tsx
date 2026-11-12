@@ -1,20 +1,10 @@
-import { AlertTriangleIcon, ArrowRightIcon, PlusIcon } from 'lucide-react';
+import { AlertTriangleIcon, PlusIcon } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { messageFor } from '@/lib/api/problem';
 import { cn } from '@/lib/utils';
 import type { Project } from '../types';
 import { ProjectCard } from './project-card';
-
-const shelfTabs = [
-  { label: 'Recently viewed', value: 'recent' },
-  { label: 'My projects', value: 'mine' },
-  { label: 'Shared with me', value: 'shared' },
-  { label: 'Templates', value: 'templates' },
-] as const;
-
-type ShelfTab = (typeof shelfTabs)[number]['value'];
 
 interface ProjectShelfProps {
   error?: unknown;
@@ -32,59 +22,23 @@ export function ProjectShelf({
   onRetry,
   projects,
 }: ProjectShelfProps): React.JSX.Element {
-  /*
-   * `GET /orgs/:orgId/projects` returns the projects the caller may read, and nothing distinguishes
-   * one tab from another in that answer: there is no "recently viewed" to sort by — `createdAt` is
-   * the only timestamp — no ownership flag, and no templates. Rather than three tabs quietly
-   * showing the same list, only the ones with an answer carry it.
-   */
-  const byTab: Record<ShelfTab, readonly Project[]> = {
-    mine: projects,
-    recent: projects,
-    shared: [],
-    templates: [],
-  };
-
   return (
     <section
-      aria-label="Projects"
+      aria-labelledby="project-shelf-heading"
       className="bg-canvas border-line-subtle border-t px-5 pt-[18px] pb-[22px] sm:px-7"
     >
-      <Tabs defaultValue="recent" className="gap-3.5">
-        <div className="flex items-center gap-5">
-          <TabsList className="flex-1">
-            {shelfTabs.map((tab) => (
-              <TabsTrigger key={tab.value} value={tab.value}>
-                {tab.label}
-              </TabsTrigger>
-            ))}
-          </TabsList>
-          <a
-            href="#"
-            className={cn(
-              'text-label-sm text-subdued hover:text-foreground flex shrink-0 items-center gap-1.5',
-              'rounded-sm font-medium transition-colors max-sm:hidden',
-            )}
-          >
-            Browse all
-            <ArrowRightIcon className="size-3.5" aria-hidden="true" />
-          </a>
-        </div>
-
-        {shelfTabs.map((tab) => (
-          <TabsContent key={tab.value} value={tab.value}>
-            {error === undefined || error === null ? (
-              <ShelfGrid
-                isLoading={isLoading}
-                onNewProject={onNewProject}
-                projects={byTab[tab.value]}
-              />
-            ) : (
-              <ShelfError error={error} onRetry={onRetry} />
-            )}
-          </TabsContent>
-        ))}
-      </Tabs>
+      {/*
+        One list, not tabs: `GET /orgs/:orgId/projects` carries no view history, ownership flag or
+        sharing marker to split it by, so "recent", "mine" and "shared" tabs could only repeat it.
+      */}
+      <h2 id="project-shelf-heading" className="text-label-sm text-foreground mb-3.5 font-medium">
+        Projects
+      </h2>
+      {error === undefined || error === null ? (
+        <ShelfGrid isLoading={isLoading} onNewProject={onNewProject} projects={projects} />
+      ) : (
+        <ShelfError error={error} onRetry={onRetry} />
+      )}
     </section>
   );
 }
