@@ -1206,18 +1206,22 @@ describe('Sandbox lifecycle (e2e)', () => {
               expect(sum(await round())).toBe(first);
               // Round 2: same period, nothing more.
               expect(sum(await round())).toBe(0);
-              // Round 3: a new period, but a third connection holds the lock for 30 ms.
+              // Round 3: a new period, but a third connection holds the lock for the whole round
+              // (the scheduler try-locks, so holding it cannot deadlock; a fixed hold raced slow CI).
               advance(60_000);
               let release!: () => void;
+              let done!: () => void;
               const held = new Promise<void>((resolve) => (release = resolve));
+              const roundOver = new Promise<void>((resolve) => (done = resolve));
               const holder = db.transaction(async (tx) => {
                 await tx.execute(sql`select pg_advisory_xact_lock(${MAINTENANCE_LOCK})`);
                 release();
-                await new Promise((resolve) => setTimeout(resolve, 30));
+                await roundOver;
               });
               await held;
-              expect(sum(await round())).toBe(0);
+              const blocked = await round().finally(done);
               await holder;
+              expect(sum(blocked)).toBe(0);
               // Round 4: released; the period's 60 s jobs are appended once.
               const fourth = await round();
               expect(sum(fourth)).toBe(sixty);
