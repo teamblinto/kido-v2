@@ -283,6 +283,16 @@ The Google OAuth client's authorised redirect URI is
 with `GITHUB_OAUTH_CLIENT_ID`/`GITHUB_OAUTH_CLIENT_SECRET`. Removing the file and redeploying
 turns the provider off.
 
+The GitHub connector (a GitHub App, root README "GitHub sync"; unrelated to GitHub sign-in) reads
+`/opt/kido/github.env` in the api and the worker. Set `GITHUB_WEBHOOK_SECRET` (required,
+`openssl rand -hex 32`) in `kido.env` and as the App's webhook secret; the App's webhook URL is
+`https://HOOKS_HOST/github`. Then, root-only, all four or none:
+
+    install -m 0600 /dev/null /opt/kido/github.env
+    # GITHUB_APP_ID=<numeric id>  GITHUB_APP_CLIENT_ID=<Iv23...>  GITHUB_APP_SLUG=<slug>
+    # GITHUB_APP_PRIVATE_KEY="<the .pem with newlines as \n>"  GITHUB_APP_CLIENT_SECRET=<optional>
+    kido-deploy redeploy
+
 To deploy a commit by hand without CI:
 `git archive <commit> | ssh root@VPS 'rm -rf /opt/kido/src && mkdir /opt/kido/src && tar -x -C /opt/kido/src'`,
 then `kido-deploy build /opt/kido/src`.
