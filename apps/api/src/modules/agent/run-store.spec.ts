@@ -854,6 +854,33 @@ describe('RunStore', () => {
           holder.mockRestore();
         }
       });
+
+      it('a second delivery waits on a live attempt’s dispatch instead of deadlocking with it', async () => {
+        const runId = await seedClaimed();
+        const ref = { orgId, projectId: (await row(runId)).projectId };
+        const checkpoints = moduleRef.get(CheckpointService, { strict: false });
+        let beaten!: () => void;
+        let release!: () => void;
+        const heartbeat = new Promise<void>((resolve) => (beaten = resolve));
+        const go = new Promise<void>((resolve) => (release = resolve));
+
+        // As `AgentRunConsumer`'s dispatch: the heartbeat holds the row, then the baseline locks the project.
+        const attempt = inTenant(async (tx) => {
+          await store.heartbeat(tx, { epoch: 1, orgId, runId }, TTL);
+          beaten();
+          await go;
+          await checkpoints.lockProject(tx, ref);
+        });
+        await heartbeat;
+        const second = inTenant((tx) =>
+          store.claim(tx, { leaseTtlMs: TTL, orgId, owner: 'spec', runId }),
+        );
+        await new Promise((resolve) => setTimeout(resolve, 200));
+        release();
+
+        await expect(attempt).resolves.toBeUndefined();
+        expect(await second).toHaveProperty('heldUntil');
+      });
     });
 
     describe('the reaper’s statements (US2)', () => {

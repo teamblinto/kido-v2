@@ -468,11 +468,14 @@ export class RunStore {
     const { leaseTtlMs, orgId, owner, runId } = request;
     const now = this.clock.now();
     // `project_id` never changes, so it is safe to read before the lock that everything else
-    // below is read under.
+    // below is read under. The row is locked first, before the project: a live attempt's
+    // `dispatch` holds this row (its heartbeat) and then takes the project lock (the baseline, a
+    // turn's commit), so project-then-row here deadlocked with a second delivery of the same run.
     const [peek] = await tx
       .select({ projectId: agentRuns.projectId })
       .from(agentRuns)
-      .where(and(eq(agentRuns.id, runId), eq(agentRuns.orgId, orgId)));
+      .where(and(eq(agentRuns.id, runId), eq(agentRuns.orgId, orgId)))
+      .for('update');
 
     if (peek === undefined) {
       return undefined;
