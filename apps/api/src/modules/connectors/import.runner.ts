@@ -1,4 +1,4 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { Inject, Injectable, Logger } from '@nestjs/common';
@@ -15,6 +15,7 @@ import { CheckpointService, GitStepError } from '../checkpoints/checkpoint.servi
 import { RetryableFailure } from '../outbox/consumer';
 import { OutboxWriter } from '../outbox/outbox-writer';
 import { SANDBOX_LIFECYCLE, type SandboxLifecycle } from '../sandbox/sandbox-lifecycle';
+import { DEFAULT_DAYTONA_TIMINGS } from '../sandbox/sandbox.constants';
 import { type SandboxGuardKind, SandboxGuardError } from '../sandbox/sandbox.errors';
 import {
   type ExecResult,
@@ -95,7 +96,7 @@ interface Outcome {
  *
  * It is the pull's mechanism with the merge replaced by a checkout, and it is deliberately not a
  * second implementation of it: `ConnectionService.repositoryToken` mints a token scoped to the one
- * repository, `LocalGit.withTempRepo` gives a temp directory, `git clone --depth 1 --branch` then
+ * repository, `LocalGit.withTempRepo` gives a temp directory, `git clone --single-branch --branch` then
  * `git bundle create` produces one file, and the bundle — never the token — is uploaded to the
  * sandbox. Reusing the pull's shape is what inherits the no-credential-in-sandbox rule, the upload
  * cap and the `bundle-too-large` reason rather than rewriting them.
@@ -215,8 +216,14 @@ export class ImportRunner implements PullRunnerPort<ImportPrepared | undefined> 
       const cwd = join(dir, 'repo');
       const bundlePath = join(dir, 'import.bundle');
 
+      // The branch's whole history, never `--depth`: a bundle made from a shallow clone names a
+      // parent it does not carry, and the sandbox's repository — not shallow — refuses it ("did not
+      // send all necessary objects"), so every repository with a second commit failed to import.
+      // The history is also what later pulls and pushes measure ancestry against. One branch and
+      // no tags keep it to what the project is; a bundle over the upload cap still fails as
+      // `bundle-too-large`, naming the bundle's path (`classify`).
       await this.git.run(
-        ['clone', '--quiet', '--depth', '1', '--branch', link.branch, remote, cwd],
+        ['clone', '--quiet', '--single-branch', '--no-tags', '--branch', link.branch, remote, cwd],
         { auth: token, cwd: dir },
       );
       // The bundle names the head HEAD, which is the ref the sandbox's `git fetch <bundle>` takes.
@@ -225,6 +232,16 @@ export class ImportRunner implements PullRunnerPort<ImportPrepared | undefined> 
       // Spec 047: detection reads the clone that is already here, so it sees the whole tree and
       // costs no GitHub call. Pure and bounded (`repo-snapshot.ts`); it never throws on content.
       const runConfig = prepared.smart ? detectRunConfig(snapshotDirectory(cwd)) : null;
+
+      // A bundle the sandbox will refuse is refused here, from its size, before it is read into
+      // memory: full history makes a large one likelier, and the upload cap would only reject it
+      // after the whole file sat in the worker's heap. Same reason, same path, as the port's own.
+      const { size } = await stat(bundlePath);
+      if (size > DEFAULT_DAYTONA_TIMINGS.bundleCapBytes) {
+        throw new SandboxGuardError('bundle-too-large', 'The repository is too large to import.', {
+          path: IMPORT_BUNDLE_PATH,
+        });
+      }
 
       return { body: await readFile(bundlePath), runConfig, sha: head.stdout.trim() };
     });

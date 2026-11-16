@@ -399,6 +399,78 @@ describe('ProjectPage', () => {
    * surfaces is filled in by the screen (FR-003), which is what the transcript's emptiness in the
    * last case is proving.
    */
+  /**
+   * The production 403s (2026-11-16): an import that fails withdraws its project, and the page kept
+   * polling the deleted project's preview, sync and presence. It reads the import instead, says why,
+   * and asks the gone project for nothing more.
+   */
+  describe('an import that failed (spec 026 R2, spec 047)', () => {
+    const WORKSPACE = '9c5b94b1-35ad-49bb-b118-8e8fc24abf80';
+    const OPERATION = '1f0c8f2e-1111-4111-8111-111111111111';
+
+    const operation = (state: 'failed' | 'running') => ({
+      commits: 0,
+      createdAt: '2026-11-16T06:08:35.000Z',
+      finishedAt: state === 'failed' ? '2026-11-16T06:08:39.000Z' : null,
+      fromSha: null,
+      id: OPERATION,
+      kind: 'import',
+      projectId: PROJECT_ID,
+      reason: state === 'failed' ? 'import-checkout-failed' : null,
+      requestedBy: { id: ORG_ID, name: 'Sayem' },
+      startedAt: '2026-11-16T06:08:37.000Z',
+      state,
+      targetBranch: null,
+      toSha: 'a'.repeat(40),
+      trigger: 'manual',
+    });
+
+    it('says the import failed and why, and stops asking the withdrawn project anything', async () => {
+      const asked: string[] = [];
+      server.use(
+        http.get(`${API}/orgs/:orgId/workspaces/:workspaceId/imports/:operationId`, () =>
+          HttpResponse.json(operation('failed')),
+        ),
+        // The project itself still reads (a cached or racing answer): the import alone decides.
+        http.all(`${API}/orgs/:orgId/projects/:projectId/:rest+`, ({ request }) => {
+          asked.push(`${request.method} ${new URL(request.url).pathname}`);
+          return problemResponse('permission-denied', 403);
+        }),
+      );
+
+      renderScreen(<ProjectPage />, {
+        path: `/projects/${PROJECT_ID}?import=${OPERATION}&ws=${WORKSPACE}`,
+        route: '/projects/:projectId',
+      });
+
+      expect(await screen.findByRole('heading', { name: 'The import failed' })).toBeVisible();
+      expect(screen.getByText(/could not be checked out/i)).toBeVisible();
+      expect(screen.getByRole('link', { name: 'Try again' })).toBeVisible();
+
+      // Settled: no presence beat, preview poll or sync poll reaches the deleted project.
+      const settled = asked.length;
+      // Longer than one presence beat (4 s) and several preview and sync polls.
+      await new Promise((resolve) => setTimeout(resolve, 5_500));
+      expect(asked.slice(settled)).toEqual([]);
+    }, 15_000);
+
+    it('an import still running shows the project as usual', async () => {
+      server.use(
+        http.get(`${API}/orgs/:orgId/workspaces/:workspaceId/imports/:operationId`, () =>
+          HttpResponse.json(operation('running')),
+        ),
+      );
+
+      renderScreen(<ProjectPage />, {
+        path: `/projects/${PROJECT_ID}?import=${OPERATION}&ws=${WORKSPACE}`,
+        route: '/projects/:projectId',
+      });
+
+      expect(await screen.findByRole('button', { name: /On-call rota dashboard/ })).toBeVisible();
+      expect(screen.queryByRole('heading', { name: 'The import failed' })).toBeNull();
+    });
+  });
+
   describe('the GitHub panel (spec 044)', () => {
     beforeEach(() => {
       server.use(

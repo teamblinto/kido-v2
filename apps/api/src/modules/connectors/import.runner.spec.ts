@@ -340,6 +340,42 @@ describe('ImportRunner', () => {
       expect(sandbox.commands).not.toContain('git clean -ffdxq');
     });
 
+    /**
+     * The production failure (2026-11-16): the clone was `--depth 1`, so its bundle named a parent it
+     * did not carry and the sandbox's `git fetch` refused it — every repository with a second commit
+     * failed to import, and its project was withdrawn. Seeds only ever had one commit.
+     */
+    it('imports a repository with history: the whole branch arrives, not a shallow tip', async () => {
+      const repo = harness.fixture.repositories.get(REPO_ID)!;
+      const extra = await mkdtemp(join(tmpdir(), 'forge-import-history-'));
+      git(extra, 'clone', '--quiet', join(harness.fixture.gitRoot!, `${repo.full_name}.git`), '.');
+      await writeFile(join(extra, 'CHANGELOG.md'), '# second commit\n');
+      git(extra, 'add', '-A');
+      git(extra, 'commit', '--quiet', '-m', 'second');
+      const second = git(extra, 'rev-parse', 'HEAD');
+      git(extra, 'push', '--quiet', 'origin', 'HEAD:main');
+      harness.fixture.repositories.set(REPO_ID, {
+        ...repo,
+        branches: { ...repo.branches, main: second },
+      });
+
+      const operation = await runImport({ template: null });
+
+      expect(operation).toMatchObject({ reason: null, state: 'succeeded', toSha: second });
+      expect(git(work, 'rev-list', '--count', 'HEAD')).toBe('2');
+      // What a later push or pull seeds from: an `--all` bundle of the workspace, complete.
+      git(work, 'bundle', 'create', '--quiet', join(extra, 'all.bundle'), '--all');
+      git(
+        extra,
+        'clone',
+        '--quiet',
+        '--bare',
+        join(extra, 'all.bundle'),
+        join(extra, 'seeded.git'),
+      );
+      await rm(extra, { force: true, recursive: true });
+    });
+
     it('the branch the import named is the workspace’s branch, not a detached head', async () => {
       await runImport();
 

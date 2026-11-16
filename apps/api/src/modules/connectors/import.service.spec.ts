@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import { schema } from '@repo/db';
 import { and, eq, gt, ne } from 'drizzle-orm';
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
@@ -6,6 +8,7 @@ import {
   type ConnectorsHarness,
   startConnectorsHarness,
 } from '../../../test/fixtures/connectors-harness';
+import { NotFoundError } from '../../common/errors/domain-error';
 import { ImportService, MAX_IMPORT_REPOSITORY_KIB } from './import.service';
 
 const postgres = inject('postgresReachable');
@@ -279,6 +282,51 @@ describe('ImportService', () => {
         state: 'linked',
       });
     });
+    it('the requester reads their import even once withdrawn; anyone else, or another workspace, is a 404', async () => {
+      await harness.connect();
+      seed();
+      const started = await start();
+      // The failure path's cleanup: the project is soft-deleted, the row stays.
+      await harness.inTenantScope((tx) =>
+        service.withdraw(tx, {
+          actorId: harness.userId,
+          branch: 'main',
+          finishedAt: new Date(),
+          linkId: null,
+          operationId: started.id,
+          orgId: harness.orgId,
+          projectId: started.projectId,
+          reason: 'import-checkout-failed',
+          repository: 'acme/site',
+        }),
+      );
+      const read = (actor: string, workspace = harness.workspaceId) =>
+        harness.inTenant((tx) =>
+          service.operation(tx, harness.orgId, workspace, actor, started.id),
+        );
+
+      await expect(read(harness.userId)).resolves.toMatchObject({
+        reason: 'import-checkout-failed',
+        state: 'failed',
+      });
+      await expect(read(randomUUID())).rejects.toBeInstanceOf(NotFoundError);
+      await expect(read(harness.userId, randomUUID())).rejects.toBeInstanceOf(NotFoundError);
+      // A malformed id is the same 404, not a database type error.
+      await expect(
+        harness.inTenant((tx) =>
+          service.operation(tx, harness.orgId, harness.workspaceId, harness.userId, 'not-a-uuid'),
+        ),
+      ).rejects.toBeInstanceOf(NotFoundError);
+      // Not an import (a push on the same project): nothing to read through this route.
+      await harness.inTenant((tx) =>
+        tx
+          .update(schema.syncOperations)
+          .set({ kind: 'push' })
+          .where(eq(schema.syncOperations.id, started.id)),
+      );
+      await expect(read(harness.userId)).rejects.toBeInstanceOf(NotFoundError);
+    });
+
     /**
      * FR-013 and FR-016 together: the user may override a confident proposal, the override is what
      * runs, and the disagreement is *recorded* — never a refusal, never a failed import.

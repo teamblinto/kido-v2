@@ -11,6 +11,7 @@ import type {
 import { outcomeFor } from '@repo/contracts';
 import { schema } from '@repo/db';
 import { and, eq } from 'drizzle-orm';
+import { z } from 'zod';
 
 import type { Plaintext } from '../../common/crypto/branded';
 import { NotFoundError } from '../../common/errors/domain-error';
@@ -227,6 +228,41 @@ export class ImportService {
     });
 
     return this.syncs.toContract((await this.operations.byId(tx, orgId, operation.id))!);
+  }
+
+  /**
+   * The import as its requester sees it, whatever became of its project — the read R2 promises.
+   *
+   * A failed import withdraws (soft-deletes) its project, and from then on every project-scoped
+   * route answers 403: `project:read` is a grant on a live project, correctly. So the import's own
+   * outcome is read here, under the permission that started it (`workspace:projects.create`, the
+   * route's guard), and only by the person who started it: another member of the workspace learns
+   * nothing about someone else's failed import, not even that it exists. Not an import, not this
+   * workspace's, not theirs: all the same `404`.
+   */
+  async operation(
+    tx: TenantTransaction,
+    orgId: string,
+    workspaceId: string,
+    actorId: string,
+    operationId: string,
+  ): Promise<SyncOperationContract> {
+    // A malformed id is the same 404 as a missing one, not a Postgres type error and a 500.
+    const row = z.uuid().safeParse(operationId).success
+      ? await this.operations.byId(tx, orgId, operationId)
+      : undefined;
+    const project =
+      row === undefined ? undefined : await this.links.project(tx, orgId, row.projectId);
+
+    if (
+      row?.kind !== 'import' ||
+      row.requestedBy !== actorId ||
+      project?.workspaceId !== workspaceId
+    ) {
+      throw new NotFoundError('No such import.');
+    }
+
+    return this.syncs.toContract(row);
   }
 
   /**

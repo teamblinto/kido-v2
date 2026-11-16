@@ -616,6 +616,7 @@ describe('Connector import (e2e)', () => {
         let failWork: string;
         let failed: { reason: string | null; state: string };
         let failedProject: string;
+        let failedOperation: string;
 
         beforeAll(async () => {
           failWork = await mkdtemp(join(tmpdir(), 'forge-import-e2e-fail-'));
@@ -649,6 +650,7 @@ describe('Connector import (e2e)', () => {
             .expect(202);
           const queued = syncOperationSchema.parse(accepted.body);
           failedProject = queued.projectId;
+          failedOperation = queued.id;
           failed = await settledRow(queued.id);
           broken.mockRestore();
           sandbox.dir = previous;
@@ -686,6 +688,55 @@ describe('Connector import (e2e)', () => {
               .where(eq(schema.projects.id, failedProject)),
           );
           expect(row?.deletedAt).not.toBeNull();
+        });
+
+        /**
+         * The production 403s (2026-11-16): a withdrawn project's routes refuse everyone, correctly,
+         * so the person who imported it reads the outcome from the import itself — and only they do.
+         */
+        it('the requester reads why it failed from the import, while the project stays refused', async () => {
+          const operation = await http(app)
+            .get(`${imports()}/${failedOperation}`)
+            .set('Cookie', cookie())
+            .expect(200);
+          expect(syncOperationSchema.parse(operation.body)).toMatchObject({
+            kind: 'import',
+            projectId: failedProject,
+            reason: 'import-checkout-failed',
+            state: 'failed',
+          });
+
+          // Nothing about the deleted project was loosened to make that readable.
+          for (const path of ['preview', 'sync', 'repo-link']) {
+            await http(app)
+              .get(`/api/v1/orgs/${world.alpha.orgId}/projects/${failedProject}/${path}`)
+              .set('Cookie', cookie())
+              .expect(403);
+          }
+        });
+
+        it('nobody else reads it: a member without project-create, another org, or a wrong id', async () => {
+          await http(app)
+            .get(`${imports()}/${failedOperation}`)
+            .set('Cookie', member.cookie)
+            .expect(403);
+          await http(app)
+            .get(`${imports()}/${failedOperation}`)
+            .set('Cookie', world.beta.owner.cookie)
+            .expect(403);
+          await http(app)
+            .get(`${imports()}/00000000-0000-4000-8000-000000000000`)
+            .set('Cookie', cookie())
+            .expect(404);
+          await http(app).get(`${imports()}/not-a-uuid`).set('Cookie', cookie()).expect(404);
+          // The IDOR that matters: another organisation's owner, on their own org and workspace,
+          // naming this import's id. Their tenant cannot see the row at all.
+          await http(app)
+            .get(
+              `/api/v1/orgs/${world.beta.orgId}/workspaces/${world.beta.workspaceId}/imports/${failedOperation}`,
+            )
+            .set('Cookie', world.beta.owner.cookie)
+            .expect(404);
         });
 
         it('no link is left, and the sandbox is released through project.archived', async () => {

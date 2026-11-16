@@ -66,6 +66,24 @@ export class ImportController {
   ): Promise<SyncOperation> {
     return this.imports.start(this.tenant.tx, orgId, workspaceId, caller.userId, body);
   }
+
+  /**
+   * The requester's import, readable after a failure withdrew its project (spec 026 R2): the
+   * project page polls this while the import runs and, when it failed, says why instead of
+   * meeting the deleted project's 403s. Same permission as `start`; only the requester's own.
+   */
+  @Get(':operationId')
+  @RequirePermission('workspace:projects.create')
+  @ApiOperation({ summary: 'Read your own import, including one that failed' })
+  @ApiResponse({ status: 200, type: SyncOperationResponseDto })
+  read(
+    @CurrentUser() caller: AuthenticatedUser,
+    @Param('orgId') orgId: string,
+    @Param('workspaceId') workspaceId: string,
+    @Param('operationId') operationId: string,
+  ): Promise<SyncOperation> {
+    return this.imports.operation(this.tenant.tx, orgId, workspaceId, caller.userId, operationId);
+  }
 }
 
 /**

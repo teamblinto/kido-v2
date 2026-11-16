@@ -77,7 +77,11 @@ export function ProjectNewImportPage(): React.JSX.Element {
     // The operation is queued, not finished: the project page shows the import and the start-up.
     onSuccess: (operation) => {
       void queryClient.invalidateQueries({ queryKey: ['projects', orgId] });
-      void navigate(projectPath(operation.projectId));
+      // The operation and workspace go along: if the import fails, its project is withdrawn and the
+      // project page reads the outcome from the import itself (search params survive a reload).
+      void navigate(
+        `${projectPath(operation.projectId)}?${new URLSearchParams({ import: operation.id, ws: workspaceId }).toString()}`,
+      );
     },
   });
 

@@ -51,6 +51,8 @@ import {
   runResponseSchema,
   setPreviewVisibilityRequestSchema,
   siteResponseSchema,
+  type SyncOperation,
+  syncOperationSchema,
   updateSiteRequestSchema,
   wakeResponseSchema,
   writeFileRequestSchema,
@@ -349,6 +351,23 @@ export async function revertCheckpoint(
 }
 
 /** Where the preview is served and who may reach it (spec 017). */
+/**
+ * The requester's own import (spec 026 R2, spec 047), readable after a failure withdrew its project:
+ * the project page polls it while the import runs, and says why when it failed.
+ */
+export async function getImport(
+  orgId: string,
+  workspaceId: string,
+  operationId: string,
+  signal?: AbortSignal,
+): Promise<SyncOperation> {
+  return apiRequest(
+    'GET',
+    `/orgs/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(workspaceId)}/imports/${encodeURIComponent(operationId)}`,
+    { schema: syncOperationSchema, signal },
+  );
+}
+
 export async function getPreview(
   orgId: string,
   projectId: string,

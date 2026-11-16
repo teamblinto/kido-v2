@@ -1,7 +1,7 @@
 import type { CreateRunRequest, RunEvent, RunInputRequest } from '@repo/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useParams } from 'react-router-dom';
+import { useLocation, useParams, useSearchParams } from 'react-router-dom';
 
 import { useSession } from '@/features/auth/session/session-context';
 import { getProject } from '@/features/workspace/api';
@@ -29,7 +29,8 @@ import {
   limitSentence,
   RUN_ON_ORGANISATION,
 } from '@/features/settings/subscription-limit';
-import { answerRun, cancelRun, createRun } from '../api';
+import { answerRun, cancelRun, createRun, getImport } from '../api';
+import { ImportFailed } from '../components/import-failed';
 import { invalidateGitSync } from '../hooks/use-git-sync';
 import { usePresence } from '../hooks/use-presence';
 import { useProjectWorkspace } from '../hooks/use-project-workspace';
@@ -108,6 +109,36 @@ export function ProjectPage(): React.JSX.Element {
     queryKey: ['project', orgId, projectId],
   });
 
+  /*
+   * A GitHub import still on its way (spec 026, spec 047): the import page hands over its operation
+   * and workspace. A failed import withdraws the project, after which every project route refuses,
+   * correctly — so the outcome is read from the import itself, and a failure replaces the screen.
+   */
+  const [search] = useSearchParams();
+  // Ids or nothing: they go into an API path, and `encodeURIComponent` leaves `..` as it is.
+  const uuid = (value: string | null) =>
+    value !== null && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)
+      ? value
+      : null;
+  const importId = uuid(search.get('import'));
+  const importWorkspace = uuid(search.get('ws'));
+  const importOperation = useQuery({
+    enabled: orgId !== undefined && importId !== null && importWorkspace !== null,
+    queryFn: ({ signal }) => getImport(orgId ?? '', importWorkspace ?? '', importId ?? '', signal),
+    queryKey: ['import', orgId, importId],
+    refetchInterval: (query) => {
+      const state = query.state.data?.state;
+      return state === 'queued' || state === 'running' ? 2_000 : false;
+    },
+  });
+  const importFailed = importOperation.data?.state === 'failed';
+  // Nothing more to ask a project that is gone: no presence, no run stream, no message list.
+  const gone =
+    importFailed ||
+    ApiProblem.is(project.error, 'not-found') ||
+    ApiProblem.is(project.error, 'permission-denied');
+  const liveProjectId = gone ? '' : projectId;
+
   const {
     gitView,
     isChatOpen,
@@ -123,7 +154,7 @@ export function ProjectPage(): React.JSX.Element {
     toggleChat,
     toggleLog,
   } = useProjectWorkspace();
-  const presence = usePresence({ location, orgId, projectId });
+  const presence = usePresence({ location, orgId, projectId: liveProjectId });
 
   // The run on screen, and what the person sent it. Messages are held here rather than waited for
   // as events, because the person who just typed one should see it at once — they are the one
@@ -213,11 +244,11 @@ export function ProjectPage(): React.JSX.Element {
   const { connection, error, items, retry, run, source } = useRunStream({
     onEvent,
     orgId,
-    projectId,
-    runId,
+    projectId: liveProjectId,
+    runId: gone ? undefined : runId,
   });
 
-  const messages = useRunMessages(orgId, projectId);
+  const messages = useRunMessages(orgId, liveProjectId);
 
   // Where a message sent now sits in the run on screen: after everything it has said so far.
   const joinedCount = useRef(0);
@@ -487,6 +518,10 @@ export function ProjectPage(): React.JSX.Element {
   // The API answers a project the caller may not read and one that does not exist with the same
   // refusal, so the screen does too: an archived project, a mistyped id and somebody else's are
   // all one 404 rather than a stage full of mock data pretending to be it (spec 007).
+  if (importFailed) {
+    return <ImportFailed reason={importOperation.data?.reason ?? null} />;
+  }
+
   if (
     ApiProblem.is(project.error, 'not-found') ||
     ApiProblem.is(project.error, 'permission-denied')
