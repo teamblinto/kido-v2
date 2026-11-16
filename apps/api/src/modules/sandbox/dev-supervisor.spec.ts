@@ -6,6 +6,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  installFingerprint,
+  runtimeEnvironment,
   supervise,
   type DevServerState,
   type DevServerTimings,
@@ -479,6 +481,196 @@ describe('supervise', () => {
    * that runs forever. Every case here is on fake timers, so the eight minutes it takes to describe
    * the last of them cost nothing to run.
    */
+  describe('install (spec 047)', () => {
+    /** An installer that exits with `code` in the microtask after it is spawned. */
+    const installerExiting = (code: number) => {
+      const child = new FakeChild();
+      queueMicrotask(() => child.emit('exit', code, null));
+      return child;
+    };
+
+    const step = (needed: boolean) => ({
+      command: 'corepack pnpm install',
+      cwd: '/home/daytona/workspace',
+      done: vi.fn(),
+      needed: vi.fn(() => needed),
+    });
+
+    it('reports installing, installs at the root, records it, then starts the dev server in its root', async () => {
+      const install = step(true);
+      const { report, states } = recorder();
+      const aborter = new AbortController();
+      const dev = new FakeChild();
+      const spawn = vi
+        .fn()
+        .mockImplementationOnce(() => installerExiting(0))
+        .mockImplementationOnce(() => dev) as unknown as SuperviseOptions['spawn'];
+      report.mockImplementation((state: DevServerState) => {
+        states.push(state);
+        if (state === 'listening') aborter.abort();
+        return Promise.resolve();
+      });
+
+      await supervise(
+        options({
+          connect: () => Promise.resolve(true),
+          cwd: '/home/daytona/workspace/apps/web',
+          env: { HOST: '0.0.0.0', PORT: '3000' },
+          install,
+          report,
+          signal: aborter.signal,
+          spawn,
+        }),
+      );
+
+      expect(states).toEqual(['installing', 'starting', 'listening']);
+      expect(install.done).toHaveBeenCalledOnce();
+      expect(spawn).toHaveBeenNthCalledWith(1, 'corepack pnpm install', {
+        cwd: '/home/daytona/workspace',
+        env: expect.objectContaining({ HOST: '0.0.0.0', PORT: '3000' }) as unknown,
+        shell: true,
+        stdio: 'inherit',
+      });
+      expect(spawn).toHaveBeenNthCalledWith(
+        2,
+        'npm run dev',
+        expect.objectContaining({
+          cwd: '/home/daytona/workspace/apps/web',
+          env: expect.objectContaining({ PORT: '3000' }) as unknown,
+        }),
+      );
+    });
+
+    it('skips the install when its inputs have not changed, so a resume costs nothing', async () => {
+      const install = step(false);
+      const { children, connect, spawn } = scripted(['listen']);
+      const { report, states } = recorder();
+      const aborter = new AbortController();
+      report.mockImplementation((state: DevServerState) => {
+        states.push(state);
+        if (state === 'listening') aborter.abort();
+        return Promise.resolve();
+      });
+
+      await supervise(options({ connect, install, report, signal: aborter.signal, spawn }));
+
+      expect(states).toEqual(['starting', 'listening']);
+      expect(spawn).toHaveBeenCalledOnce();
+      expect(children).toHaveLength(1);
+      expect(install.done).not.toHaveBeenCalled();
+    });
+
+    it('puts a runtime default over the inherited environment, so the toolchain PATH is used', async () => {
+      // The bug the sandbox-image suite caught: an inherited PATH hid the user-space Go toolchain.
+      const { connect, spawn } = scripted(['listen']);
+      const aborter = new AbortController();
+      const report = vi.fn((state: DevServerState) => {
+        if (state === 'listening') aborter.abort();
+        return Promise.resolve();
+      });
+
+      await supervise(
+        options({
+          connect,
+          env: { PATH: '/toolchain/bin:/usr/bin' },
+          report,
+          signal: aborter.signal,
+          spawn,
+        }),
+      );
+
+      expect(spawn).toHaveBeenCalledWith(
+        'npm run dev',
+        expect.objectContaining({
+          env: expect.objectContaining({ PATH: '/toolchain/bin:/usr/bin' }) as unknown,
+        }),
+      );
+    });
+
+    it('lets the project file override a runtime default such as PORT', async () => {
+      disk.projectEnv = 'PORT=4000\n';
+      const { connect, spawn } = scripted(['listen']);
+      const aborter = new AbortController();
+      const report = vi.fn((state: DevServerState) => {
+        if (state === 'listening') aborter.abort();
+        return Promise.resolve();
+      });
+
+      await supervise(
+        options({ connect, env: { PORT: '3000' }, report, signal: aborter.signal, spawn }),
+      );
+
+      expect(spawn).toHaveBeenCalledWith(
+        'npm run dev',
+        expect.objectContaining({ env: expect.objectContaining({ PORT: '4000' }) as unknown }),
+      );
+    });
+
+    it('charges a failed install to the same budget: five tries, then failed, never a dev server', async () => {
+      vi.useFakeTimers({ now: 0 });
+      const install = step(true);
+      const { report, states } = recorder();
+      const aborter = new AbortController();
+      const spawn = vi.fn(() => installerExiting(1)) as unknown as SuperviseOptions['spawn'];
+      const done = supervise(
+        options({
+          connect: () => Promise.resolve(true),
+          install,
+          report,
+          signal: aborter.signal,
+          spawn,
+        }),
+      );
+
+      await vi.advanceTimersByTimeAsync(31_000);
+      aborter.abort();
+      await done;
+
+      expect(spawn).toHaveBeenCalledTimes(5);
+      for (const call of (spawn as unknown as ReturnType<typeof vi.fn>).mock.calls) {
+        expect(call[0]).toBe('corepack pnpm install');
+      }
+      expect(states).toEqual([
+        'installing',
+        'installing',
+        'installing',
+        'installing',
+        'installing',
+        'failed',
+      ]);
+      expect(install.done).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('installFingerprint and runtimeEnvironment (spec 047)', () => {
+    it('changes with the command or any input file, and ignores files that are not inputs', () => {
+      const files: Record<string, string> = { '/w/package.json': '{"a":1}', '/w/README.md': 'x' };
+      const read = (path: string) => (path in files ? Buffer.from(files[path]!) : undefined);
+      const before = installFingerprint('npm ci', ['/w'], read);
+
+      expect(installFingerprint('npm ci', ['/w'], read)).toBe(before);
+      expect(installFingerprint('npm install', ['/w'], read)).not.toBe(before);
+      files['/w/README.md'] = 'changed';
+      expect(installFingerprint('npm ci', ['/w'], read)).toBe(before);
+      files['/w/package.json'] = '{"a":2}';
+      expect(installFingerprint('npm ci', ['/w'], read)).not.toBe(before);
+    });
+
+    it('binds every interface on the port and puts the venv and user toolchains first on PATH', () => {
+      const env = runtimeEnvironment(3000, '/w', { HOME: '/home/u', PATH: '/usr/bin' });
+
+      expect(env).toMatchObject({
+        BROWSER: 'none',
+        HOST: '0.0.0.0',
+        PORT: '3000',
+        VIRTUAL_ENV: '/w/.venv',
+      });
+      expect(env.PATH?.split(':')[0]).toBe('/w/.venv/bin');
+      expect(env.PATH).toContain('/home/u/.local/go/bin');
+      expect(env.PATH?.endsWith(':/usr/bin')).toBe(true);
+    });
+  });
+
   describe('restarting', () => {
     /** Drive a supervisor through `ms` of fake time, then stop it and let it unwind. */
     const run = async (

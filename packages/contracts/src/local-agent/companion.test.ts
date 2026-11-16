@@ -8,6 +8,7 @@ import {
   LOCAL_AGENT_MAX_COMMAND_CHARS,
   LOCAL_AGENT_MAX_TOOL_INPUT_CHARS,
   LOCAL_AGENT_MAX_TOOL_OUTPUT_CHARS,
+  LOCAL_AGENT_SANDBOX_TOOLS,
   sandboxToolOf,
   truncateToolOutput,
 } from './companion';
@@ -65,7 +66,11 @@ describe('sandbox tool bridge', () => {
     const start = (extra: Record<string, unknown>) =>
       companionCommandSchema.safeParse({ ...START, ...extra }).success;
     expect(start({ toolset: [] })).toBe(false);
-    expect(start({ toolset: Array.from({ length: 8 }, () => TOOLSET[0]) })).toBe(false);
+    expect(
+      start({
+        toolset: Array.from({ length: LOCAL_AGENT_SANDBOX_TOOLS.length + 1 }, () => TOOLSET[0]),
+      }),
+    ).toBe(false);
     expect(start({ toolset: [{ ...TOOLSET[0], name: 'WebFetch' }] })).toBe(false);
     expect(start({ toolset: [{ ...TOOLSET[0], inputSchema: { anyOf: [] } }] })).toBe(false);
     for (const key of ['', 'a/b', '../x', 'x'.repeat(129)]) {

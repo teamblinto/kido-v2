@@ -83,10 +83,16 @@ export type InspectImportResponse = z.output<typeof inspectImportResponseSchema>
  * (FR-013), recording the disagreement as the FR-016 warning instead.
  */
 export const startImportRequestSchema = z.strictObject({
-  branch: z.string().min(1).max(255),
-  name: z.string().min(1).max(100),
+  /** Spec 047: omitted means the repository's default branch. */
+  branch: z.string().min(1).max(255).optional(),
+  /** Spec 047: omitted means the server names the project (and may rename it once it knows more). */
+  name: z.string().trim().min(1).max(100).optional(),
   repoId: z.int().positive(),
-  template: projectTemplateSchema,
+  /**
+   * Spec 026's explicit template. Spec 047: omitted is a smart import — the repository's own run
+   * profile is detected from its contents and no template is applied.
+   */
+  template: projectTemplateSchema.optional(),
 });
 
 export type StartImportRequest = z.output<typeof startImportRequestSchema>;

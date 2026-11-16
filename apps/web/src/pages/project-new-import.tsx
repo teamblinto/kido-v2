@@ -1,15 +1,11 @@
 import {
-  type ImportCandidate,
-  type InspectImportResponse,
-  inspectImportResponseSchema,
-  type ProjectTemplate,
   connectionListSchema,
   type Repository,
   repositoryPageSchema,
   syncOperationSchema,
 } from '@repo/contracts';
-import { useMutation, useQuery } from '@tanstack/react-query';
-import { Loader2 } from 'lucide-react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { GitBranchIcon, Loader2, LockIcon } from 'lucide-react';
 import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
@@ -23,36 +19,20 @@ import { apiRequest } from '@/lib/api/client';
 import { messageFor } from '@/lib/api/problem';
 import { projectPath, routes } from '@/lib/routes';
 
-const TEMPLATE_LABELS: Record<ProjectTemplate, string> = {
-  nextjs: 'Next.js',
-  'node-api': 'Node API',
-  python: 'Python',
-  'vite-react': 'Vite + React',
-};
-
 /**
- * Import a GitHub repository into a new project (spec 026 US1).
+ * Import a GitHub repository into a new project (spec 026 US1, spec 047).
  *
- * Three steps, and the middle one is the point: pick a repository from spec 018's paged list, let
- * the server inspect it, and **confirm** a template. The confirmation is not a formality — the
- * server refuses to guess (FR-011/FR-012), so an `unrecognised` or `ambiguous` repository arrives
- * here with no template selected and the button stays disabled until a person picks one. The
- * evidence for each candidate is rendered beside it, because the whole reason for proposing rather
- * than deciding is that the user can check the reasoning.
- *
- * All four are always offered, whatever the outcome: FR-013 says the editor may override a
- * confident proposal, and an override you can only make by editing the request is not one.
+ * One step: pick a repository. Nothing about how it runs is asked for. The server detects the
+ * stack from the clone, installs the dependencies and starts the dev server, names the project,
+ * and repairs a failing start with the agent. The project page shows the progress, so the import
+ * hands off to it as soon as the import is queued.
  */
 export function ProjectNewImportPage(): React.JSX.Element {
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
   const { activeOrg, isLoading: orgsLoading } = useOrgs();
   const orgId = activeOrg?.id ?? '';
-
   const [query, setQuery] = useState('');
-  const [selected, setSelected] = useState<Repository | null>(null);
-  const [inspection, setInspection] = useState<InspectImportResponse | null>(null);
-  const [template, setTemplate] = useState<ProjectTemplate | null>(null);
-  const [name, setName] = useState('');
 
   const workspaces = useQuery({
     enabled: orgId !== '',
@@ -86,52 +66,33 @@ export function ProjectNewImportPage(): React.JSX.Element {
     queryKey: ['import-repositories', orgId, connectionId],
   });
 
-  const inspect = useMutation({
+  const start = useMutation({
+    // The repository alone: the default branch, a detected run profile and a generated name.
     mutationFn: (repository: Repository) =>
       apiRequest(
         'POST',
-        `/orgs/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(workspaceId)}/imports/inspect`,
-        { body: { repoId: repository.id }, schema: inspectImportResponseSchema },
+        `/orgs/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(workspaceId)}/imports`,
+        { body: { repoId: repository.id }, schema: syncOperationSchema },
       ),
-    onSuccess: (answer, repository) => {
-      setSelected(repository);
-      setInspection(answer);
-      // FR-011: only a single unambiguous proposal is pre-selected, and even that is confirmed.
-      setTemplate(answer.outcome === 'proposed' ? (answer.candidates[0]?.template ?? null) : null);
-      setName((current) => (current === '' ? repository.name : current));
+    // The operation is queued, not finished: the project page shows the import and the start-up.
+    onSuccess: (operation) => {
+      void queryClient.invalidateQueries({ queryKey: ['projects', orgId] });
+      void navigate(projectPath(operation.projectId));
     },
   });
 
-  const start = useMutation({
-    mutationFn: () =>
-      apiRequest(
-        'POST',
-        `/orgs/${encodeURIComponent(orgId)}/workspaces/${encodeURIComponent(workspaceId)}/imports`,
-        {
-          body: {
-            branch: inspection!.branch,
-            name,
-            repoId: inspection!.repo.id,
-            template: template!,
-          },
-          schema: syncOperationSchema,
-        },
-      ),
-    // The operation is queued, not finished: the project page polls it through spec 018's routes.
-    onSuccess: (operation) => navigate(projectPath(operation.projectId)),
-  });
-
-  const error =
-    connectors.error ?? repositories.error ?? inspect.error ?? start.error ?? workspaces.error;
-  const candidates: readonly ImportCandidate[] = inspection?.candidates ?? [];
-  const canStart =
-    template !== null && name.trim() !== '' && inspection !== null && !inspection.empty;
+  const error = connectors.error ?? repositories.error ?? start.error ?? workspaces.error;
+  const needle = query.trim().toLowerCase();
+  const visible = (repositories.data?.repositories ?? []).filter((repository) =>
+    repository.fullName.toLowerCase().includes(needle),
+  );
 
   return (
     <main className="mx-auto max-w-2xl px-4 py-10">
-      <h1 className="text-heading-lg font-semibold">Import a repository</h1>
+      <h1 className="text-heading-lg font-semibold">Import from GitHub</h1>
       <p className="text-body-sm text-subdued mt-1">
-        Pick a repository, confirm how it should run, and we’ll clone it into a new project.
+        Pick a repository. We work out how it runs, install it and start a live preview — no setup
+        needed.
       </p>
 
       {error !== null && error !== undefined ? (
@@ -141,7 +102,7 @@ export function ProjectNewImportPage(): React.JSX.Element {
       ) : null}
 
       {orgsLoading || connectors.isLoading || repositories.isLoading ? (
-        <p className="mt-6 flex items-center gap-2">
+        <p className="text-body-sm text-subdued mt-6 flex items-center gap-2">
           <Loader2 className="size-4 animate-spin" aria-hidden /> Loading repositories…
         </p>
       ) : connectionId === '' ? (
@@ -153,102 +114,69 @@ export function ProjectNewImportPage(): React.JSX.Element {
         </Alert>
       ) : (
         <section className="mt-6" aria-labelledby="repositories-heading">
-          <h2 id="repositories-heading" className="text-body-md font-medium">
+          <h2 id="repositories-heading" className="sr-only">
             Repositories
           </h2>
           <Input
             aria-label="Filter repositories"
-            className="mt-2"
             onChange={(event) => setQuery(event.target.value)}
-            placeholder="Filter by name"
+            placeholder="Search repositories"
             value={query}
           />
-          <ul className="mt-3 space-y-2">
-            {(repositories.data?.repositories ?? [])
-              .filter((repository) =>
-                repository.name.toLowerCase().includes(query.trim().toLowerCase()),
-              )
-              .map((repository) => (
-                <li key={repository.id} className="flex items-center justify-between gap-3">
-                  <span>{repository.fullName}</span>
-                  <Button
-                    disabled={inspect.isPending}
-                    onClick={() => inspect.mutate(repository)}
-                    variant="outline"
+          {visible.length === 0 ? (
+            <p className="text-body-sm text-subdued mt-4">
+              {needle === ''
+                ? 'The GitHub App cannot see any repositories yet. Grant it access to one in GitHub.'
+                : 'No repository matches that search.'}
+            </p>
+          ) : (
+            <ul className="border-line-subtle divide-line-subtle mt-3 divide-y rounded-lg border">
+              {visible.map((repository) => {
+                const importing = start.isPending && start.variables?.id === repository.id;
+
+                return (
+                  <li
+                    key={repository.id}
+                    className="flex items-center justify-between gap-3 px-3 py-2.5"
                   >
-                    Inspect
-                  </Button>
-                </li>
-              ))}
-          </ul>
+                    <div className="min-w-0">
+                      <p className="text-body-sm text-foreground flex items-center gap-1.5 truncate font-medium">
+                        {repository.fullName}
+                        {repository.private ? (
+                          <LockIcon className="text-faint size-3 shrink-0" aria-label="Private" />
+                        ) : null}
+                      </p>
+                      <p className="text-caption text-faint mt-0.5 flex items-center gap-1">
+                        <GitBranchIcon className="size-3" aria-hidden />
+                        {repository.defaultBranch}
+                      </p>
+                    </div>
+                    <Button
+                      aria-label={`Import ${repository.fullName}`}
+                      disabled={start.isPending || workspaceId === ''}
+                      onClick={() => start.mutate(repository)}
+                      size="sm"
+                    >
+                      {importing ? (
+                        <>
+                          <Loader2 className="size-3.5 animate-spin" aria-hidden /> Importing
+                        </>
+                      ) : (
+                        'Import'
+                      )}
+                    </Button>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {repositories.data?.nextCursor !== undefined ? (
+            <Badge variant="neutral" className="mt-3">
+              Showing the first {repositories.data.repositories.length} — search to narrow down
+            </Badge>
+          ) : null}
         </section>
       )}
-
-      {inspection !== null && selected !== null ? (
-        <section className="mt-8" aria-labelledby="proposal-heading">
-          <h2 id="proposal-heading" className="text-body-md font-medium">
-            {selected.fullName}
-          </h2>
-
-          {inspection.empty ? (
-            <Alert variant="warning" className="mt-3">
-              That branch has no commits yet. Push one first, then import it.
-            </Alert>
-          ) : null}
-
-          {!inspection.empty && inspection.outcome === 'unrecognised' ? (
-            <Alert variant="warning" className="mt-3">
-              We couldn’t tell how this repository runs. Pick a template and we’ll use it as it is —
-              nothing from the template is added to your files.
-            </Alert>
-          ) : null}
-
-          {inspection.outcome === 'ambiguous' ? (
-            <Alert variant="warning" className="mt-3">
-              This repository matches more than one template. Pick the one you want.
-            </Alert>
-          ) : null}
-
-          <fieldset className="mt-4">
-            <legend className="text-body-sm text-subdued">Template</legend>
-            {(Object.keys(TEMPLATE_LABELS) as ProjectTemplate[])
-              .map((id) => ({
-                evidence: candidates.find((candidate) => candidate.template === id)?.evidence ?? [],
-                template: id,
-              }))
-              .map((candidate) => (
-                <label className="mt-2 flex items-center gap-3" key={candidate.template}>
-                  <input
-                    checked={template === candidate.template}
-                    name="template"
-                    onChange={() => setTemplate(candidate.template)}
-                    type="radio"
-                    value={candidate.template}
-                  />
-                  <span>{TEMPLATE_LABELS[candidate.template]}</span>
-                  {candidate.evidence.map((signal) => (
-                    <Badge key={signal} variant="neutral">
-                      {signal}
-                    </Badge>
-                  ))}
-                </label>
-              ))}
-          </fieldset>
-
-          <label className="mt-4 block" htmlFor="import-name">
-            Project name
-          </label>
-          <Input id="import-name" onChange={(event) => setName(event.target.value)} value={name} />
-
-          <Button
-            className="mt-4"
-            disabled={!canStart || start.isPending}
-            onClick={() => start.mutate()}
-          >
-            Import repository
-          </Button>
-        </section>
-      ) : null}
     </main>
   );
 }

@@ -10,7 +10,15 @@
 
 import type { spawn } from 'node:child_process';
 
-export type DevServerState = 'starting' | 'listening' | 'failed';
+export type DevServerState = 'installing' | 'starting' | 'listening' | 'failed';
+
+/** Spec 047: a run profile's install, run before the dev server when its inputs changed. */
+export interface InstallStep {
+  readonly command: string;
+  readonly cwd: string;
+  readonly needed: () => boolean;
+  readonly done: () => void;
+}
 
 /** The six numbers of data-model §5, delivered as the env file's `FORGE_DEV_TIMINGS` line. */
 export interface DevServerTimings {
@@ -26,6 +34,9 @@ export interface SuperviseOptions {
   readonly command: string;
   readonly connect: (port: number) => Promise<boolean>;
   readonly cwd: string;
+  /** Spec 047: set on the child and the install unless the project's own file sets it. */
+  readonly env?: Readonly<Record<string, string>>;
+  readonly install?: InstallStep;
   readonly port: number;
   readonly report: (state: DevServerState) => Promise<void>;
   readonly signal?: AbortSignal;
@@ -46,6 +57,26 @@ export interface SuperviseOptions {
  * contracts/preview-env.md § 4). The callback file is never forwarded to the child.
  */
 export declare function supervise(options: SuperviseOptions): Promise<void>;
+
+/** Spec 047: the files whose bytes decide whether dependencies must be installed again. */
+export declare const INSTALL_INPUTS: readonly string[];
+
+/** Spec 047: the install command and every input file's name and bytes, hashed in a fixed order. */
+export declare function installFingerprint(
+  command: string,
+  dirs: readonly string[],
+  read: (path: string) => Buffer | undefined,
+): string;
+
+/** Spec 047: a run profile's runtime defaults — port, bind address, toolchain PATH. */
+export declare function runtimeEnvironment(
+  port: number,
+  root: string,
+  base: Readonly<Record<string, string | undefined>>,
+): Record<string, string>;
+
+/** Spec 047: dependency directories in `.git/info/exclude`, so they reach no commit. */
+export declare function ensureGitExclude(root: string): void;
 
 /** One TCP connect to `127.0.0.1:<port>`, resolved to a plain boolean. */
 export declare function tcpConnect(port: number, timeoutMs: number): Promise<boolean>;

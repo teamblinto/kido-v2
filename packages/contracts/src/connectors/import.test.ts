@@ -110,12 +110,13 @@ describe('startImportRequestSchema', () => {
     expect(startImportRequestSchema.safeParse(start)).toEqual({ data: start, success: true });
   });
 
-  it('requires a template and never supplies one', () => {
-    // FR-011 lives on the wire: omitting `template` is a refusal, not a default. If this ever
-    // parses, the server has started choosing a template for the user.
-    const withoutTemplate = { branch: start.branch, name: start.name, repoId: start.repoId };
-
-    expect(startImportRequestSchema.safeParse(withoutTemplate).success).toBe(false);
+  it('start import accepts a repository alone, and refuses an unknown template', () => {
+    // Spec 047 supersedes FR-011 here: no template is a smart import (the run profile is detected
+    // from the repository), not a default template — and no branch or name is the default branch
+    // and a generated name. A template that is named must still be one of the four.
+    expect(startImportRequestSchema.parse({ repoId: start.repoId })).toEqual({
+      repoId: start.repoId,
+    });
     expect(startImportRequestSchema.safeParse({ ...start, template: 'rails' }).success).toBe(false);
   });
 

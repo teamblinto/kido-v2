@@ -1,6 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { ProjectTemplate, Site } from '@repo/contracts';
+import type { Site } from '@repo/contracts';
 import type { ProjectSite } from '@repo/db';
 
 import { NotFoundError } from '../../common/errors/domain-error';
@@ -9,6 +9,7 @@ import type { TenantTransaction } from '../../database/database.types';
 import { AuditService } from '../audit/audit.service';
 import { CheckpointService } from '../checkpoints/checkpoint.service';
 import { OutboxWriter } from '../outbox/outbox-writer';
+import { type ProjectRunSource, resolveBuild } from '../sandbox/run-config';
 import { TemplateCatalogue } from '../sandbox/template-catalogue';
 import { ProjectService } from '../tenancy/services/project.service';
 import { deployConflict } from './deploy.errors';
@@ -46,7 +47,7 @@ export class SiteService {
     const project = await this.projects.deployTarget(tx, ref);
     const row = await this.sites.byProject(tx, ref.orgId, ref.projectId);
 
-    return this.toContract(row, project.template);
+    return this.toContract(row, project.runSource);
   }
 
   /**
@@ -70,7 +71,7 @@ export class SiteService {
 
     const stored = await this.sites.byProject(tx, ref.orgId, ref.projectId);
     if (stored?.currentDeploymentId === deploymentId && stored.offlineAt === null) {
-      return this.toContract(stored, project.template);
+      return this.toContract(stored, project.runSource);
     }
 
     // A succeeded deployment went live, and go-live writes the row in the same transaction.
@@ -91,7 +92,7 @@ export class SiteService {
       type: 'site.released',
     });
 
-    return this.toContract(row, project.template);
+    return this.toContract(row, project.runSource);
   }
 
   /** `PUT …/site { action: 'offline' }`. A project with no site row is `never-deployed`. */
@@ -101,7 +102,7 @@ export class SiteService {
     const project = await this.projects.deployTarget(tx, ref);
     const stored = await this.sites.byProject(tx, ref.orgId, ref.projectId);
     if (stored === undefined) throw deployConflict('never-deployed');
-    if (stored.offlineAt !== null) return this.toContract(stored, project.template);
+    if (stored.offlineAt !== null) return this.toContract(stored, project.runSource);
 
     const row = await this.sites.setOffline(tx, { ...ref, updatedBy: actorId });
     if (row === undefined) throw deployConflict('never-deployed');
@@ -120,13 +121,14 @@ export class SiteService {
       type: 'site.offline',
     });
 
-    return this.toContract(row, project.template);
+    return this.toContract(row, project.runSource);
   }
 
-  private toContract(row: ProjectSite | undefined, template: ProjectTemplate): Site {
+  private toContract(row: ProjectSite | undefined, source: ProjectRunSource): Site {
     return {
       currentDeploymentId: row?.currentDeploymentId ?? null,
-      deployable: this.catalogue.get(template).manifest.build !== undefined,
+      // Spec 047: the run profile's `build`, or the template's.
+      deployable: resolveBuild(this.catalogue, source) !== undefined,
       offline: row?.offlineAt != null,
       url: row === undefined ? null : `https://${row.siteLabel}.${this.domain}`,
     };

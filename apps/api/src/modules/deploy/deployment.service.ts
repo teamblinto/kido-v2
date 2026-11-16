@@ -12,6 +12,7 @@ import type { TenantTransaction } from '../../database/database.types';
 import { AuditService } from '../audit/audit.service';
 import { CheckpointService } from '../checkpoints/checkpoint.service';
 import { OutboxWriter } from '../outbox/outbox-writer';
+import { resolveBuild } from '../sandbox/run-config';
 import { TemplateCatalogue } from '../sandbox/template-catalogue';
 import { ProjectService } from '../tenancy/services/project.service';
 import { LOG_TAIL_MAX_BYTES } from './deploy.constants';
@@ -66,7 +67,8 @@ export class DeploymentService {
 
     if (project.archived) throw deployConflict('project-archived');
 
-    if (this.catalogue.get(project.template).manifest.build === undefined) {
+    // Spec 047: a run profile's `build` when it has one, the template's otherwise.
+    if (resolveBuild(this.catalogue, project.runSource) === undefined) {
       throw deployConflict('not-deployable');
     }
 

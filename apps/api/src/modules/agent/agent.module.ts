@@ -57,6 +57,8 @@ import { UsageController } from './controllers/usage.controller';
 import { EventBatcherFactory } from './event-batcher';
 import { ProviderRouter } from './provider-router';
 import { RunService } from './run.service';
+import { PreviewRepairConsumer } from './preview-repair.consumer';
+import { ProjectNamingConsumer } from './project-naming.consumer';
 import { RunAccessConsumer } from './run-access.consumer';
 import { RunControl } from './run-control';
 import { RunExecutorRegistry } from './run-executor-registry';
@@ -252,6 +254,8 @@ function proxyFetch(
     LinkedAccountRepository,
     LinkedAccountService,
     OpenAiProvider,
+    PreviewRepairConsumer,
+    ProjectNamingConsumer,
     ProviderKeyHealthConsumer,
     LinkedAccountHealthConsumer,
     ProviderKeyRepository,

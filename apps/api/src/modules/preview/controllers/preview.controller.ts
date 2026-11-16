@@ -108,7 +108,7 @@ export class PreviewController {
       type: 'project.preview-label.rotated',
     });
 
-    const { port, url } = this.reader.link(row.template, label);
+    const { port, url } = this.reader.link(row, label);
     return { port, status: PREVIEW_LABEL_ROTATED, url };
   }
 
@@ -140,14 +140,7 @@ export class PreviewController {
       });
     }
 
-    return this.reader.answer(
-      this.tenant.tx,
-      orgId,
-      projectId,
-      row.template,
-      row.previewLabel,
-      visibility,
-    );
+    return this.reader.answer(this.tenant.tx, orgId, projectId, row, row.previewLabel, visibility);
   }
 }
 

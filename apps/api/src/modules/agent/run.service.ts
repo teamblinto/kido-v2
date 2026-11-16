@@ -13,7 +13,8 @@ import {
   type UsageRun,
   type UsageRunListResponse,
 } from '@repo/contracts';
-import type { AgentRun, RunEventRow } from '@repo/db';
+import { type AgentRun, projects, type RunEventRow } from '@repo/db';
+import { and, eq } from 'drizzle-orm';
 
 import { CLOCK, type ClockPort } from '../../common/clock/clock.port';
 import {
@@ -177,6 +178,19 @@ export class RunService {
       payload: { orgId, projectId, runId: run.id },
       type: 'agent-run.requested',
     });
+    // Spec 047: a provisional name is replaced once the project has a prompt to be named after.
+    const [named] = await tx
+      .select({ namePending: projects.namePending })
+      .from(projects)
+      .where(and(eq(projects.orgId, orgId), eq(projects.id, projectId)));
+    if (named?.namePending === true) {
+      await this.outbox.append(tx, {
+        aggregateId: projectId,
+        orgId,
+        payload: { orgId, projectId },
+        type: 'project.naming.requested',
+      });
+    }
     // Seq 1 reaches the stream once it is committed (009 research R1), like cancel's publish.
     this.tenant.onCommit(() => this.publisher.sync(orgId, run.id).then(() => undefined));
 

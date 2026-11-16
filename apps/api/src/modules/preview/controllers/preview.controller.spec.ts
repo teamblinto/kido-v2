@@ -63,6 +63,8 @@ function build(
   const sandboxes = { findFirst: vi.fn().mockResolvedValue(sandbox) };
   const tx = {
     query: { projects: { findFirst }, sandboxes },
+    // Spec 047: a template-less project asks whether an import is still open; none is.
+    select: () => ({ from: () => ({ where: () => ({ limit: () => Promise.resolve([]) }) }) }),
     update: vi.fn().mockReturnValue({ set }),
   };
   const rotatePreviewLabel = vi.fn().mockResolvedValue({ label: NEW_LABEL, previousLabel: LABEL });

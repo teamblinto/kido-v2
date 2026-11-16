@@ -462,6 +462,8 @@ describe('Cloud subscription agent (e2e)', () => {
             'search',
             'find',
             'preview_status',
+            'preview_logs',
+            'set_run_config',
           ]);
 
           const post = (events: CompanionRunEvent[]) =>

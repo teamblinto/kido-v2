@@ -96,6 +96,7 @@ describe('DeploymentService', () => {
         archived: false,
         name: 'Shop',
         previewLabel: 'a'.repeat(32),
+        runSource: { runConfig: null, template: 'vite-react' },
         template: 'vite-react',
       }),
     };
@@ -186,6 +187,7 @@ describe('DeploymentService', () => {
         archived: true,
         name: 'Shop',
         previewLabel: 'a'.repeat(32),
+        runSource: { runConfig: null, template: 'vite-react' },
         template: 'vite-react',
       });
 
@@ -201,6 +203,7 @@ describe('DeploymentService', () => {
         archived: false,
         name: 'Api',
         previewLabel: 'a'.repeat(32),
+        runSource: { runConfig: null, template: 'node-api' },
         template: 'node-api',
       });
 

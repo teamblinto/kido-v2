@@ -17,6 +17,7 @@ import type { TenantTransaction } from '../../../database/database.types';
 import { AuditService } from '../../audit/audit.service';
 import { OutboxWriter } from '../../outbox/outbox-writer';
 import { PermissionResolutionService } from '../../rbac/permission-resolution.service';
+import { resolveBuild } from '../../sandbox/run-config';
 import { TemplateCatalogue } from '../../sandbox/template-catalogue';
 import { ProjectService } from '../../tenancy/services/project.service';
 import type { ProjectRef } from '../deployment.service';
@@ -103,7 +104,7 @@ export class DomainService {
 
     if (project.archived) throw domainConflict('project-archived');
 
-    if (this.catalogue.get(project.template).manifest.build === undefined) {
+    if (resolveBuild(this.catalogue, project.runSource) === undefined) {
       throw domainConflict('not-deployable');
     }
 

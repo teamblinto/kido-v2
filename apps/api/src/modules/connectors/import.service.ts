@@ -34,6 +34,7 @@ import {
 import { RepoLinkRepository } from './repo-link.repository';
 import { SyncRepository } from './sync.repository';
 import { SyncService } from './sync.service';
+import { humanizeName } from '../tenancy/project-naming';
 import { inspectRoot } from './template-inspector';
 
 /**
@@ -135,37 +136,51 @@ export class ImportService {
       throw new ImportRepoTooLargeError(repo.sizeKib, MAX_IMPORT_REPOSITORY_KIB);
     }
 
-    const headSha = await this.head(token, repo, request.branch);
+    // Spec 047: a smart import names neither a branch nor a template — the default branch, and the
+    // repository's own run profile detected from the clone by the runner.
+    const branch = request.branch ?? repo.defaultBranch;
+    const smart = request.template === undefined;
+    const headSha = await this.head(token, repo, branch);
 
     if (headSha === null) {
       // The branch the client named is either gone or unborn. GitHub answers 404 for both, and the
       // two are genuinely different things to ask of a person, so the default branch — the one a
       // repository always names — is read as "no commits yet" and any other as "that branch went".
-      if (request.branch === repo.defaultBranch) {
-        throw new ImportEmptyRepoError(request.branch);
+      if (branch === repo.defaultBranch) {
+        throw new ImportEmptyRepoError(branch);
       }
 
-      throw new ImportBranchNotFoundError(request.branch);
+      throw new ImportBranchNotFoundError(branch);
     }
 
     // FR-013/FR-016: the repository is re-inspected here, and the answer changes nothing about
     // which template is used — `request.template` is honoured whatever it says. What the
     // re-inspection buys is the *disagreement*, recorded on the audit trail beside the choice so
     // the override is readable afterwards rather than inferred. A mismatch is not a refusal.
-    const detected = detectedTemplates(inspectRoot(await this.root(token, repo.id, headSha)));
-    const mismatch = mismatchOf(detected, request.template);
+    //
+    // A smart import chose no template, so there is nothing to disagree with and no second read.
+    const mismatch =
+      request.template === undefined
+        ? null
+        : mismatchOf(
+            detectedTemplates(inspectRoot(await this.root(token, repo.id, headSha))),
+            request.template,
+          );
 
     const project = await this.projects.create({
       actorId,
-      name: request.name,
+      // Spec 047: with no name, a readable one from the repository's — provisional, so the naming
+      // consumer can replace it with a better one once the clone is in, unless somebody renames.
+      name: request.name ?? humanizeName(repo.name),
+      namePending: request.name === undefined,
       orgId,
       ownerId: actorId,
-      template: request.template,
+      template: smart ? null : request.template,
       workspaceId,
     });
 
     const link = await this.links.insert(tx, {
-      branch: request.branch,
+      branch,
       connectionId: connection.id,
       linkedBy: actorId,
       name: repo.name,
@@ -190,11 +205,12 @@ export class ImportService {
       action: 'import.requested',
       actorId,
       metadata: {
-        branch: request.branch,
+        branch,
         projectId: project.id,
         repository: repo.fullName,
         syncOperationId: operation.id,
-        template: request.template,
+        // Null for a smart import (spec 047): the run profile is detected, not chosen.
+        template: request.template ?? null,
         // Null when they agree, which is the common case and still worth writing: "we looked and
         // it matched" and "we never looked" are different things to read back.
         templateMismatch: mismatch,

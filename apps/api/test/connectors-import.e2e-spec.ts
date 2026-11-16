@@ -512,24 +512,38 @@ describe('Connector import (e2e)', () => {
           expect(inspection.candidates).toEqual([]);
         });
 
-        it('starting without a template is a 422, not a server-side choice (FR-011)', async () => {
-          const refused = await unsafe(http(app).post(imports()), [cookie()])
-            .send({ branch: 'main', name: 'Goodbye', repoId: GO_REPO_ID })
-            .expect(422);
+        // Spec 047 supersedes FR-011's refusal: no template is a smart import, which runs the
+        // repository from its own detected profile — here Go, which no template could run.
+        it('starting with the repository alone is a smart import that detects the Go profile (spec 047)', async () => {
+          // Its own workspace: the cases below read `goWork` as the template import left it.
+          sandbox.dir = await mkdtemp(join(tmpdir(), 'forge-import-e2e-smart-'));
 
-          expect(refused.body).toMatchObject({
-            type: 'https://forge.dev/problems/validation-failed',
+          const accepted = await unsafe(http(app).post(imports()), [cookie()])
+            .send({ repoId: GO_REPO_ID })
+            .expect(202);
+          const queued = syncOperationSchema.parse(accepted.body);
+
+          expect(await settledFor(queued.projectId, queued.id)).toMatchObject({
+            reason: null,
+            state: 'succeeded',
+            toSha: goHeadSha,
           });
-
-          // And nothing was created on the way to refusing it.
-          const projects = await transactions.runInTenantTransaction(world.alpha.orgId, (tx) =>
+          const [project] = await transactions.runInTenantTransaction(world.alpha.orgId, (tx) =>
             tx
-              .select({ name: schema.projects.name })
+              .select({
+                name: schema.projects.name,
+                runConfig: schema.projects.runConfig,
+                template: schema.projects.template,
+              })
               .from(schema.projects)
-              .where(eq(schema.projects.orgId, world.alpha.orgId)),
+              .where(eq(schema.projects.id, queued.projectId)),
           );
-          expect(projects.map((row) => row.name)).not.toContain('Goodbye');
-        });
+          expect(project).toMatchObject({
+            name: 'Goodbye',
+            runConfig: { dev: 'go run .', source: 'detected', stack: { language: 'go' } },
+            template: null,
+          });
+        }, 60_000);
 
         it('an explicit override runs: the Go repository is imported onto node-api', async () => {
           sandbox.dir = goWork;

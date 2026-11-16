@@ -121,6 +121,7 @@ describe('SiteService', () => {
           archived: false,
           name: 'Shop',
           previewLabel: 'a'.repeat(32),
+          runSource: { runConfig: null, template: 'vite-react' },
           template: 'vite-react',
         }),
       ),
@@ -182,7 +183,11 @@ describe('SiteService', () => {
 
     it('answers the never-deployed shape, with deployable from the template', async () => {
       setStored(undefined);
-      projects.deployTarget.mockResolvedValue({ archived: false, template: 'node-api' });
+      projects.deployTarget.mockResolvedValue({
+        archived: false,
+        runSource: { runConfig: null, template: 'node-api' },
+        template: 'node-api',
+      });
 
       expect(await service.read(tx, ref)).toEqual({
         currentDeploymentId: null,
@@ -270,7 +275,11 @@ describe('SiteService', () => {
     });
 
     it('refuses an archived project as project-archived', async () => {
-      projects.deployTarget.mockResolvedValue({ archived: true, template: 'vite-react' });
+      projects.deployTarget.mockResolvedValue({
+        archived: true,
+        runSource: { runConfig: null, template: 'vite-react' },
+        template: 'vite-react',
+      });
 
       const error = await refusal(service.release(tx, ref, USER, A));
 

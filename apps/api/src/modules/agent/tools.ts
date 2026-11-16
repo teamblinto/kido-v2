@@ -1,3 +1,4 @@
+import { runConfigInputSchema } from '@repo/contracts';
 import { z } from 'zod';
 
 import type {
@@ -12,7 +13,15 @@ import type {
 
 /** Wire name of one of the seven tools the model may call (contracts/tool-broker.md). */
 export type ToolName =
-  'fs_read' | 'fs_list' | 'fs_edit' | 'exec' | 'search' | 'find' | 'preview_status';
+  | 'fs_read'
+  | 'fs_list'
+  | 'fs_edit'
+  | 'exec'
+  | 'search'
+  | 'find'
+  | 'preview_status'
+  | 'preview_logs'
+  | 'set_run_config';
 
 /** What a tool call answers with, before the broker turns it into a `BrokerResult`. */
 export interface ToolOutcome {
@@ -52,6 +61,8 @@ const findInput = z.strictObject({ glob: z.string(), path: z.string().optional()
 /** No input: the tool is addressed by `(orgId, projectId)` like every other, and there is one port. */
 const previewStatusInput = z.strictObject({});
 
+const previewLogsInput = z.strictObject({});
+
 function formatEntry(entry: FileEntry): string {
   return `${entry.kind}\t${entry.name}\t${entry.size}`;
 }
@@ -72,6 +83,7 @@ function formatMatch(match: ContentMatch): string {
  * appears in any of the three — a tool answer is model-visible text (FR-024).
  */
 function formatPreview(status: PreviewStatus): string {
+  // `installing` reads as itself: a run profile's dependencies are going in (spec 047).
   if (status.port === null) return 'this project has no preview port';
   if (status.observed === null) return `port ${status.port}: not observed yet`;
   return `port ${status.port}: ${status.observed.state} (observed ${status.observed.at})`;
@@ -149,5 +161,27 @@ export const TOOLS: readonly ToolSpec[] = Object.freeze([
       "Report whether this project's preview is serving. Answers the declared port and the last state its sandbox observed — starting, listening or failed — with the time it was observed. Reports only; it never starts, restarts or stops anything.",
     input: previewStatusInput,
     name: 'preview_status',
+  }),
+  widen({
+    call: async (port, ref, _input: z.output<typeof previewLogsInput>, ctx) => {
+      const log = await port.previewLogs(ref, ctx);
+      return { output: log.trim() === '' ? 'the dev server has written no output yet' : log };
+    },
+    description:
+      "Read the last 12 KiB of the dev server's output, including its dependency install. Use it to diagnose a preview that is failing or not starting.",
+    input: previewLogsInput,
+    name: 'preview_logs',
+  }),
+  widen({
+    call: async (port, ref, input: z.output<typeof runConfigInputSchema>, ctx) => {
+      const stored = await port.setRunConfig(ref, input, ctx, null);
+      return {
+        output: `run profile saved; the dev server restarts with it: install=${stored.install ?? 'none'} root=${stored.root} dev=${stored.dev ?? 'none'} port=${String(stored.port ?? 'none')}`,
+      };
+    },
+    description:
+      'Change how this project installs and starts its preview: `install` runs at the workspace root (re-run when manifests change), `dev` runs in `root` and must listen on 0.0.0.0:`port` (1024-65535); PORT and HOST=0.0.0.0 are set for it and a workspace `.venv/bin` is on PATH. Use null `dev` and `port` for a project with nothing to serve. The dev server restarts immediately; check `preview_status` and `preview_logs` after.',
+    input: runConfigInputSchema,
+    name: 'set_run_config',
   }),
 ]);

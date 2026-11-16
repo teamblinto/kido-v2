@@ -1,10 +1,6 @@
 import { Body, Controller, HttpCode, Inject, Post, Req, UseGuards } from '@nestjs/common';
 import { ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
-import {
-  PROJECT_TEMPLATES,
-  type ProjectTemplate,
-  sandboxCallbackRequestSchema,
-} from '@repo/contracts';
+import { sandboxCallbackRequestSchema } from '@repo/contracts';
 import { projects, sandboxes } from '@repo/db';
 import { and, eq, sql } from 'drizzle-orm';
 
@@ -14,6 +10,8 @@ import type { TenantTransaction } from '../../../database/database.types';
 import { TenantTransactionRunner } from '../../../database/tenant-transaction';
 import { AuditService } from '../../audit/audit.service';
 import { Public } from '../../identity/decorators/public.decorator';
+import { OutboxWriter } from '../../outbox/outbox-writer';
+import { parseRunConfig, resolveDevPort } from '../../sandbox/run-config';
 import { TemplateCatalogue } from '../../sandbox/template-catalogue';
 import {
   CALLBACK_REJECTION,
@@ -24,6 +22,13 @@ import type { SandboxCallbackClaims } from '../sandbox-callback.token';
 
 /** Why a body the guard admitted was still refused. One `403` on the wire for both (contract § 4). */
 type CallbackRefusal = 'undeclared-port' | 'unknown-action';
+
+/**
+ * Spec 047: automatic repair runs per failure streak. Two, because the first fix often uncovers
+ * the next error, and a third attempt at the same failure is spending somebody's subscription on a
+ * loop; a `listening` report ends the streak and hands the budget back.
+ */
+export const MAX_PREVIEW_REPAIRS = 2;
 
 /**
  * The callback broker (spec 017 US5, contracts § 6, research R11): the one route a sandbox may
@@ -53,6 +58,7 @@ export class SandboxCallbackController {
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(CLOCK) private readonly clock: ClockPort,
     @Inject(TemplateCatalogue) private readonly catalogue: TemplateCatalogue,
+    @Inject(OutboxWriter) private readonly outbox: OutboxWriter,
   ) {}
 
   @Post()
@@ -70,7 +76,8 @@ export class SandboxCallbackController {
       if (!parsed.success) return this.refuse(tx, claims, 'unknown-action');
       // The declared port is the only key this map may grow (R9). A template that declares none
       // has no port to report on, so every port it names is undeclared.
-      const declared = await this.declaredPort(tx, claims);
+      const project = await this.project(tx, claims);
+      const declared = project === undefined ? undefined : resolveDevPort(this.catalogue, project);
       if (declared !== parsed.data.port) return this.refuse(tx, claims, 'undeclared-port');
       // `preview.status` is the whole set today; the union grows by a branch here (contract § 7).
       const entry = { observedAt: this.clock.now().toISOString(), state: parsed.data.state };
@@ -86,6 +93,7 @@ export class SandboxCallbackController {
             eq(sandboxes.daytonaId, claims.sandbox),
           ),
         );
+      await this.repairs(tx, claims, project?.runConfig, parsed.data.state);
       return undefined;
     });
 
@@ -110,24 +118,54 @@ export class SandboxCallbackController {
   }
 
   /**
-   * The port the calling project's template declares, read under the caller's own transaction.
-   * The same reading `RouteBrokerService.devPort` makes: no row, no template or no `devPort` is no
-   * port — and no port matches nothing, because `port` is a required number in the schema.
+   * The calling project's template and run profile, read under the caller's own transaction. The
+   * port is `resolveDevPort`'s, the reading the route broker makes: no row or no declared dev
+   * server is no port — and no port matches nothing, because `port` is a required number.
    */
-  private async declaredPort(
-    tx: TenantTransaction,
-    claims: SandboxCallbackClaims,
-  ): Promise<number | undefined> {
+  private async project(tx: TenantTransaction, claims: SandboxCallbackClaims) {
     const [project] = await tx
-      .select({ template: projects.template })
+      .select({ runConfig: projects.runConfig, template: projects.template })
       .from(projects)
       .where(and(eq(projects.orgId, claims.org), eq(projects.id, claims.project)))
       .limit(1);
-    const template = project?.template ?? null;
-    if (template === null || !(PROJECT_TEMPLATES as readonly string[]).includes(template)) {
-      return undefined;
+    return project;
+  }
+
+  /**
+   * Spec 047's self-healing trigger, in the report's own transaction. A project with a run profile
+   * whose dev server (or install) spent its fast budget gets one repair run per report, up to
+   * {@link MAX_PREVIEW_REPAIRS} per streak; `listening` ends the streak. A template project has no
+   * profile and is left exactly as before.
+   */
+  private async repairs(
+    tx: TenantTransaction,
+    claims: SandboxCallbackClaims,
+    raw: unknown,
+    state: 'failed' | 'installing' | 'listening' | 'starting',
+  ): Promise<void> {
+    const config = parseRunConfig(raw);
+    if (config === null) return;
+
+    const next =
+      state === 'listening' && config.repairs > 0
+        ? 0
+        : state === 'failed' && config.repairs < MAX_PREVIEW_REPAIRS
+          ? config.repairs + 1
+          : undefined;
+    if (next === undefined) return;
+
+    await tx
+      .update(projects)
+      .set({ runConfig: { ...config, repairs: next } })
+      .where(and(eq(projects.orgId, claims.org), eq(projects.id, claims.project)));
+
+    if (next > 0) {
+      await this.outbox.append(tx, {
+        aggregateId: claims.project,
+        orgId: claims.org,
+        payload: { attempt: next, orgId: claims.org, projectId: claims.project },
+        type: 'project.preview.failed',
+      });
     }
-    const declared = this.catalogue.get(template as ProjectTemplate).manifest.devPort;
-    return declared === undefined ? undefined : Number(declared);
   }
 }

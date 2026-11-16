@@ -246,6 +246,22 @@ describe('BuildRunner (spec 027 T034, research R3/R5/R15)', () => {
     expect(outcome.log).toMatch(/dropped 1 /);
   });
 
+  it('builds a project run from its own profile with that profile’s install and build (spec 047)', async () => {
+    await h.runner.run({
+      ...INPUT,
+      profile: {
+        build: { command: 'corepack pnpm run build', output: 'dist' },
+        install: 'corepack pnpm install',
+      },
+    });
+
+    expect(commands(h.calls).slice(4)).toEqual([
+      'corepack pnpm install',
+      'corepack pnpm run build',
+      `tar -cf ${BUILD_ARCHIVE_PATH} -C dist .`,
+    ]);
+  });
+
   it('gives every command the whole remaining 15-minute budget and no more', async () => {
     h.answers.set('npm ci', () => {
       h.clock.advance(4 * MINUTE);

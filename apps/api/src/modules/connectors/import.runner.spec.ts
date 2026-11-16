@@ -133,17 +133,21 @@ describe('ImportRunner', () => {
       options: {
         attempt?: number;
         mutate?: (projectId: string) => Promise<void>;
-        template?: 'python' | 'vite-react';
+        /** Spec 047: null is a smart import — the repository alone, no template, branch or name. */
+        template?: 'python' | 'vite-react' | null;
       } = {},
     ) {
       const { attempt = 1, mutate, template = 'vite-react' } = options;
       const started = await harness.inTenantScope((tx) =>
-        imports.start(tx, harness.orgId, harness.workspaceId, harness.userId, {
-          branch: 'main',
-          name: 'Imported',
-          repoId: REPO_ID,
-          template,
-        }),
+        imports.start(
+          tx,
+          harness.orgId,
+          harness.workspaceId,
+          harness.userId,
+          template === null
+            ? { repoId: REPO_ID }
+            : { branch: 'main', name: 'Imported', repoId: REPO_ID, template },
+        ),
       );
       await mutate?.(started.projectId);
       const event: Envelope<'sync.requested'> = {
@@ -217,7 +221,11 @@ describe('ImportRunner', () => {
       });
       headSha = await harness.fixture.seedRepo(harness.fixture.repositories.get(REPO_ID)!, {
         'README.md': '# imported\n',
-        'package.json': JSON.stringify({ dependencies: { react: '19' } }),
+        'package.json': JSON.stringify({
+          dependencies: { react: '19' },
+          devDependencies: { vite: '6' },
+          scripts: { dev: 'vite' },
+        }),
         'src/main.tsx': 'export const main = 1;\n',
         'vite.config.ts': 'export default {};\n',
       });
@@ -264,6 +272,72 @@ describe('ImportRunner', () => {
       for (const token of harness.fixture.tokens.keys()) {
         expect(sandbox.commands.join('\n')).not.toContain(token);
       }
+    });
+
+    /**
+     * Spec 047: a smart import detects the run profile from the clone, cleans the pool image out of
+     * the workspace so the repository installs from scratch, and hands the profile to the sandbox
+     * through the event that restarts its dev server — with a readable provisional name.
+     */
+    it('a smart import detects the run profile, cleans the workspace and asks for a restart and a name', async () => {
+      const operation = await runImport({ template: null });
+      const project = await importedProject();
+
+      expect(operation).toMatchObject({ reason: null, state: 'succeeded', toSha: headSha });
+      const [row] = await harness.inTenant((tx) =>
+        tx
+          .select({
+            name: schema.projects.name,
+            namePending: schema.projects.namePending,
+            runConfig: schema.projects.runConfig,
+            template: schema.projects.template,
+          })
+          .from(schema.projects)
+          .where(eq(schema.projects.id, project!.id)),
+      );
+      expect(row).toMatchObject({
+        name: 'Site',
+        namePending: true,
+        runConfig: {
+          dev: 'npm run dev -- --host 0.0.0.0 --port 3000 --strictPort',
+          install: 'npm install --no-audit --no-fund',
+          port: 3000,
+          root: '.',
+          source: 'detected',
+          stack: { framework: 'vite-react', language: 'javascript', packageManager: 'npm' },
+        },
+        template: null,
+      });
+
+      // Nothing of the pool image is left: no starter file and no `node_modules` it installed.
+      expect(sandbox.commands).toContain('git clean -ffdxq');
+      expect(spawnSync('test', ['-e', join(work, 'node_modules')]).status).not.toBe(0);
+      expect(spawnSync('test', ['-e', join(work, 'src', 'App.tsx')]).status).not.toBe(0);
+      expect(git(work, 'ls-files').split('\n')).toContain('vite.config.ts');
+
+      const events = await harness.inTenant((tx) =>
+        tx
+          .select({ type: schema.outbox.type })
+          .from(schema.outbox)
+          .where(eq(schema.outbox.aggregateId, project!.id)),
+      );
+      expect(events.map(({ type }) => type)).toEqual(
+        expect.arrayContaining(['project.env.changed', 'project.naming.requested']),
+      );
+    });
+
+    it('a template import keeps spec 026’s behaviour: no run profile and no clean', async () => {
+      await runImport();
+      const project = await importedProject();
+      const [row] = await harness.inTenant((tx) =>
+        tx
+          .select({ runConfig: schema.projects.runConfig, template: schema.projects.template })
+          .from(schema.projects)
+          .where(eq(schema.projects.id, project!.id)),
+      );
+
+      expect(row).toEqual({ runConfig: null, template: 'vite-react' });
+      expect(sandbox.commands).not.toContain('git clean -ffdxq');
     });
 
     it('the branch the import named is the workspace’s branch, not a detached head', async () => {

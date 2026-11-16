@@ -194,6 +194,7 @@ describe('DomainService', () => {
         archived: false,
         name: 'Shop',
         previewLabel: 'a'.repeat(32),
+        runSource: { runConfig: null, template: 'vite-react' },
         template: 'vite-react',
       }),
     };
@@ -406,6 +407,7 @@ describe('DomainService', () => {
         archived: true,
         name: 'Shop',
         previewLabel: 'a'.repeat(32),
+        runSource: { runConfig: null, template: 'vite-react' },
         template: 'vite-react',
       });
 
@@ -420,6 +422,7 @@ describe('DomainService', () => {
         archived: false,
         name: 'Api',
         previewLabel: 'a'.repeat(32),
+        runSource: { runConfig: null, template: 'node-api' },
         template: 'node-api',
       });
 
@@ -532,6 +535,7 @@ describe('DomainService', () => {
         archived: true,
         name: 'Shop',
         previewLabel: 'a'.repeat(32),
+        runSource: { runConfig: null, template: 'vite-react' },
         template: 'vite-react',
       });
 
@@ -933,6 +937,7 @@ describe('DomainService', () => {
         archived: true,
         name: 'Shop',
         previewLabel: 'a'.repeat(32),
+        runSource: { runConfig: null, template: 'vite-react' },
         template: 'vite-react',
       });
       domains.findForProject.mockResolvedValue(failed);

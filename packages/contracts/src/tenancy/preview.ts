@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { runStackSchema } from './run-config';
+
 /**
  * The preview gateway and label routing slice (spec 017, contracts § 1).
  *
@@ -34,6 +36,8 @@ export type PreviewStage = z.output<typeof previewStageSchema>;
 /** `GET /api/v1/orgs/:orgId/projects/:projectId/preview`, behind `project:read`. */
 export const previewResponseSchema = z.strictObject({
   port: z.number().int().nullable(),
+  /** Spec 047: what the project's run profile says it is; null or absent for a template project. */
+  stack: runStackSchema.nullable().optional(),
   stage: previewStageSchema,
   url: z.string(),
   visibility: previewVisibilitySchema,
@@ -79,7 +83,7 @@ export const sandboxCallbackRequestSchema = z.discriminatedUnion('action', [
   z.strictObject({
     action: z.literal('preview.status'),
     port: z.number().int().min(1024).max(65_535),
-    state: z.enum(['listening', 'starting', 'failed']),
+    state: z.enum(['installing', 'listening', 'starting', 'failed']),
   }),
 ]);
 

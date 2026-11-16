@@ -1,3 +1,4 @@
+import type { RunConfig, RunConfigInput } from '@repo/contracts';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -83,6 +84,19 @@ class FakePort implements SandboxPort {
   previewStatus(ref: SandboxRef, ctx?: MutationContext): Promise<PreviewStatus> {
     return this.answer('previewStatus', [ref, ctx]);
   }
+
+  previewLogs(ref: SandboxRef, ctx?: MutationContext): Promise<string> {
+    return this.answer('previewLogs', [ref, ctx]);
+  }
+
+  setRunConfig(
+    ref: SandboxRef,
+    input: RunConfigInput,
+    ctx: MutationContext,
+    actorId: string | null,
+  ): Promise<RunConfig> {
+    return this.answer('setRunConfig', [ref, input, ctx, actorId]);
+  }
 }
 
 function fakePort(): FakePort {
@@ -96,7 +110,7 @@ function spec(name: string) {
 }
 
 describe('TOOLS', () => {
-  it('is the seven tools in fixed order', () => {
+  it('is the nine tools in fixed order', () => {
     expect(TOOLS.map((t) => t.name)).toEqual([
       'fs_read',
       'fs_list',
@@ -105,6 +119,8 @@ describe('TOOLS', () => {
       'search',
       'find',
       'preview_status',
+      'preview_logs',
+      'set_run_config',
     ]);
   });
 

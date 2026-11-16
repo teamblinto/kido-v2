@@ -1,4 +1,4 @@
-import type { PreviewStage, PreviewVisibility } from '@repo/contracts';
+import type { PreviewStage, PreviewVisibility, RunStack } from '@repo/contracts';
 import {
   AlertTriangleIcon,
   CheckIcon,
@@ -268,6 +268,7 @@ export function StagePreview({
               wake.mutate();
             }}
             retrying={wake.isPending}
+            stack={preview.data?.stack ?? null}
             stage={stage}
             // At `ready` it lies over the frame until the frame has loaded, then fades away.
             className={
@@ -311,6 +312,56 @@ const STEP_SR: Record<StepState, string> = {
   pending: 'not started',
 };
 
+const FRAMEWORK_NAMES: Record<string, string> = {
+  angular: 'Angular',
+  astro: 'Astro',
+  'create-react-app': 'Create React App',
+  django: 'Django',
+  expo: 'Expo',
+  express: 'Express',
+  fastapi: 'FastAPI',
+  fastify: 'Fastify',
+  flask: 'Flask',
+  fresh: 'Fresh',
+  gatsby: 'Gatsby',
+  gradio: 'Gradio',
+  hono: 'Hono',
+  koa: 'Koa',
+  nestjs: 'NestJS',
+  nextjs: 'Next.js',
+  nuxt: 'Nuxt',
+  remix: 'Remix',
+  static: 'Static site',
+  streamlit: 'Streamlit',
+  sveltekit: 'SvelteKit',
+  'vite-preact': 'Vite + Preact',
+  'vite-react': 'Vite + React',
+  'vite-solid': 'Vite + Solid',
+  'vite-svelte': 'Vite + Svelte',
+  'vite-vue': 'Vite + Vue',
+  vite: 'Vite',
+  'vue-cli': 'Vue CLI',
+};
+
+/** `Next.js · TypeScript · pnpm`: what the run profile detected, in words a person uses. */
+function stackLabel(stack: RunStack): string {
+  const language = stack.language === 'unknown' ? null : stack.language;
+  const title = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
+  return [
+    stack.framework === null ? null : (FRAMEWORK_NAMES[stack.framework] ?? title(stack.framework)),
+    language === null
+      ? null
+      : language === 'javascript'
+        ? 'JavaScript'
+        : language === 'typescript'
+          ? 'TypeScript'
+          : title(language),
+    stack.packageManager,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(' · ');
+}
+
 /** `12 s`, `1 min 05 s`. */
 function formatElapsed(ms: number): string {
   const seconds = Math.max(0, Math.floor(ms / 1000));
@@ -328,6 +379,8 @@ interface PreviewProgressProps {
   onFaded: () => void;
   onRetry: () => void;
   retrying: boolean;
+  /** Spec 047: what the run profile says the project is; null for a template project. */
+  stack: RunStack | null;
   stage: StartupStage | 'failed' | 'ready';
 }
 
@@ -339,6 +392,7 @@ function PreviewProgress({
   onFaded,
   onRetry,
   retrying,
+  stack,
   stage,
 }: PreviewProgressProps): React.JSX.Element {
   const id = useId();
@@ -397,6 +451,9 @@ function PreviewProgress({
             </span>
           ) : null}
         </div>
+        {stack === null ? null : (
+          <p className="text-caption text-faint mt-1 pl-[18px]">{stackLabel(stack)}</p>
+        )}
 
         {at === -1 ? null : (
           <>

@@ -213,7 +213,8 @@ export const EVENTS = {
       actorId: z.uuid(),
       orgId: z.uuid(),
       projectId: z.uuid(),
-      template: projectTemplateSchema,
+      // Spec 047: null for a smart import, which runs from its own detected profile.
+      template: projectTemplateSchema.nullable(),
       workspaceId: z.uuid(),
     }),
   },
@@ -221,6 +222,22 @@ export const EVENTS = {
   'project.env.changed': {
     aggregate: 'project',
     payload: z.strictObject({ orgId: z.uuid(), projectId: z.uuid() }),
+  },
+  /**
+   * Spec 047: a project's provisional name should be replaced by a generated one. Ids only — the
+   * consumer reads the hint (the first prompt, or the repository) from the rows and the sandbox.
+   */
+  'project.naming.requested': {
+    aggregate: 'project',
+    payload: z.strictObject({ orgId: z.uuid(), projectId: z.uuid() }),
+  },
+  /**
+   * Spec 047: a project with a run profile reported `failed`; `attempt` is the repair's number in
+   * the streak (1 or 2), so two failures are two jobs.
+   */
+  'project.preview.failed': {
+    aggregate: 'project',
+    payload: z.strictObject({ attempt: z.int().min(1), orgId: z.uuid(), projectId: z.uuid() }),
   },
   'project.preview-label.rotated': {
     aggregate: 'project',

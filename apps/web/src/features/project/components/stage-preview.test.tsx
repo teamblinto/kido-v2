@@ -474,6 +474,24 @@ describe('StagePreview start-up', () => {
     expect(minted).toBe(0);
   });
 
+  it('names the stack an imported project is being set up as (spec 047)', async () => {
+    server.use(
+      http.get(PREVIEW, () =>
+        HttpResponse.json({
+          port: 3000,
+          stack: { framework: 'nextjs', language: 'typescript', packageManager: 'pnpm' },
+          stage: 'installing',
+          url: 'https://a.preview.test',
+          visibility: 'private',
+        }),
+      ),
+    );
+    renderScreen(stage());
+
+    expect(await screen.findByText('Next.js · TypeScript · pnpm')).toBeInTheDocument();
+    expect(step('Installing dependencies').dataset.state).toBe('active');
+  });
+
   it('polls until ready, then mounts the frame and asks far less often', async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     const served = stages('creating', 'installing', 'ready');

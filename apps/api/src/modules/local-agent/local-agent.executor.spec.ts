@@ -762,6 +762,8 @@ describe('LocalAgentExecutor', () => {
         'search',
         'find',
         'preview_status',
+        'preview_logs',
+        'set_run_config',
       ]);
       expect(start.toolset.every((tool) => tool.inputSchema.type === 'object')).toBe(true);
       expect(files.get('a.ts')).toBe('x');

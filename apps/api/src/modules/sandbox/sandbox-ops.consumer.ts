@@ -40,6 +40,7 @@ import {
   type SandboxTimings,
   poolFrontKey,
 } from './sandbox.constants';
+import { type DevServer, resolveDevServer } from './run-config';
 import { DaytonaError } from './sandbox.errors';
 import { TemplateCatalogue } from './template-catalogue';
 
@@ -73,10 +74,28 @@ export type OpTarget =
   | { readonly kind: 'project'; readonly orgId: string; readonly row: Sandbox }
   | { readonly kind: 'pool'; readonly row: SandboxPoolEntry };
 
-/** A template's dev server as the env file carries it: both fields, or the template declares none. */
-interface DevServerDeclaration {
-  readonly command: string;
-  readonly port: string;
+/** A project's dev server as the env file carries it (template manifest or run profile). */
+type DevServerDeclaration = DevServer;
+
+/** Belt and braces behind `runConfigSchema`: whatever reaches the env file is one line. */
+const oneLine = (value: string): string => value.replace(/[\r\n\0]/g, ' ');
+
+/**
+ * The dev server's lines of the callback env file (spec 023 contracts § 1, spec 047). Unquoted, one
+ * line each: a template's `devCommand` is reviewed in this repository, and a run profile's commands
+ * are refused by `runConfigSchema` if they hold a CR, LF or NUL — the one property this file needs,
+ * since a line break here would add a variable. Exported for the sandbox-image suite, which writes
+ * exactly what a claim writes.
+ */
+export function devServerEnvLines(dev: DevServerDeclaration, timings: DevServerTimings): string[] {
+  return [
+    `FORGE_DEV_COMMAND=${oneLine(dev.command)}`,
+    `FORGE_DEV_PORT=${dev.port}`,
+    `FORGE_DEV_TIMINGS=${JSON.stringify(timings)}`,
+    ...(dev.install === undefined ? [] : [`FORGE_INSTALL_COMMAND=${oneLine(dev.install)}`]),
+    ...(dev.root === undefined ? [] : [`FORGE_DEV_ROOT=${oneLine(dev.root)}`]),
+    ...(dev.profile === true ? ['FORGE_RUN_PROFILE=1'] : []),
+  ];
 }
 
 /** The readiness budget ran out while Daytona still answered another state — a retry, not a verdict. */
@@ -511,15 +530,7 @@ export class SandboxOpsConsumer extends EventConsumer<
     const lines = [
       `FORGE_CALLBACK_TOKEN=${token}`,
       `FORGE_CALLBACK_URL=${this.callbackUrl}`,
-      // Unquoted, one line each: `devCommand` is the template's own field, reviewed in this
-      // repository, and the timings are numbers.
-      ...(dev === undefined
-        ? []
-        : [
-            `FORGE_DEV_COMMAND=${dev.command}`,
-            `FORGE_DEV_PORT=${dev.port}`,
-            `FORGE_DEV_TIMINGS=${JSON.stringify(this.devTimings)}`,
-          ]),
+      ...(dev === undefined ? [] : devServerEnvLines(dev, this.devTimings)),
     ];
 
     await this.daytona.upload(
@@ -547,11 +558,18 @@ export class SandboxOpsConsumer extends EventConsumer<
    * restart that does not happen leaves the old values until the next start.
    */
   private async refreshEnv(target: Extract<OpTarget, { kind: 'project' }>): Promise<void> {
-    await this.deliverProjectEnv(target);
-    const dev = await this.devServer(target);
     const { workspaceRoot } = target.row;
 
-    if (dev === undefined || workspaceRoot === null) return;
+    // Spec 047: the same event carries a changed run profile, so the whole runtime is delivered
+    // again — the callback file names the dev command, the install and the root, not only the
+    // connector values. With no work dir there is nothing to restart; the values still land.
+    if (workspaceRoot === null) {
+      await this.deliverProjectEnv(target);
+
+      return;
+    }
+
+    const dev = await this.devServer(target);
 
     const stopped = await this.daytona.execute(target.row.daytonaId, {
       command: STOP_DEV_SUPERVISOR,
@@ -560,13 +578,14 @@ export class SandboxOpsConsumer extends EventConsumer<
     });
 
     if (stopped.timedOut || stopped.exitCode !== 0) {
-      this.warnLaunch(target, dev.port, stopped.timedOut ? 'stop-timeout' : 'stop-failed');
+      this.warnLaunch(target, dev?.port ?? '-', stopped.timedOut ? 'stop-timeout' : 'stop-failed');
 
       return;
     }
 
+    // Old reports name the stopped server (or a port the new profile no longer declares).
     await this.settleProject(target, { ports: {} });
-    await this.launchDevServer(target, dev, workspaceRoot);
+    await this.deliverSandboxRuntime(target, workspaceRoot);
   }
 
   /**
@@ -653,23 +672,22 @@ export class SandboxOpsConsumer extends EventConsumer<
     );
   }
 
-  /** The project's template manifest, when it declares a dev server; `undefined` when it does not. */
+  /**
+   * The project's dev server — its run profile (spec 047), or its template manifest — or
+   * `undefined` when it declares none. `resolveDevServer` treats a template the catalogue does not
+   * hold as no dev server, not a throw: `projects.template` is free text to the compiler.
+   */
   private async devServer(
     target: Extract<OpTarget, { kind: 'project' }>,
   ): Promise<DevServerDeclaration | undefined> {
     const [project] = await this.transactions.runInTenantTransaction(target.orgId, (tx) =>
       tx
-        .select({ template: schema.projects.template })
+        .select({ runConfig: schema.projects.runConfig, template: schema.projects.template })
         .from(schema.projects)
         .where(eq(schema.projects.id, target.row.projectId)),
     );
-    // A `find` rather than `get`: `projects.template` is free text to the compiler, and a row
-    // naming a template the catalogue does not hold is a project with no dev server, not a throw.
-    const manifest = this.catalogue.all().find(({ id }) => id === project?.template)?.manifest;
 
-    return manifest?.devCommand === undefined || manifest.devPort === undefined
-      ? undefined
-      : { command: manifest.devCommand, port: manifest.devPort };
+    return project === undefined ? undefined : resolveDevServer(this.catalogue, project);
   }
 
   /** Polls `describe` every `readyPollMs` until Daytona answers `state`, up to `readyBudgetMs`. */

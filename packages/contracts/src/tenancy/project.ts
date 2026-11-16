@@ -114,6 +114,11 @@ export type ProjectTemplate = z.output<typeof projectTemplateSchema>;
  * workspace-scoped one and the guard reads its qualifying id from the path (ADR 031).
  */
 export const createProjectRequestSchema = z.strictObject({
+  /**
+   * Spec 047: `name` is provisional — the server replaces it with a generated one once it knows
+   * what the project is about (its first prompt). A rename by a person always wins over it.
+   */
+  autoName: z.boolean().optional(),
   name: containerNameSchema,
   template: projectTemplateSchema.default('vite-react'),
 });

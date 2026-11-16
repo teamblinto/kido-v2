@@ -159,12 +159,22 @@ export const projects = pgTable(
   {
     id: uuid('id').primaryKey().defaultRandom(),
     name: text('name').notNull(),
+    /**
+     * Spec 047: the name is provisional and the naming consumer may replace it. Cleared by any
+     * rename, so a name a person chose is never overwritten.
+     */
+    namePending: boolean('name_pending').notNull().default(false),
     orgId: uuid('org_id')
       .notNull()
       .references(() => orgs.id, { onDelete: 'cascade' }),
     previewLabel: text('preview_label').notNull(),
     previewVisibility: previewVisibility('preview_visibility').notNull().default('private'),
     repoKey: text('repo_key'),
+    /**
+     * Spec 047: the project's own run profile (`runConfigSchema`), detected at import or set by the
+     * agent. Null means the template's manifest decides how the project runs.
+     */
+    runConfig: jsonb('run_config'),
     template: text('template'),
     workspaceId: uuid('workspace_id').notNull(),
     ...restorableTimestamps,

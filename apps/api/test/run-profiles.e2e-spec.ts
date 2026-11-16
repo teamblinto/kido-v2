@@ -317,6 +317,8 @@ describe('Run profiles (e2e)', () => {
       expect(events.get(ConfigService).get('ANTHROPIC_API_KEY')).toBeUndefined();
       expect(events.get(QueueRegistry).workers.map((worker) => worker.name)).toEqual([
         'mail',
+        'project.preview-repair',
+        'project.naming',
         'byok.health',
         'byos.health',
         'repo.mirror',

@@ -45,6 +45,8 @@ export class WorkspaceProjectController {
       project: await this.projects.create({
         actorId: caller.userId,
         name: body.name,
+        // Spec 047: a name the client derived (a prompt's first line) is replaced once one is generated.
+        namePending: body.autoName === true,
         orgId,
         ownerId: caller.userId,
         template: body.template,

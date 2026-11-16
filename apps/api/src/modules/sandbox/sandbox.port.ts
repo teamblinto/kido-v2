@@ -8,6 +8,8 @@
  * `SandboxGuardError` (a §04 guard) or `DaytonaError` (the wire) — `sandbox.errors.ts`; nothing
  * else escapes.
  */
+import type { RunConfig, RunConfigInput } from '@repo/contracts';
+
 export const SANDBOX_PORT = Symbol('forge.sandbox.port');
 
 /** The project whose sandbox is meant. A Daytona id is never accepted here. */
@@ -77,7 +79,7 @@ export type PreviewStatus =
   | {
       readonly port: number;
       readonly observed: {
-        readonly state: 'starting' | 'listening' | 'failed';
+        readonly state: 'installing' | 'starting' | 'listening' | 'failed';
         readonly at: string;
       };
     };
@@ -113,4 +115,16 @@ export interface SandboxPort {
    * still answers for a hibernated sandbox.
    */
   previewStatus(ref: SandboxRef, ctx?: MutationContext): Promise<PreviewStatus>;
+  /** Spec 047: the tail of the dev server's (and install's) log; '' when there is none yet. */
+  previewLogs(ref: SandboxRef, ctx?: MutationContext): Promise<string>;
+  /**
+   * Spec 047: replace the project's run profile and restart its dev server with it. `actorId` is
+   * the run's person, for the audit trail. Answers the stored profile.
+   */
+  setRunConfig(
+    ref: SandboxRef,
+    input: RunConfigInput,
+    ctx: MutationContext,
+    actorId: string | null,
+  ): Promise<RunConfig>;
 }

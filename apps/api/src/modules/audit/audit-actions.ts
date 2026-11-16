@@ -97,6 +97,10 @@ export const AUDIT_ACTIONS = Object.freeze({
   'project-invitation.revoked': 'A pending project invitation was withdrawn before it was used.',
   'project.created': 'A project was created.',
   'project.deleted': 'A project was deleted.',
+  'project.named': 'A project was given a generated name in place of its provisional one.',
+  'project.preview-repair-started':
+    "An agent run was started to repair a project's failing preview.",
+  'project.run-config-changed': "A project's run profile (install, dev command, port) was changed.",
   'project.updated': "A project's settings were changed.",
   'provider-key.added': "The organisation's first LLM provider key for a provider was stored.",
   'provider-key.health-changed':

@@ -125,12 +125,16 @@ export class ProjectService {
   async create(entry: {
     actorId: string;
     name: string;
+    /** Spec 047: the name is provisional; the naming consumer replaces it unless somebody renames. */
+    namePending?: boolean;
     orgId: string;
     ownerId: string;
-    template?: ProjectTemplate;
+    /** Omitted is the default template; null is a smart import, run from its own profile (047). */
+    template?: ProjectTemplate | null;
     workspaceId: string;
   }): Promise<ProjectSummary> {
     const { actorId, name, orgId, ownerId, template = 'vite-react', workspaceId } = entry;
+    const namePending = entry.namePending ?? false;
 
     const [workspace] = await this.tenant.tx
       .select({ id: workspaces.id })
@@ -151,6 +155,7 @@ export class ProjectService {
       .insert(projects)
       .values({
         name,
+        namePending,
         orgId,
         previewLabel: await this.freeLabel(this.tenant.tx),
         template,
@@ -219,7 +224,8 @@ export class ProjectService {
 
     await this.tenant.tx
       .update(projects)
-      .set({ name, updatedAt: this.clock.now() })
+      // Spec 047: a name somebody chose is never replaced by a generated one.
+      .set({ name, namePending: false, updatedAt: this.clock.now() })
       .where(eq(projects.id, projectId));
 
     await this.audit.record(this.tenant.tx, {
@@ -325,12 +331,21 @@ export class ProjectService {
   async deployTarget(
     tx: TenantTransaction,
     ref: { readonly orgId: string; readonly projectId: string },
-  ): Promise<{ archived: boolean; name: string; previewLabel: string; template: ProjectTemplate }> {
+  ): Promise<{
+    archived: boolean;
+    name: string;
+    previewLabel: string;
+    /** Spec 047: what `resolveBuild` reads — the stored template and run profile, unmapped. */
+    runSource: { readonly runConfig: unknown; readonly template: string | null };
+    /** The build image: the template, or the default one for a project run from its own profile. */
+    template: ProjectTemplate;
+  }> {
     const [row] = await tx
       .select({
         deletedAt: projects.deletedAt,
         name: projects.name,
         previewLabel: projects.previewLabel,
+        runConfig: projects.runConfig,
         template: projects.template,
       })
       .from(projects)
@@ -344,6 +359,7 @@ export class ProjectService {
       archived: row.deletedAt !== null,
       name: row.name,
       previewLabel: row.previewLabel,
+      runSource: { runConfig: row.runConfig, template: row.template },
       template: projectTemplateSchema.parse(row.template ?? 'vite-react'),
     };
   }

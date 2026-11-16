@@ -4,8 +4,8 @@ import {
   type ProjectTemplate,
   projectTemplateSchema,
 } from '@repo/contracts';
-import type { Deployment } from '@repo/db';
-import { sql } from 'drizzle-orm';
+import { type Deployment, schema } from '@repo/db';
+import { eq, sql } from 'drizzle-orm';
 
 import { CLOCK, type ClockPort } from '../../common/clock/clock.port';
 import type { ObjectStorePort } from '../../common/object-store/object-store.port';
@@ -20,10 +20,11 @@ import { OutboxWriter } from '../outbox/outbox-writer';
 import { PermissionResolutionService } from '../rbac/permission-resolution.service';
 import { scoped } from '../rbac/permissions';
 import { DaytonaError } from '../sandbox/sandbox.errors';
+import { parseRunConfig } from '../sandbox/run-config';
 import { TemplateCatalogue } from '../sandbox/template-catalogue';
 import { ProjectService } from '../tenancy/services/project.service';
 import { type UploadResult, upload } from './artifact';
-import { type BuildOutcome, BuildRunner } from './build-runner';
+import { type BuildInput, type BuildOutcome, BuildRunner } from './build-runner';
 import { ARTIFACT_STORE, BUILD_DEPLOY_QUEUE } from './deploy.constants';
 import { DeploymentRepository } from './deployment.repository';
 import { logTail } from './log-tail';
@@ -38,6 +39,8 @@ export interface ClaimedDeployment {
   readonly epoch: number;
   readonly gitSha: string;
   readonly template: ProjectTemplate;
+  /** Spec 047: the project's run profile build, when it has one. */
+  readonly profile?: BuildInput['profile'];
 }
 
 /** `undefined`: nothing to build — gone, settled, fenced, or settled here past the upload boundary. */
@@ -172,7 +175,22 @@ export class BuildDeployConsumer extends EventConsumer<'deploy.requested', Build
       templateSnapshot: definition.snapshot,
     });
 
-    return { deployment, epoch, gitSha: checkpoint.gitSha, template: template.data };
+    // Spec 047: a project run from its own profile builds and installs the profile's way.
+    const [project] = await tx
+      .select({ runConfig: schema.projects.runConfig })
+      .from(schema.projects)
+      .where(eq(schema.projects.id, projectId));
+    const config = parseRunConfig(project?.runConfig);
+    const profile =
+      config?.build == null ? undefined : { build: config.build, install: config.install };
+
+    return {
+      deployment,
+      epoch,
+      gitSha: checkpoint.gitSha,
+      template: template.data,
+      ...(profile === undefined ? {} : { profile }),
+    };
   }
 
   override async effect(_event: DeployEvent, job: BuildDeployJob, attempt = 1): Promise<void> {
@@ -188,6 +206,7 @@ export class BuildDeployConsumer extends EventConsumer<'deploy.requested', Build
         orgId,
         projectId,
         template: job.template,
+        ...(job.profile === undefined ? {} : { profile: job.profile }),
       });
     } catch (error) {
       const retry = this.classify(error, attempt);

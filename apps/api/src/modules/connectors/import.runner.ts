@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import type { ProjectTemplate, SyncFailureReason } from '@repo/contracts';
+import type { ProjectTemplate, RunConfig, SyncFailureReason } from '@repo/contracts';
 import { schema } from '@repo/db';
 import { eq, sql } from 'drizzle-orm';
 
@@ -13,6 +13,7 @@ import { TenantTransactionRunner } from '../../database/tenant-transaction';
 import { AuditService } from '../audit/audit.service';
 import { CheckpointService, GitStepError } from '../checkpoints/checkpoint.service';
 import { RetryableFailure } from '../outbox/consumer';
+import { OutboxWriter } from '../outbox/outbox-writer';
 import { SANDBOX_LIFECYCLE, type SandboxLifecycle } from '../sandbox/sandbox-lifecycle';
 import { type SandboxGuardKind, SandboxGuardError } from '../sandbox/sandbox.errors';
 import {
@@ -27,6 +28,8 @@ import { ImportService } from './import.service';
 import { LOCAL_GIT, type LocalGit, LocalGitError } from './local-git';
 import type { PullRunner as PullRunnerPort } from './push.consumer';
 import { type RepoLinkRecord, RepoLinkRepository } from './repo-link.repository';
+import { snapshotDirectory } from './repo-snapshot';
+import { detectRunConfig } from './stack-detector';
 import { type SyncRecord, SyncRepository } from './sync.repository';
 
 /** R4: the bundle lands under `.git/`, the only path `SandboxPort.upload` admits — as the pull's. */
@@ -65,6 +68,11 @@ const pathOf = (error: SandboxGuardError): string | null =>
 
 export interface ImportPrepared {
   readonly link: RepoLinkRecord;
+  /**
+   * Spec 047: no template was chosen, so the run profile is detected from the clone and the
+   * workspace is cleaned to exactly the repository before its own dependencies are installed.
+   */
+  readonly smart: boolean;
   /** The starter files spec 015's definition owns — the only files the import removes (R5). */
   readonly starterFiles: readonly string[];
   readonly workspaceId: string;
@@ -77,6 +85,8 @@ interface Outcome {
   readonly reason: SyncFailureReason | null;
   readonly state: 'failed' | 'succeeded';
   readonly toSha?: string | null;
+  /** Spec 047: the detected run profile, for a smart import that succeeded. */
+  readonly runConfig?: RunConfig | null;
 }
 
 /**
@@ -118,6 +128,7 @@ export class ImportRunner implements PullRunnerPort<ImportPrepared | undefined> 
     @Inject(SANDBOX_LIFECYCLE) private readonly lifecycle: SandboxLifecycle,
     @Inject(TenantTransactionRunner) private readonly transactions: TenantTransactionRunner,
     @Inject(CLOCK) private readonly clock: ClockPort,
+    @Inject(OutboxWriter) private readonly outbox: OutboxWriter,
   ) {}
 
   /** On the consumer's transaction, under the project's writer lock: the row goes `running`. */
@@ -150,6 +161,7 @@ export class ImportRunner implements PullRunnerPort<ImportPrepared | undefined> 
 
     return {
       link,
+      smart: row?.template == null,
       starterFiles:
         row?.template == null ? [] : this.templates.get(row.template).files.map((f) => f.path),
       workspaceId: project.workspaceId,
@@ -210,8 +222,11 @@ export class ImportRunner implements PullRunnerPort<ImportPrepared | undefined> 
       // The bundle names the head HEAD, which is the ref the sandbox's `git fetch <bundle>` takes.
       await this.git.run(['bundle', 'create', bundlePath, 'HEAD'], { cwd });
       const head = await this.git.run(['rev-parse', 'HEAD'], { cwd });
+      // Spec 047: detection reads the clone that is already here, so it sees the whole tree and
+      // costs no GitHub call. Pure and bounded (`repo-snapshot.ts`); it never throws on content.
+      const runConfig = prepared.smart ? detectRunConfig(snapshotDirectory(cwd)) : null;
 
-      return { body: await readFile(bundlePath), sha: head.stdout.trim() };
+      return { body: await readFile(bundlePath), runConfig, sha: head.stdout.trim() };
     });
 
     // The port resolves the sandbox through the tenant context, so every step shares one scope.
@@ -248,6 +263,9 @@ export class ImportRunner implements PullRunnerPort<ImportPrepared | undefined> 
         await this.exec(ref, `rm -f ${prepared.starterFiles.map(safe).join(' ')}`, ctx);
       }
       await this.exec(ref, 'git checkout -f FETCH_HEAD', ctx);
+      // Spec 047: a smart import keeps nothing of the pool image — no starter file and no
+      // `node_modules` the repository did not ask for. Its own install starts from a clean tree.
+      if (prepared.smart) await this.exec(ref, 'git clean -ffdxq', ctx);
       await this.exec(ref, `git branch -f ${safe(link.branch)} FETCH_HEAD`, ctx);
       await this.exec(ref, `git symbolic-ref HEAD refs/heads/${safe(link.branch)}`, ctx);
       // The checkout landed: a bundle left behind is not a failed import.
@@ -256,7 +274,13 @@ export class ImportRunner implements PullRunnerPort<ImportPrepared | undefined> 
       });
     });
 
-    return { commits: 1, reason: null, state: 'succeeded', toSha: cloned.sha };
+    return {
+      commits: 1,
+      reason: null,
+      runConfig: cloned.runConfig,
+      state: 'succeeded',
+      toSha: cloned.sha,
+    };
   }
 
   private async exec(
@@ -388,6 +412,42 @@ export class ImportRunner implements PullRunnerPort<ImportPrepared | undefined> 
       // Both positions at the cloned commit: the project is level, and the first push after an
       // import reports nothing to push without a line of code on the push's path (SC-003).
       await this.links.setPushed(tx, orgId, prepared.link.id, checkpoint.id, outcome.toSha!);
+
+      // Spec 047: the detected profile lands with the import, and `project.env.changed` delivers it
+      // to the running sandbox — install, then the dev server — through the path spec 030 already
+      // uses to restart one. Naming is asked for now that the repository is in the workspace.
+      if (outcome.runConfig !== undefined && outcome.runConfig !== null) {
+        await tx
+          .update(schema.projects)
+          .set({ runConfig: outcome.runConfig, updatedAt: this.clock.now() })
+          .where(eq(schema.projects.id, projectId));
+        await this.audit.record(tx, {
+          action: 'project.run-config-changed',
+          actorId: requestedBy,
+          metadata: {
+            dev: outcome.runConfig.dev,
+            install: outcome.runConfig.install,
+            port: outcome.runConfig.port,
+            root: outcome.runConfig.root,
+            source: 'detected',
+            stack: outcome.runConfig.stack,
+          },
+          orgId,
+          target: projectId,
+        });
+        await this.outbox.append(tx, {
+          aggregateId: projectId,
+          orgId,
+          payload: { orgId, projectId },
+          type: 'project.env.changed',
+        });
+      }
+      await this.outbox.append(tx, {
+        aggregateId: projectId,
+        orgId,
+        payload: { orgId, projectId },
+        type: 'project.naming.requested',
+      });
       await this.audit.record(tx, {
         action: 'import.succeeded',
         actorId: requestedBy,

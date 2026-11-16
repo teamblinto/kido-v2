@@ -93,7 +93,9 @@ export function WorkspaceHomePage(): React.JSX.Element {
   const queryClient = useQueryClient();
   const creation = useMutation({
     mutationFn: ({ name }: { name: string; prompt: string; credential?: 'organisation' }) =>
-      createProject(orgId ?? '', workspaceId ?? '', { name, template: templateId }),
+      // Spec 047: the prompt's first line is a placeholder; the server names the project properly
+      // once it has read the prompt, unless somebody renames it first.
+      createProject(orgId ?? '', workspaceId ?? '', { autoName: true, name, template: templateId }),
     onSuccess: ({ project }, { credential, prompt }) => {
       void queryClient.invalidateQueries({ queryKey: ['projects', orgId] });
       // The prompt and the model ride along in navigation state: the project page is what acts on

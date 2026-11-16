@@ -1,10 +1,13 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { projects } from '@repo/db';
+import { and, eq, sql } from 'drizzle-orm';
 
 import type { TenantTransaction } from '../../database/database.types';
 import { CheckpointService } from '../checkpoints/checkpoint.service';
 import { EventConsumer } from '../outbox/consumer';
 import type { Envelope } from '../outbox/envelope';
+import { OutboxWriter } from '../outbox/outbox-writer';
+import { parseRunConfig } from '../sandbox/run-config';
 import { RunStore } from './run-store';
 
 /**
@@ -30,6 +33,7 @@ export class RunQueueConsumer extends EventConsumer<'agent-run.finished'> {
   constructor(
     @Inject(RunStore) private readonly store: RunStore,
     @Inject(CheckpointService) private readonly checkpoints: CheckpointService,
+    @Optional() @Inject(OutboxWriter) private readonly outbox?: OutboxWriter,
   ) {
     super();
   }
@@ -39,6 +43,7 @@ export class RunQueueConsumer extends EventConsumer<'agent-run.finished'> {
 
     await tx.execute(sql`select set_config('app.org_id', ${orgId}, true)`);
     await this.checkpoints.lockProject(tx, { orgId, projectId });
+    await this.restartFailedPreview(tx, event.payload);
 
     if ((await this.store.holder(tx, orgId, projectId)) !== undefined) {
       return;
@@ -49,5 +54,31 @@ export class RunQueueConsumer extends EventConsumer<'agent-run.finished'> {
     if (head !== undefined) {
       await this.store.dispatch(tx, { orgId, projectId, runId: head.id });
     }
+  }
+
+  /**
+   * Spec 047: a run that succeeded while the project's preview was failing (a repair run, or the
+   * person's own fix) restarts the dev server now, rather than leaving it parked in the supervisor's
+   * five-minute cold retry. `repairs > 0` is that failure streak: a `listening` report resets it.
+   * The supervisor reinstalls first if the run changed the manifests.
+   */
+  private async restartFailedPreview(
+    tx: TenantTransaction,
+    { orgId, outcome, projectId }: Envelope<'agent-run.finished'>['payload'],
+  ): Promise<void> {
+    if (outcome !== 'succeeded' || this.outbox === undefined) return;
+
+    const [project] = await tx
+      .select({ runConfig: projects.runConfig })
+      .from(projects)
+      .where(and(eq(projects.orgId, orgId), eq(projects.id, projectId)));
+    if ((parseRunConfig(project?.runConfig)?.repairs ?? 0) === 0) return;
+
+    await this.outbox.append(tx, {
+      aggregateId: projectId,
+      orgId,
+      payload: { orgId, projectId },
+      type: 'project.env.changed',
+    });
   }
 }

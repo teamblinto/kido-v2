@@ -1,5 +1,4 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { PROJECT_TEMPLATES, type ProjectTemplate } from '@repo/contracts';
 import { projects, sandboxes } from '@repo/db';
 import { and, eq, isNull } from 'drizzle-orm';
 
@@ -8,6 +7,7 @@ import type { ForgeDatabase } from '../../database/database.types';
 import { TenantTransactionRunner } from '../../database/tenant-transaction';
 import { DaytonaAdapter } from '../sandbox/daytona.adapter';
 import { SANDBOX_LIFECYCLE, type SandboxLifecycle } from '../sandbox/sandbox-lifecycle';
+import { resolveDevPort } from '../sandbox/run-config';
 import { TemplateCatalogue } from '../sandbox/template-catalogue';
 import { ROUTE_SIGNER } from './preview.constants';
 import { ROUTE_TTL_SECONDS, type RouteSigner } from './route-signer';
@@ -96,7 +96,8 @@ export class RouteBrokerService {
     }
     if (sandbox.state !== 'active' && sandbox.state !== 'idle') return refused('unroutable');
 
-    const port = this.devPort(project.template);
+    // Spec 047: the project's run profile when it has one, its template's `devPort` otherwise.
+    const port = resolveDevPort(this.catalogue, project);
     if (port === undefined) return refused('no-port');
 
     const origin = await this.daytona.previewOrigin(sandbox.daytonaId, port, ROUTE_TTL_SECONDS);
@@ -118,15 +119,6 @@ export class RouteBrokerService {
   private async entitled(label: string, { grant, host }: RouteCaller): Promise<boolean> {
     if (grant === undefined || !host?.startsWith(`${label}-`)) return false;
     return (await this.signer.verifyGrant(grant, host)) !== undefined;
-  }
-
-  /** A template with no `devPort` has no routable port and its projects answer that plainly (data-model). */
-  private devPort(template: string | null): number | undefined {
-    if (template === null || !(PROJECT_TEMPLATES as readonly string[]).includes(template)) {
-      return undefined;
-    }
-    const declared = this.catalogue.get(template as ProjectTemplate).manifest.devPort;
-    return declared === undefined ? undefined : Number(declared);
   }
 
   /**

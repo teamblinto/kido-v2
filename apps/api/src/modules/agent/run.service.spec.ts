@@ -27,7 +27,11 @@ const PROJECT = 'c1000000-0000-4000-8000-000000000002';
 const USER = 'c1000000-0000-4000-8000-000000000003';
 const RUN = 'c1000000-0000-4000-8000-000000000004';
 
-const tx = { tag: 'tx' } as unknown as TenantTransaction;
+// Spec 047's naming check is the one direct read: no provisional name, so no naming request.
+const tx = {
+  select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+  tag: 'tx',
+} as unknown as TenantTransaction;
 
 function row(overrides: Partial<AgentRun> = {}): AgentRun {
   return {

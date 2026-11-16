@@ -59,6 +59,9 @@ export const LOCAL_AGENT_SANDBOX_TOOLS = [
   'search',
   'find',
   'preview_status',
+  // Spec 047: the dev server's log, and the project's run profile.
+  'preview_logs',
+  'set_run_config',
 ] as const;
 
 export const localAgentSandboxToolSchema = z.enum(LOCAL_AGENT_SANDBOX_TOOLS);

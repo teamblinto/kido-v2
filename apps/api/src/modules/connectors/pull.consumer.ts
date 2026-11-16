@@ -3,7 +3,8 @@ import { join } from 'node:path';
 
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import type { SyncFailureReason } from '@repo/contracts';
-import type { Checkpoint } from '@repo/db';
+import { type Checkpoint, schema } from '@repo/db';
+import { and, eq, isNotNull } from 'drizzle-orm';
 
 import { CLOCK, type ClockPort } from '../../common/clock/clock.port';
 import { ConflictError, ServiceUnavailableError } from '../../common/errors/domain-error';
@@ -13,6 +14,7 @@ import { CheckpointService, GitStepError } from '../checkpoints/checkpoint.servi
 import { gitFetchBundle, gitMergeFfOnly, gitRemoveFile } from '../checkpoints/git-commands';
 import { RepoBundler } from '../checkpoints/repo-bundler';
 import { RetryableFailure } from '../outbox/consumer';
+import { OutboxWriter } from '../outbox/outbox-writer';
 import { SANDBOX_LIFECYCLE, type SandboxLifecycle } from '../sandbox/sandbox-lifecycle';
 import { SandboxGuardError } from '../sandbox/sandbox.errors';
 import {
@@ -88,6 +90,7 @@ export class PullRunner implements PullRunnerPort<PullPrepared | undefined> {
     @Inject(SANDBOX_LIFECYCLE) private readonly lifecycle: SandboxLifecycle,
     @Inject(TenantTransactionRunner) private readonly transactions: TenantTransactionRunner,
     @Inject(CLOCK) private readonly clock: ClockPort,
+    @Inject(OutboxWriter) private readonly outbox: OutboxWriter,
   ) {}
 
   async handle(tx: TenantTransaction, operation: SyncRecord): Promise<PullPrepared | undefined> {
@@ -343,6 +346,21 @@ export class PullRunner implements PullRunnerPort<PullPrepared | undefined> {
           tx,
         );
         await this.links.setPushed(tx, orgId, link.id, rows.at(-1)!.id, remoteHead!);
+
+        // Spec 047: pulled commits can change the dependencies or the dev server itself. A project
+        // with a run profile restarts it; the supervisor reinstalls only if the manifests changed.
+        const [profiled] = await tx
+          .select({ id: schema.projects.id })
+          .from(schema.projects)
+          .where(and(eq(schema.projects.id, projectId), isNotNull(schema.projects.runConfig)));
+        if (profiled !== undefined) {
+          await this.outbox.append(tx, {
+            aggregateId: projectId,
+            orgId,
+            payload: { orgId, projectId },
+            type: 'project.env.changed',
+          });
+        }
       } else if (outcome.state === 'succeeded' && remoteHead !== null) {
         // `null`: there was no remote branch to be level with, so nothing was pushed.
         await this.links.setPushed(tx, orgId, link.id, head.id, head.gitSha);

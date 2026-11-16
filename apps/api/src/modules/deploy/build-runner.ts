@@ -40,6 +40,14 @@ export interface BuildInput {
   readonly template: ProjectTemplate;
   /** The checkpoint's commit. */
   readonly gitSha: string;
+  /**
+   * Spec 047: a run profile's build and install, which replace the template's `build` and `npm ci`.
+   * The template still names the build image, whose Node and Python every profile runs on.
+   */
+  readonly profile?: {
+    readonly build: { command: string; output: string };
+    readonly install: string | null;
+  };
 }
 
 /** The failures a build settles on its own; `not-authorised` is go-live's, not the runner's. */
@@ -102,7 +110,7 @@ export class BuildRunner {
     const deadline = this.clock.now().getTime() + BUILD_TIMEOUT_MS;
     const log = new LogBuffer();
 
-    const build = this.catalogue.get(input.template).manifest.build;
+    const build = input.profile?.build ?? this.catalogue.get(input.template).manifest.build;
     if (build === undefined) {
       return failed('platform', log.note(`template ${input.template} declares no build`));
     }
@@ -148,7 +156,9 @@ export class BuildRunner {
       );
       await this.step(handle, `git checkout -q -f --detach ${sha}`, 'platform', deadline, log);
       await this.step(handle, 'git clean -q -f -d -x', 'platform', deadline, log);
-      await this.step(handle, 'npm ci', 'install-failed', deadline, log);
+      // A run profile installs its own way (pnpm, yarn, bun…); none means nothing to install.
+      const install = input.profile === undefined ? 'npm ci' : input.profile.install;
+      if (install !== null) await this.step(handle, install, 'install-failed', deadline, log);
       await this.step(handle, build.command, 'build-failed', deadline, log, publicEnv);
       // A missing output directory makes tar exit non-zero: that is `no-output` (R5).
       await this.step(

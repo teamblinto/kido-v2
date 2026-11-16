@@ -1,3 +1,4 @@
+import type { RunConfig, RunConfigInput } from '@repo/contracts';
 import { z } from 'zod';
 
 import {
@@ -99,6 +100,19 @@ class FakePort implements SandboxPort {
 
   previewStatus(ref: SandboxRef, ctx?: MutationContext): Promise<PreviewStatus> {
     return this.reply('previewStatus', [ref, ctx]);
+  }
+
+  previewLogs(ref: SandboxRef, ctx?: MutationContext): Promise<string> {
+    return this.reply('previewLogs', [ref, ctx]);
+  }
+
+  setRunConfig(
+    ref: SandboxRef,
+    input: RunConfigInput,
+    ctx: MutationContext,
+    actorId: string | null,
+  ): Promise<RunConfig> {
+    return this.reply('setRunConfig', [ref, input, ctx, actorId]);
   }
 }
 

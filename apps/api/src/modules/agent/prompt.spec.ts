@@ -32,7 +32,7 @@ describe('SYSTEM_PROMPT', () => {
   });
 
   it('SYSTEM_PROMPT_VERSION is a stable string', () => {
-    expect(SYSTEM_PROMPT_VERSION).toBe('2026-09-16.1');
+    expect(SYSTEM_PROMPT_VERSION).toBe('2026-11-16.1');
   });
 });
 

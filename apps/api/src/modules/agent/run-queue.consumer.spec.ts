@@ -5,6 +5,7 @@ import type { ForgeDatabase, TenantTransaction } from '../../database/database.t
 import type { CheckpointService } from '../checkpoints/checkpoint.service';
 import { ConsumerBase, type ConsumerJob } from '../outbox/consumer-base';
 import type { Envelope } from '../outbox/envelope';
+import type { OutboxWriter } from '../outbox/outbox-writer';
 import { RunQueueConsumer } from './run-queue.consumer';
 import type { RunStore } from './run-store';
 
@@ -58,6 +59,54 @@ function setup(state: { holder?: { id: string }; line?: { id: string }[] } = {})
 
   return { checkpoints, consumer, store, trace, tx };
 }
+
+/** Spec 047: a successful run during a preview failure streak restarts the dev server. */
+describe('RunQueueConsumer — a failing preview (spec 047)', () => {
+  const profile = (repairs: number) => ({
+    build: null,
+    dev: 'npm run dev',
+    env: [],
+    install: 'npm ci',
+    port: 3000,
+    repairs,
+    root: '.',
+    source: 'detected',
+    stack: { framework: null, language: 'javascript', packageManager: 'npm' },
+  });
+
+  const run = async (
+    repairs: number,
+    outcome: 'cancelled' | 'failed' | 'succeeded' = 'succeeded',
+  ) => {
+    const append = vi.fn(() => Promise.resolve());
+    const tx = {
+      execute: vi.fn(() => Promise.resolve({ rows: [] })),
+      select: () => ({
+        from: () => ({ where: () => Promise.resolve([{ runConfig: profile(repairs) }]) }),
+      }),
+    } as unknown as TenantTransaction;
+    const consumer = new RunQueueConsumer(
+      { holder: () => Promise.resolve({ id: DONE }) } as unknown as RunStore,
+      { lockProject: () => Promise.resolve() } as unknown as CheckpointService,
+      { append } as unknown as OutboxWriter,
+    );
+    const event = finished();
+    await consumer.handle({ ...event, payload: { ...event.payload, outcome } }, tx);
+    return append;
+  };
+
+  it('restarts the dev server when the run succeeded inside a failure streak', async () => {
+    expect(await run(1)).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ type: 'project.env.changed' }),
+    );
+  });
+
+  it('leaves a healthy preview alone, and a run that did not succeed', async () => {
+    expect(await run(0)).not.toHaveBeenCalled();
+    expect(await run(1, 'failed')).not.toHaveBeenCalled();
+  });
+});
 
 /** Spec 031 research R2: releasing a project is dispatching the head of its line. */
 describe('RunQueueConsumer', () => {

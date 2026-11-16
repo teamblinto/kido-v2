@@ -1,3 +1,4 @@
+import type { OutboxWriter } from '../../outbox/outbox-writer';
 import { GUARDS_METADATA, PATH_METADATA } from '@nestjs/common/constants';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -25,11 +26,16 @@ const NOW = new Date('2026-09-17T10:31:02.441Z');
  * catalogue declares for that template — `undefined` for a template that declares no dev server.
  */
 function build(
-  { devPort, template }: { devPort?: string; template?: string | null } = {
+  {
+    devPort,
+    runConfig = null,
+    template,
+  }: { devPort?: string; runConfig?: unknown; template?: string | null } = {
     devPort: '5173',
     template: 'vite-react',
   },
 ) {
+  const appended: { payload: unknown; type: string }[] = [];
   const opened: string[] = [];
   const updates: { set: unknown; where: unknown }[] = [];
   const record = vi.fn((_tx: unknown, _entry: unknown) => Promise.resolve());
@@ -38,7 +44,7 @@ function build(
     select: () => ({
       from: () => ({
         where: () => ({
-          limit: () => Promise.resolve(template === undefined ? [] : [{ template }]),
+          limit: () => Promise.resolve(template === undefined ? [] : [{ runConfig, template }]),
         }),
       }),
     }),
@@ -62,9 +68,15 @@ function build(
     { record } as unknown as AuditService,
     { now: () => NOW },
     { get } as unknown as TemplateCatalogue,
+    {
+      append: (_tx: unknown, entry: { payload: unknown; type: string }) => {
+        appended.push({ payload: entry.payload, type: entry.type });
+        return Promise.resolve();
+      },
+    } as unknown as OutboxWriter,
   );
   const request: Record<PropertyKey, unknown> = { [SANDBOX_CALLBACK]: CLAIMS };
-  return { controller, get, opened, record, request, updates };
+  return { appended, controller, get, opened, record, request, updates };
 }
 
 /** The bound SQL of a drizzle `sql` chunk, flattened: enough to see the merge and its operand. */
@@ -165,4 +177,98 @@ describe('SandboxCallbackController', () => {
       });
     },
   );
+  describe('self-healing (spec 047)', () => {
+    const profile = (repairs: number) => ({
+      build: null,
+      dev: 'corepack pnpm run dev',
+      env: [],
+      install: 'corepack pnpm install',
+      port: 3000,
+      repairs,
+      root: '.',
+      source: 'detected',
+      stack: { framework: 'nextjs', language: 'typescript', packageManager: 'pnpm' },
+    });
+
+    it('a failed report from a run profile asks for repair 1 and counts it on the profile', async () => {
+      const { appended, controller, request, updates } = build({
+        runConfig: profile(0),
+        template: null,
+      });
+
+      await controller.receive(request, { action: 'preview.status', port: 3000, state: 'failed' });
+
+      expect(appended).toEqual([
+        {
+          payload: { attempt: 1, orgId: CLAIMS.org, projectId: CLAIMS.project },
+          type: 'project.preview.failed',
+        },
+      ]);
+      expect(updates.map(({ set }) => set)).toContainEqual({ runConfig: profile(1) });
+    });
+
+    it('stops asking once the streak has spent its repairs', async () => {
+      const { appended, controller, request, updates } = build({
+        runConfig: profile(2),
+        template: null,
+      });
+
+      await controller.receive(request, { action: 'preview.status', port: 3000, state: 'failed' });
+
+      expect(appended).toEqual([]);
+      // Only the report itself is written.
+      expect(updates).toHaveLength(1);
+    });
+
+    it('listening ends the streak and hands the repairs back, asking for nothing', async () => {
+      const { appended, controller, request, updates } = build({
+        runConfig: profile(1),
+        template: null,
+      });
+
+      await controller.receive(request, {
+        action: 'preview.status',
+        port: 3000,
+        state: 'listening',
+      });
+
+      expect(appended).toEqual([]);
+      expect(updates.map(({ set }) => set)).toContainEqual({ runConfig: profile(0) });
+    });
+
+    it('installing is a report like any other, on the profile port', async () => {
+      const { appended, controller, request, updates } = build({
+        runConfig: profile(0),
+        template: null,
+      });
+
+      await controller.receive(request, {
+        action: 'preview.status',
+        port: 3000,
+        state: 'installing',
+      });
+
+      expect(appended).toEqual([]);
+      expect(flatten((updates[0]!.set as { ports: unknown }).ports)).toContain(
+        '"state":"installing"',
+      );
+    });
+
+    it('a template project that fails is left exactly as before: no repair is asked for', async () => {
+      const { appended, controller, request, updates } = build();
+
+      await controller.receive(request, { action: 'preview.status', port: 5173, state: 'failed' });
+
+      expect(appended).toEqual([]);
+      expect(updates).toHaveLength(1);
+    });
+
+    it('a profile port is the only port a profile project may report on', async () => {
+      const { controller, request } = build({ runConfig: profile(0), template: null });
+
+      await expect(
+        controller.receive(request, { action: 'preview.status', port: 5173, state: 'failed' }),
+      ).rejects.toBeInstanceOf(ForbiddenError);
+    });
+  });
 });

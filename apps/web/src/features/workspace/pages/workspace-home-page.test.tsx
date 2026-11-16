@@ -243,7 +243,12 @@ describe('WorkspaceHomePage', () => {
     );
 
     expect(await screen.findByText(`Project page for ${NEW_PROJECT_ID}`)).toBeVisible();
-    expect(sent).toEqual({ name: 'A weekly on-call rota board', template: 'vite-react' });
+    // Spec 047: the first line is provisional; the server replaces it with a generated name.
+    expect(sent).toEqual({
+      autoName: true,
+      name: 'A weekly on-call rota board',
+      template: 'vite-react',
+    });
   });
 
   it('creates with the template chosen in the picker rather than the catalogue default', async () => {
@@ -284,7 +289,11 @@ describe('WorkspaceHomePage', () => {
     await user.type(composer, '{Enter}');
 
     expect(await screen.findByText(`Project page for ${NEW_PROJECT_ID}`)).toBeVisible();
-    expect(sent).toEqual({ name: 'A weekly on-call rota board', template: 'nextjs' });
+    expect(sent).toEqual({
+      autoName: true,
+      name: 'A weekly on-call rota board',
+      template: 'nextjs',
+    });
   });
 
   it('shows the refusal under the composer and stays put when creation is refused', async () => {

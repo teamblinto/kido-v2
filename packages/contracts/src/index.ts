@@ -718,6 +718,15 @@ export {
   revokeProjectGrantResponseSchema,
 } from './tenancy/project';
 export {
+  RUN_CONFIG_SOURCES,
+  type RunConfig,
+  type RunConfigInput,
+  type RunStack,
+  runConfigInputSchema,
+  runConfigSchema,
+  runStackSchema,
+} from './tenancy/run-config';
+export {
   type CatalogueTemplate,
   type TemplateCatalogueResponse,
   catalogueTemplateSchema,

@@ -1,5 +1,5 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { PROJECT_TEMPLATES, type ProjectTemplate } from '@repo/contracts';
+import { Inject, Injectable, Optional } from '@nestjs/common';
+import { type RunConfig, type RunConfigInput, runConfigSchema } from '@repo/contracts';
 import { projects, sandboxes } from '@repo/db';
 import { and, eq, isNull } from 'drizzle-orm';
 import { posix } from 'node:path';
@@ -10,8 +10,10 @@ import { ConflictError, NotFoundError } from '../../common/errors/domain-error';
 import { TenantContext } from '../../database/tenant-context';
 import type { TenantTransaction } from '../../database/database.types';
 import { AuditService } from '../audit/audit.service';
+import { OutboxWriter } from '../outbox/outbox-writer';
 import { ProjectService } from '../tenancy/services/project.service';
 import { DaytonaAdapter } from './daytona.adapter';
+import { parseRunConfig, resolveDevPort } from './run-config';
 import {
   applyAnchorEdit,
   assertFileSize,
@@ -22,7 +24,10 @@ import {
   jailPath,
   truncateOutput,
 } from './sandbox-guards';
-import { DAYTONA_TIMINGS, type DaytonaTimings } from './sandbox.constants';
+import { DAYTONA_TIMINGS, type DaytonaTimings, SANDBOX_DEV_LOG_PATH } from './sandbox.constants';
+
+/** Spec 047: enough of the log to hold a stack trace and the install output before it. */
+export const PREVIEW_LOG_TAIL_BYTES = 12 * 1024;
 import { SandboxGuardError } from './sandbox.errors';
 import type {
   ContentMatch,
@@ -49,7 +54,7 @@ const UNIQUE_VIOLATION = '23505';
  */
 const observationSchema = z.strictObject({
   observedAt: z.iso.datetime(),
-  state: z.enum(['listening', 'starting', 'failed']),
+  state: z.enum(['installing', 'listening', 'starting', 'failed']),
 });
 
 /** What the port needs from the row: which Daytona sandbox, and the root every path is jailed to. */
@@ -74,6 +79,8 @@ export class SandboxService implements SandboxPort {
     @Inject(CLOCK) private readonly clock: ClockPort,
     @Inject(SandboxLifecycleService) private readonly lifecycle: SandboxLifecycleService,
     @Inject(TemplateCatalogue) private readonly catalogue: TemplateCatalogue,
+    // Spec 047: a changed run profile restarts the dev server through `project.env.changed`.
+    @Optional() @Inject(OutboxWriter) private readonly outbox?: OutboxWriter,
   ) {}
 
   /**
@@ -263,6 +270,84 @@ export class SandboxService implements SandboxPort {
    * reaches Daytona, so the answer costs nothing and a sleeping sandbox still has one. `ctx` is
    * taken for the port's shape and goes nowhere, because there is no request to fence.
    */
+  /**
+   * Spec 047: the tail of the supervisor's log — the dev server's and the install's merged output.
+   * The file is outside the workspace jail and the agent's allowlist, so this is the one way to it;
+   * a fixed command with no tenant input, read-only, and '' when the file does not exist yet.
+   */
+  async previewLogs(ref: SandboxRef, ctx?: MutationContext): Promise<string> {
+    const box = await this.resolve(ref);
+    const outcome = await this.daytona.execute(
+      box.daytonaId,
+      {
+        command: `tail -c ${String(PREVIEW_LOG_TAIL_BYTES)} ${SANDBOX_DEV_LOG_PATH} 2>/dev/null || true`,
+        cwd: box.root,
+        timeoutSeconds: 10,
+      },
+      ctx,
+    );
+
+    return outcome.timedOut ? '' : outcome.result;
+  }
+
+  /**
+   * Spec 047: the agent's `set_run_config`. Validated by the same schema detection writes through,
+   * stored with `source: 'agent'`, audited, and applied by `project.env.changed` — the event that
+   * already restarts a running dev server with a fresh delivery (and is a no-op for a sleeping one,
+   * whose resume reads the profile anyway). `repairs` carries over: a fix the agent made is still
+   * inside the streak that asked for it.
+   */
+  async setRunConfig(
+    ref: SandboxRef,
+    input: RunConfigInput,
+    ctx: MutationContext,
+    actorId: string | null,
+  ): Promise<RunConfig> {
+    assertMutationContext(ctx);
+    try {
+      await this.projects.read(ref.orgId, ref.projectId);
+    } catch (error) {
+      if (error instanceof NotFoundError) throw noSandbox();
+      throw error;
+    }
+
+    const tx = this.tenant.tx;
+    const row = await tx.query.projects.findFirst({
+      columns: { runConfig: true },
+      where: and(eq(projects.orgId, ref.orgId), eq(projects.id, ref.projectId)),
+    });
+    const current = parseRunConfig(row?.runConfig);
+    const next = runConfigSchema.parse({
+      ...input,
+      env: input.env ?? current?.env ?? [],
+      repairs: current?.repairs ?? 0,
+      root: input.root ?? current?.root ?? '.',
+      source: 'agent',
+      stack: input.stack ??
+        current?.stack ?? { framework: null, language: 'unknown', packageManager: null },
+    });
+
+    await tx
+      .update(projects)
+      .set({ runConfig: next, updatedAt: this.clock.now() })
+      .where(and(eq(projects.orgId, ref.orgId), eq(projects.id, ref.projectId)));
+    await this.audit.record(tx, {
+      action: 'project.run-config-changed',
+      actorId,
+      metadata: { dev: next.dev, install: next.install, port: next.port, root: next.root },
+      orgId: ref.orgId,
+      target: ref.projectId,
+    });
+    await this.outbox?.append(tx, {
+      aggregateId: ref.projectId,
+      orgId: ref.orgId,
+      payload: { orgId: ref.orgId, projectId: ref.projectId },
+      type: 'project.env.changed',
+    });
+
+    return next;
+  }
+
   async previewStatus(ref: SandboxRef, _ctx?: MutationContext): Promise<PreviewStatus> {
     try {
       await this.projects.read(ref.orgId, ref.projectId);
@@ -274,14 +359,14 @@ export class SandboxService implements SandboxPort {
     // `ProjectSummary` carries no template (§11: the summary is what a guest may see), so the
     // column is read here, under the tenant transaction the check just passed.
     const project = await this.tenant.tx.query.projects.findFirst({
-      columns: { template: true },
+      columns: { runConfig: true, template: true },
       where: and(
         eq(projects.orgId, ref.orgId),
         eq(projects.id, ref.projectId),
         isNull(projects.deletedAt),
       ),
     });
-    const port = this.devPort(project?.template ?? null);
+    const port = project === undefined ? undefined : resolveDevPort(this.catalogue, project);
     if (port === undefined) return { port: null };
 
     const row = await this.tenant.tx.query.sandboxes.findFirst({
@@ -292,15 +377,6 @@ export class SandboxService implements SandboxPort {
     if (!observed.success) return { observed: null, port };
 
     return { observed: { at: observed.data.observedAt, state: observed.data.state }, port };
-  }
-
-  /** The reading `RouteBrokerService` makes (spec 017): no template, or no `devPort`, is no port. */
-  private devPort(template: string | null): number | undefined {
-    if (template === null || !(PROJECT_TEMPLATES as readonly string[]).includes(template)) {
-      return undefined;
-    }
-    const declared = this.catalogue.get(template as ProjectTemplate).manifest.devPort;
-    return declared === undefined ? undefined : Number(declared);
   }
 
   private get searchBounds(): { cap: number; excludes: readonly string[] } {
