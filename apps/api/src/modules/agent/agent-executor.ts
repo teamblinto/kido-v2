@@ -12,6 +12,7 @@ import {
   type AgentTimings,
   REFRESH_FLOOR_MS,
 } from './agent.constants';
+import { ATTACHMENT_READER, type AttachmentReaderPort } from './attachments/attachment-reader.port';
 import { credentialFailed } from './byok/credential-failure';
 import { CredentialResolver } from './byok/credential-resolver';
 import { ProviderKeyService } from './byok/provider-key.service';
@@ -101,9 +102,14 @@ export class AgentExecutor implements RunExecutor {
     @Optional()
     @Inject(AGENT_ALLOWED_TOOLS)
     private readonly allowed: ReadonlySet<ToolName> = ALL_TOOLS,
+    // Spec 048: the files a message carried; optional so a module without the store still runs.
+    @Optional()
+    @Inject(ATTACHMENT_READER)
+    private readonly attachmentReader?: AttachmentReaderPort,
   ) {
     this.sandbox = new SandboxTools({
       allowed: this.allowed,
+      attachments: this.attachmentReader,
       checkpoints: this.checkpoints,
       clock: this.clock,
       lifecycle: this.lifecycle,
@@ -176,6 +182,8 @@ export class AgentExecutor implements RunExecutor {
     if (prepared !== undefined) return prepared;
 
     const broker = this.sandbox.broker(run);
+    // Spec 048: once per attempt, before the first turn — every loop step reuses these bytes.
+    const attachments = await this.sandbox.attachments(context);
     const holder: AttemptCredential = {
       client: this.provider.client(credential, run.model),
       current: credential,
@@ -183,6 +191,7 @@ export class AgentExecutor implements RunExecutor {
     // 021: the seam sees what the attempt holds; `prepare` once the baseline exists (R2). The
     // getters read the holder, so a refreshed BYOS token reaches the summariser too (032 R10).
     const scope: AttemptScope = {
+      attachments,
       get client() {
         return holder.client;
       },
@@ -198,7 +207,7 @@ export class AgentExecutor implements RunExecutor {
       tenantTx: () => this.tenant.tx,
     };
     await this.assembler.prepare(scope);
-    const conversation: ConversationMessage[] = toMessages(run.messages);
+    const conversation: ConversationMessage[] = toMessages(run.messages, attachments);
     let turns = run.messages.filter((message) => message.role === 'assistant').length;
     const boundary = resumeBoundary(run.messages);
     let pending: readonly ToolCall[] | undefined =

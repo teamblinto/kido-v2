@@ -71,11 +71,16 @@ export class R2ObjectStore implements ObjectStorePort {
   }
 }
 
-/** The two buckets the one set of credentials reaches (spec 027 R7). */
-export type ObjectStoreBucket = 'repos' | 'artifacts';
+/**
+ * The two buckets the one set of credentials reaches (spec 027 R7), plus `attachments` (spec 048):
+ * a logical bucket over the artifacts bucket, its keys prefixed `attachments/`. A bucket of its own
+ * was rejected — it would add a required production variable for no isolation gain.
+ */
+export type ObjectStoreBucket = 'repos' | 'artifacts' | 'attachments';
 
 const BUCKET_VARIABLE = {
   artifacts: 'OBJECT_STORE_BUCKET_ARTIFACTS',
+  attachments: 'OBJECT_STORE_BUCKET_ARTIFACTS',
   repos: 'OBJECT_STORE_BUCKET_REPOS',
 } as const satisfies Record<ObjectStoreBucket, keyof Environment>;
 
@@ -100,10 +105,11 @@ export function objectStoreFor(
     secretAccessKey === undefined ||
     bucket === undefined
   ) {
-    // Repos only: built sites are read back by the gateway over S3, which a directory cannot serve.
+    // Not artifacts: built sites are read back by the gateway over S3, which a directory cannot
+    // serve. Repos and attachments are read back by the API itself.
     const dir = config.get('OBJECT_STORE_DIR', { infer: true });
 
-    return bucketName === 'repos' && dir !== undefined
+    return bucketName !== 'artifacts' && dir !== undefined
       ? new FsObjectStore(dir)
       : new UnconfiguredObjectStore();
   }

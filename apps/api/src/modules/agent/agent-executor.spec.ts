@@ -22,6 +22,7 @@ import type {
   SandboxRef,
 } from '../sandbox/sandbox.port';
 import { AgentExecutor } from './agent-executor';
+import type { AttachmentReaderPort, StoredAttachment } from './attachments/attachment-reader.port';
 import { type AttemptScope, ContextAssembler } from './context/context-assembler';
 import { porcelainDigest } from './context/git-commands';
 import { DEFAULT_AGENT_TIMINGS, MAX_TOOL_CALLS } from './agent.constants';
@@ -349,6 +350,8 @@ function executor(
     resolutions?: Resolution[];
     /** 032: the token service's answers, in order (the last repeats); an Error is thrown. */
     fresh?: (CredentialContext | Error)[];
+    /** Spec 048: the attachment store; absent, a run sees no files. */
+    reader?: AttachmentReaderPort;
   } = {},
 ) {
   const provider = new ScriptedProvider();
@@ -417,6 +420,7 @@ function executor(
     assembler,
     tokens as unknown as ByosTokenService,
     options.allowed,
+    options.reader,
   );
 
   return {
@@ -2146,6 +2150,117 @@ describe('AgentExecutor', () => {
       expect(Object.values(subject as unknown as Record<string, unknown>)).not.toContain(
         clients[0],
       );
+    });
+  });
+  describe('spec 048 — attachments reach the model and the workspace (SC-6)', () => {
+    const IMAGE: StoredAttachment = {
+      extractedText: null,
+      id: 'att_1',
+      kind: 'image',
+      mimeType: 'image/png',
+      name: 'my logo.png',
+      objectKey: 'attachments/org_1/proj_1/att_1',
+      projectId: 'proj_1',
+      sizeBytes: 3,
+    };
+    const NOTES: StoredAttachment = {
+      ...IMAGE,
+      extractedText: '# notes',
+      id: 'att_2',
+      kind: 'text',
+      mimeType: 'text/markdown',
+      name: 'notes.md',
+    };
+
+    function reader(bytes: (file: StoredAttachment) => Promise<Buffer>) {
+      const asked: { orgId: string; messageIds: readonly string[] }[] = [];
+      const fetched: string[] = [];
+      const port: AttachmentReaderPort = {
+        bytes: (file) => {
+          fetched.push(file.id);
+          return bytes(file);
+        },
+        forMessages: (orgId, messageIds) => {
+          asked.push({ messageIds, orgId });
+          return Promise.resolve(new Map([['m1', [IMAGE, NOTES]]]));
+        },
+      };
+      return { asked, fetched, port };
+    }
+
+    it('stages each file under .git/kido-attachments/ once and names the path in the prompt', async () => {
+      const files = reader((file) => Promise.resolve(Buffer.from(file.id)));
+      const { port, provider, subject } = executor({ reader: files.port });
+      port.answers.read = 'contents';
+      provider.script(
+        { text: '', toolCalls: [{ id: 'tu_1', input: { path: 'a.ts' }, name: 'fs_read' }] },
+        { text: 'done' },
+      );
+
+      await subject.execute(context(snapshot([row('user', 'use the logo', 1)])).context);
+
+      expect(files.asked).toEqual([{ messageIds: ['m1'], orgId: 'org_1' }]);
+      // Once per attempt, not per turn: two model calls, one fetch per file.
+      expect(provider.calls).toHaveLength(2);
+      expect(files.fetched).toEqual(['att_1', 'att_2']);
+      const uploads = port.calls.filter((call) => call.method === 'upload');
+      expect(uploads.map((call) => [call.args[1], String(call.args[2])])).toEqual([
+        ['.git/kido-attachments/att_1/my_logo.png', 'att_1'],
+        ['.git/kido-attachments/att_2/notes.md', 'att_2'],
+      ]);
+      expect(uploads[0]?.args[3]).toEqual({
+        leaseEpoch: 1,
+        operationId: `${RUN}/attachment-att_1`,
+      });
+      for (const call of provider.calls) {
+        expect(call.request.messages[0]).toEqual({
+          attachments: [
+            {
+              // The scripted provider records a JSON copy of the request.
+              data: JSON.parse(JSON.stringify(Buffer.from('att_1'))) as unknown,
+              kind: 'image',
+              mimeType: 'image/png',
+              name: 'my logo.png',
+              workspacePath: '.git/kido-attachments/att_1/my_logo.png',
+            },
+            {
+              kind: 'text',
+              mimeType: 'text/markdown',
+              name: 'notes.md',
+              text: '# notes',
+              workspacePath: '.git/kido-attachments/att_2/notes.md',
+            },
+          ],
+          content: 'use the logo',
+          role: 'user',
+        });
+      }
+    });
+
+    it('goes on without the path when staging fails, and without the bytes when they are gone', async () => {
+      const files = reader((file) =>
+        file.id === 'att_1' ? Promise.reject(new Error('gone')) : Promise.resolve(Buffer.from('x')),
+      );
+      const port = new FakePort();
+      port.answers.upload = new SandboxGuardError('bundle-too-large', 'too big');
+      const { provider, subject } = executor({ port, reader: files.port });
+      provider.script({ text: 'done' });
+
+      const outcome = await subject.execute(
+        context(snapshot([row('user', 'use the logo', 1)])).context,
+      );
+
+      expect(outcome).toEqual({ kind: 'succeeded' });
+      expect(provider.calls[0]?.request.messages[0]).toEqual({
+        attachments: [
+          { kind: 'image', mimeType: 'image/png', name: 'my logo.png' },
+          { kind: 'text', mimeType: 'text/markdown', name: 'notes.md', text: '# notes' },
+        ],
+        content: 'use the logo',
+        role: 'user',
+      });
+      expect(logs.some((line) => line.startsWith('attachment unreadable: '))).toBe(true);
+      expect(logs.some((line) => line.includes('attachment not staged: '))).toBe(true);
     });
   });
 });

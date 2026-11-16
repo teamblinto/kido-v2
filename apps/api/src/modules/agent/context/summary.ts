@@ -2,7 +2,12 @@ import { MODEL_CATALOGUE } from '@repo/contracts';
 import type { RunMessage } from '@repo/db';
 
 import { SUMMARY_TAIL_TURNS, SUMMARY_THRESHOLD_TOKENS } from '../agent.constants';
-import type { ConversationMessage, CredentialContext, LlmProvider } from '../llm-provider.port';
+import type {
+  ConversationMessage,
+  CredentialContext,
+  LlmProvider,
+  PromptAttachment,
+} from '../llm-provider.port';
 import { estimateTokens, SUMMARY_PROMPT, toMessages } from '../prompt';
 import { classify } from '../provider-error';
 import type { ExecutionContext } from '../run-executor.port';
@@ -14,6 +19,8 @@ export interface SummaryScope {
   readonly emit: ExecutionContext['emit'];
   /** `AgentTimings.summaryMs` (R8). */
   readonly summaryMs: number;
+  /** Spec 048: the attempt's resolved files by message id, carried on the tail it sends. */
+  readonly attachments?: ReadonlyMap<string, readonly PromptAttachment[]>;
 }
 
 /** The three `agent_runs` columns (data-model.md). */
@@ -66,7 +73,12 @@ function cutIndex(messages: readonly ConversationMessage[]): number {
 function render(messages: readonly ConversationMessage[]): string {
   return messages
     .map((m) => {
-      if (m.role === 'user') return `User:\n${m.content}`;
+      if (m.role === 'user') {
+        // Files by name only: their bytes and text are the model's to read, not the summary's.
+        const files = (m.attachments ?? []).map((a) => `${a.name} (${a.kind})`);
+        const attached = files.length === 0 ? '' : `\n[attached: ${files.join(', ')}]`;
+        return `User:\n${m.content}${attached}`;
+      }
       if (m.role === 'assistant') {
         const calls = m.toolCalls.map((c) => `[call ${c.name} ${JSON.stringify(c.input)}]`);
         return ['Assistant:', m.text ?? '', ...calls].filter(Boolean).join('\n');
@@ -92,7 +104,7 @@ export async function summarise(
   // Rows after the stored marker; a marker no row carries means "from the start" (set-null FK).
   const through =
     state.summary === null ? -1 : rows.findIndex((r) => r.id === state.throughMessageId);
-  const remaining = toMessages(rows.slice(through + 1));
+  const remaining = toMessages(rows.slice(through + 1), scope.attachments);
   const summaryTokens = through < 0 ? 0 : state.tokens;
   const summaryMessage = (summary: string): ConversationMessage => ({
     content: `${SUMMARY_HEADER}${summary}`,

@@ -1,4 +1,4 @@
-import type { RunEvent } from '@repo/contracts';
+import type { Attachment, RunEvent } from '@repo/contracts';
 
 import type { ToolKind, ToolStatus } from '../types';
 import { type TranscriptItem, joinTokens } from './transcript';
@@ -16,6 +16,8 @@ import { type TranscriptItem, joinTokens } from './transcript';
 export interface UserTurn {
   /** Where it sits: before the joined transcript item at this index (`Infinity`: at the end). */
   readonly at: number;
+  /** Files the person attached (spec 048); absent or empty on a reply. */
+  readonly attachments?: readonly Attachment[];
   readonly id: string;
   readonly role?: 'assistant';
   readonly text: string;
@@ -35,7 +37,12 @@ export type WorkEntry =
 export type TimelineRow =
   | { readonly id: string; readonly kind: 'assistant'; readonly text: string }
   | { readonly event: RunEvent; readonly id: string; readonly kind: 'notice' }
-  | { readonly id: string; readonly kind: 'user'; readonly text: string }
+  | {
+      readonly attachments: readonly Attachment[];
+      readonly id: string;
+      readonly kind: 'user';
+      readonly text: string;
+    }
   | { readonly entries: readonly WorkEntry[]; readonly id: string; readonly kind: 'work' };
 
 /** The tool's icon family, from its name. Unrecognised tools get the neutral one. */
@@ -91,7 +98,11 @@ export function buildTimeline(
       const turn = pending.shift();
       if (turn === undefined) break;
       work = undefined;
-      rows.push({ id: turn.id, kind: turn.role ?? 'user', text: turn.text });
+      rows.push(
+        turn.role === 'assistant'
+          ? { id: turn.id, kind: 'assistant', text: turn.text }
+          : { attachments: turn.attachments ?? [], id: turn.id, kind: 'user', text: turn.text },
+      );
     }
   };
 

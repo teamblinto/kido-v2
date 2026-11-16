@@ -17,6 +17,8 @@ import type { Environment } from '../../config/environment';
 import type { TenantTransaction } from '../../database/database.types';
 import { TenantContext } from '../../database/tenant-context';
 import { type LocalRunExecutor, RunExecutorRegistry } from '../agent/run-executor-registry';
+import { withAttachmentText } from '../agent/prompt';
+import type { PromptAttachment } from '../agent/llm-provider.port';
 import type { ExecutionContext, RunOutcome } from '../agent/run-executor.port';
 import { FencedError } from '../agent/run-store';
 import { failed, SandboxTools, toolContent } from '../agent/sandbox-tools';
@@ -277,6 +279,7 @@ interface LocalRunDeps {
 
 /** One attempt at one turn: the state the loop keeps between reads. */
 class LocalRun {
+  private readonly logger = new Logger(LocalAgentExecutor.name);
   /** The CLI's own ids for its bridged tool calls, whose events the server's tool calls replace. */
   private readonly bridged = new Set<string>();
   /** The step bound's count, as the cloud agent keeps it: from the committed `tool.end`s. */
@@ -460,9 +463,21 @@ class LocalRun {
 
     if (refused !== undefined) return refused;
 
-    const prompt = run.messages.filter((message) => message.role === 'user').at(-1)?.content;
+    const last = run.messages.filter((message) => message.role === 'user').at(-1);
 
-    if (prompt === undefined) return LOCAL_FAILURES.noPrompt(provider);
+    if (last === undefined) return LOCAL_FAILURES.noPrompt(provider);
+    // Spec 048: the CLI takes text only, so its files arrive as their text form; the bridge's
+    // `fs_read` / `exec` reach the same sandbox, so the staged paths it names work for it too.
+    // Files are a convenience: a failure to resolve them sends the words alone, not a failed run.
+    let files: readonly PromptAttachment[] | undefined;
+    try {
+      files = (await this.deps.sandbox.attachments(this.context, [last.id])).get(last.id);
+    } catch (error) {
+      this.logger.warn(
+        `attachments unresolved: run=${run.id} error=${error instanceof Error ? error.name : 'unknown'}`,
+      );
+    }
+    const prompt = withAttachmentText(last.content, files);
 
     this.turnStartedAt = this.now();
     await this.context.dispatch(async () => {

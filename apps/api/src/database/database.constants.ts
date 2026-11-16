@@ -29,3 +29,11 @@ export const BYPASS_POOL = Symbol('forge.database.bypass.pool');
  * resource being touched, which is the only derivation §11 allows.
  */
 export const TENANT_SCOPE_RESOLVER = Symbol('forge.database.tenantScopeResolver');
+
+/**
+ * Route metadata: the handler opens its own tenant transaction (`runInTenantScope`) instead of
+ * running inside the request's. Only for a handler that must do slow I/O first — the attachment
+ * upload reads up to 25 MiB from the client — so that I/O never holds a pooled connection. Guards
+ * still run, and still resolve the tenant, before the handler (spec 048).
+ */
+export const OWNS_TENANT_TRANSACTION = Symbol('forge.database.ownsTenantTransaction');

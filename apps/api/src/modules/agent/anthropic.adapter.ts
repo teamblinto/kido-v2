@@ -11,7 +11,9 @@ import type {
   LlmProvider,
   ModelRequest,
   ModelTurn,
+  PromptAttachment,
 } from './llm-provider.port';
+import { renderAttachment } from './prompt';
 import { classify, ProviderError } from './provider-error';
 import { toInputSchema } from './tool-schema';
 
@@ -140,7 +142,20 @@ function toSystemBlocks(request: ModelRequest): Anthropic.TextBlockParam[] {
 function toMessageParam(message: ConversationMessage): Anthropic.MessageParam {
   switch (message.role) {
     case 'user':
-      return { role: 'user', content: message.content };
+      // A message without files stays a plain string, so its request bytes (and cache) are as before.
+      if (message.attachments === undefined || message.attachments.length === 0) {
+        return { role: 'user', content: message.content };
+      }
+      return {
+        role: 'user',
+        content: [
+          ...message.attachments.flatMap(toAttachmentBlocks),
+          // The API refuses an empty text block; a message may be files alone.
+          ...(message.content !== ''
+            ? [{ type: 'text', text: message.content } satisfies Anthropic.TextBlockParam]
+            : []),
+        ],
+      };
     case 'assistant':
       return {
         role: 'assistant',
@@ -167,6 +182,36 @@ function toMessageParam(message: ConversationMessage): Anthropic.MessageParam {
         })),
       };
   }
+}
+
+/**
+ * Spec 048: an image or PDF with bytes goes as its native block, then (every kind) its text form —
+ * for an image or PDF the tag naming its workspace path, for the rest the extracted text.
+ */
+function toAttachmentBlocks(attachment: PromptAttachment): Anthropic.ContentBlockParam[] {
+  const text: Anthropic.TextBlockParam = { type: 'text', text: renderAttachment(attachment) };
+  const { data, kind, mimeType } = attachment;
+  if (data === undefined) return [text];
+  if (kind === 'image') {
+    const image: Anthropic.ImageBlockParam = {
+      type: 'image',
+      source: {
+        type: 'base64',
+        // The upload allowlist admits only these four raster types as `image`.
+        media_type: mimeType as Anthropic.Base64ImageSource['media_type'],
+        data: data.toString('base64'),
+      },
+    };
+    return [image, text];
+  }
+  if (kind === 'pdf') {
+    const document: Anthropic.DocumentBlockParam = {
+      type: 'document',
+      source: { type: 'base64', media_type: 'application/pdf', data: data.toString('base64') },
+    };
+    return [document, text];
+  }
+  return [text];
 }
 
 function toTurn(message: Anthropic.Message): ModelTurn {

@@ -1,4 +1,5 @@
 export * from './agent';
+export * from './attachment';
 export * from './audit';
 export * from './byok';
 export * from './byos';

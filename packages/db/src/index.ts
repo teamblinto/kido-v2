@@ -1,5 +1,6 @@
 import * as relations from './relations';
 import * as agent from './schema/agent';
+import * as attachment from './schema/attachment';
 import * as audit from './schema/audit';
 import * as byok from './schema/byok';
 import * as byos from './schema/byos';
@@ -21,6 +22,7 @@ import * as webhooks from './schema/webhooks';
 
 export * from './relations';
 export * from './schema/agent';
+export * from './schema/attachment';
 export * from './schema/audit';
 export * from './schema/byok';
 export * from './schema/byos';
@@ -46,6 +48,7 @@ export type Schema = typeof schema;
 /** Everything `drizzle(pool, { schema })` needs, in one object. */
 export const schema = {
   ...agent,
+  ...attachment,
   ...audit,
   ...byok,
   ...byos,

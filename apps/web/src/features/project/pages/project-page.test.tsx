@@ -939,6 +939,69 @@ describe('ProjectPage', () => {
       });
     });
 
+    it('retries a failed run with the same attachment ids, without uploading again (SC-8)', async () => {
+      const user = userEvent.setup();
+      const bodies: unknown[] = [];
+      let uploads = 0;
+      const attachment = {
+        createdAt: '2026-08-18T09:59:00.000Z',
+        id: '6ba7b899-9dad-11d1-80b4-00c04fd430c8',
+        kind: 'text',
+        mimeType: 'text/markdown',
+        name: 'notes.md',
+        sizeBytes: 7,
+      };
+
+      server.use(
+        http.post(`${API}/orgs/:orgId/projects/:projectId/attachments`, () => {
+          uploads += 1;
+
+          return HttpResponse.json(attachment, { status: 201 });
+        }),
+        ...runHandlers(
+          () =>
+            sse([
+              frame({
+                at: '2026-08-18T10:00:00.000Z',
+                data: { from: 'running', reason: 'The model refused.', to: 'failed' },
+                run: RUN_ID,
+                seq: 1,
+                type: 'state',
+              }),
+            ]),
+          (sent) => {
+            bodies.push(sent);
+          },
+        ),
+      );
+
+      renderPage();
+      await screen.findByRole('button', { name: /Sonnet 5.*change model/ });
+      await user.upload(screen.getByTestId('attach-input'), new File(['# notes'], 'notes.md'));
+      await user.type(screen.getByLabelText(/ask baios for a change/i), 'use my notes');
+      await waitFor(() => {
+        expect(screen.getByRole('button', { name: 'Send' })).toBeEnabled();
+      });
+      await user.keyboard('{Enter}');
+      // The sent message shows what it carried.
+      expect(
+        await within(screen.getByRole('log', { name: 'Conversation' })).findByRole('link', {
+          name: /notes\.md/,
+        }),
+      ).toHaveAttribute('href', expect.stringContaining(`/attachments/${attachment.id}/content`));
+      await user.click(await screen.findByRole('button', { name: 'Retry' }));
+
+      const sent = {
+        attachmentIds: [attachment.id],
+        model: 'claude-sonnet-5',
+        prompt: 'use my notes',
+      };
+      await waitFor(() => {
+        expect(bodies).toEqual([sent, sent]);
+      });
+      expect(uploads).toBe(1);
+    });
+
     it('sends the model that rode in from the workspace on the first run, and keeps it', async () => {
       // Spec 011 US6: the workspace composer's prompt and pick arrive in navigation state, and the
       // first run is started from them without asking twice. The pick is the project's from then

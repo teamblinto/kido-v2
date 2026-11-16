@@ -5,6 +5,17 @@ import { type TranscriptItem, joinTokens } from './transcript';
 
 const time = (iso: string): number => Date.parse(iso);
 
+const turnOf = (message: RunMessage, at: number): UserTurn => ({
+  at,
+  id: `m-${message.id}`,
+  ...(message.role === 'assistant'
+    ? { role: 'assistant' as const }
+    : message.attachments.length === 0
+      ? {}
+      : { attachments: message.attachments }),
+  text: message.content,
+});
+
 /**
  * What the record adds to the screen (the conversation read back), as turns for `buildTimeline`.
  *
@@ -56,21 +67,10 @@ export function recordedTurns(
       if (streamed) continue;
     }
 
-    turns.unshift({
-      at: joined.filter(({ event }) => time(event.at) <= time(message.at)).length,
-      id: `m-${message.id}`,
-      ...(message.role === 'assistant' ? { role: 'assistant' as const } : {}),
-      text: message.content,
-    });
+    turns.unshift(
+      turnOf(message, joined.filter(({ event }) => time(event.at) <= time(message.at)).length),
+    );
   }
 
-  return [
-    ...earlier.map((message) => ({
-      at: -1,
-      id: `m-${message.id}`,
-      ...(message.role === 'assistant' ? { role: 'assistant' as const } : {}),
-      text: message.content,
-    })),
-    ...turns,
-  ];
+  return [...earlier.map((message) => turnOf(message, -1)), ...turns];
 }

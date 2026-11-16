@@ -18,6 +18,7 @@ import { CredentialResolver } from './byok/credential-resolver';
 import { ProviderKeyHealthConsumer } from './byok/provider-key-health.consumer';
 import { ProviderKeyRepository } from './byok/provider-key.repository';
 import { KEY_VERIFIERS, ProviderKeyService } from './byok/provider-key.service';
+import { AttachmentsController } from './controllers/attachments.controller';
 import { LinkedAccountController } from './controllers/linked-account.controller';
 import { ModelsController } from './controllers/models.controller';
 import { ProviderKeyController } from './controllers/provider-key.controller';
@@ -142,8 +143,9 @@ describe('AgentModule', () => {
     expect(tokens).not.toContain(APP_INTERCEPTOR);
   });
 
-  it('exposes the run routes, the model catalogue, the provider keys (020), the linked accounts (032) and usage on their own controllers', () => {
+  it('exposes the run routes, the model catalogue, the provider keys (020), the linked accounts (032), usage and attachments (048) on their own controllers', () => {
     expect(Reflect.getMetadata('controllers', AgentModule)).toEqual([
+      AttachmentsController,
       LinkedAccountController,
       ModelsController,
       ProviderKeyController,

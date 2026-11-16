@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { cursorPageQuerySchema, cursorSchema } from '../common/cursor';
+import { attachmentIdsSchema, attachmentSchema } from './attachment';
 import { companionFailureClassSchema, localAgentModelSchema } from '../local-agent/provider';
 import { subscriptionRunTargetSchema } from '../local-agent/subscription';
 
@@ -48,6 +49,8 @@ const runText = z.string().trim().min(1).max(32_000);
 /** `POST /api/v1/orgs/:orgId/projects/:projectId/runs`, behind `project:agent.run`. */
 export const createRunRequestSchema = z
   .strictObject({
+    /** 048: files uploaded to this project beforehand, attached to the prompt. */
+    attachmentIds: attachmentIdsSchema.optional(),
     /** Use the organisation's credential while the caller's subscription is limited (spec 032 A3). */
     credential: z.literal('organisation').optional(),
     model: z.string().trim().min(1).optional(),
@@ -75,6 +78,8 @@ export type CreateRunRequest = z.output<typeof createRunRequestSchema>;
  * `model` switches the model from this answer on; absent, the run keeps the one it had.
  */
 export const runInputRequestSchema = z.strictObject({
+  /** 048: files attached to the answer, as on a prompt. */
+  attachmentIds: attachmentIdsSchema.optional(),
   message: runText,
   model: localAgentModelSchema.optional(),
 });
@@ -299,6 +304,8 @@ export type RunListResponse = z.output<typeof runListResponseSchema>;
  */
 export const runMessageSchema = z.strictObject({
   at: z.iso.datetime(),
+  /** 048: what was attached to a user message, in the order sent; always empty on a reply. */
+  attachments: z.array(attachmentSchema).default([]),
   content: z.string(),
   id: z.uuid(),
   role: z.enum(['assistant', 'user']),

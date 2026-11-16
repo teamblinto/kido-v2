@@ -12,6 +12,7 @@ import { FakeClock } from '../../common/clock/fake-clock';
 import type { TenantContext } from '../../database/tenant-context';
 import { RunExecutorRegistry } from '../agent/run-executor-registry';
 import type { EmittedEvent, ExecutionContext, RunSnapshot } from '../agent/run-executor.port';
+import type { AttachmentReaderPort } from '../agent/attachments/attachment-reader.port';
 import { ALL_TOOLS, SandboxTools } from '../agent/sandbox-tools';
 import type { CheckpointService } from '../checkpoints/checkpoint.service';
 import { DEFAULT_SANDBOX_TIMINGS } from '../sandbox/sandbox.constants';
@@ -211,6 +212,8 @@ function setup(
     cancelAfter?: number;
     /** Overrides on the agent-home service (by default: enabled, a home, woken online). */
     homes?: Record<string, unknown>;
+    /** Spec 048: the attachment store the bridge stages files from. */
+    attachments?: AttachmentReaderPort;
   } = {},
 ) {
   const clock = new FakeClock('2026-11-02T00:00:00Z');
@@ -248,6 +251,7 @@ function setup(
     }),
     list: vi.fn(() => Promise.resolve([])),
     read: vi.fn((_ref: unknown, path: string) => Promise.resolve(files.get(path) ?? '')),
+    upload: vi.fn(() => Promise.resolve()),
   };
   const lifecycle = { ensureReady: vi.fn(() => Promise.resolve({ ready: true })) };
   const checkpoints = {
@@ -258,6 +262,7 @@ function setup(
   };
   const sandbox = new SandboxTools({
     allowed: ALL_TOOLS,
+    attachments: options.attachments,
     checkpoints: checkpoints as unknown as CheckpointService,
     clock,
     lifecycle: lifecycle as unknown as SandboxLifecycle,
@@ -336,6 +341,51 @@ function reasonOf(outcome: unknown): string {
 }
 
 describe('LocalAgentExecutor', () => {
+  it('spec 048: hands the CLI the words, then each file as text naming its staged path', async () => {
+    const stored = {
+      extractedText: 'a,b',
+      id: 'att_1',
+      kind: 'text' as const,
+      mimeType: 'text/csv',
+      name: 'data.csv',
+      objectKey: 'k',
+      projectId: 'project',
+      sizeBytes: 3,
+    };
+    const attachments: AttachmentReaderPort = {
+      bytes: () => Promise.resolve(Buffer.from('a,b')),
+      forMessages: () => Promise.resolve(new Map([['fix the tests', [stored]]])),
+    };
+    const { channel, context, executor, port } = setup({ attachments });
+    channel.script = (read, c) => {
+      if (read === 1) c.push(completed);
+    };
+
+    await executor.execute(context);
+
+    expect(port.upload).toHaveBeenCalledTimes(1);
+    expect((channel.published[0] as { prompt: string }).prompt).toBe(
+      'fix the tests\n\n<attachment name="data.csv" kind="text" path=".git/kido-attachments/att_1/data.csv">\na,b\n</attachment>',
+    );
+  });
+
+  it('resolves only the last message’s files, and sends the words alone when that fails', async () => {
+    const forMessages = vi.fn(() => Promise.reject(new Error('store down')));
+    const { channel, context, executor } = setup({
+      attachments: { bytes: () => Promise.reject(new Error('unused')), forMessages },
+    });
+    channel.script = (read, c) => {
+      if (read === 1) c.push(completed);
+    };
+
+    const outcome = await executor.execute(context);
+
+    const userIds = context.run.messages.filter((m) => m.role === 'user').map((m) => m.id);
+    expect(forMessages).toHaveBeenCalledWith(expect.any(String), [userIds.at(-1)]);
+    expect((channel.published[0] as { prompt: string }).prompt).toBe('fix the tests');
+    expect(outcome).not.toMatchObject({ kind: 'failed' });
+  });
+
   it('starts the turn in the home, maps the stream, persists the reply and awaits the person', async () => {
     const { channel, context, emitted, executor, persisted } = setup();
     channel.script = (read, c) => {

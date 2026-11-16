@@ -76,6 +76,7 @@ export class RunController {
       body.model,
       body.credential,
       body.subscription,
+      body.attachmentIds,
     );
   }
 
@@ -103,7 +104,15 @@ export class RunController {
     @Param('runId') runId: string,
     @Body() body: RunInputDto,
   ): Promise<void> {
-    await this.runs.input(orgId, projectId, runId, caller.userId, body.message, body.model);
+    await this.runs.input(
+      orgId,
+      projectId,
+      runId,
+      caller.userId,
+      body.message,
+      body.model,
+      body.attachmentIds,
+    );
   }
 
   @Get()

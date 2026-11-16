@@ -10,6 +10,8 @@ import type { SandboxTimings } from '../sandbox/sandbox.constants';
 import { DaytonaError, SandboxGuardError } from '../sandbox/sandbox.errors';
 import type { SandboxPort, SandboxRef } from '../sandbox/sandbox.port';
 import { MAX_TOOL_CALLS } from './agent.constants';
+import type { AttachmentReaderPort, StoredAttachment } from './attachments/attachment-reader.port';
+import type { PromptAttachment } from './llm-provider.port';
 import type { ExecutionContext, RunOutcome } from './run-executor.port';
 import { type BrokerResult, type ToolCall, ToolBroker } from './tool-broker';
 import { toInputSchema } from './tool-schema';
@@ -72,6 +74,21 @@ export interface SandboxToolsDeps {
   readonly sandboxTimings: SandboxTimings;
   readonly clock: ClockPort;
   readonly allowed: ReadonlySet<ToolName>;
+  /** Spec 048: absent where no attachment store is bound — then a run sees no files. */
+  readonly attachments?: AttachmentReaderPort;
+}
+
+/** Where a message's files are staged (spec 048): under `.git/`, so git never tracks them. */
+export const ATTACHMENTS_DIR = '.git/kido-attachments';
+
+/**
+ * A file name safe as one path component and one `exec` argument: the shell guard refuses
+ * `;&|$<>` and an unquoted space splits `cp`'s arguments, so anything outside `[A-Za-z0-9._-]`
+ * becomes `_`, and a name of dots alone (`..`) becomes `file`.
+ */
+export function stagedName(name: string): string {
+  const safe = name.replace(/[^A-Za-z0-9._-]/g, '_');
+  return /^\.*$/.test(safe) ? 'file' : safe;
 }
 
 /**
@@ -139,6 +156,74 @@ export class SandboxTools {
       return failed('checkpoint');
     }
     return undefined;
+  }
+
+  /**
+   * Spec 048: the run's user messages' files, resolved once per attempt — bytes fetched once,
+   * staged at `.git/kido-attachments/<id>/<name>` (overwritten: the same bytes every attempt) —
+   * keyed by message id for `toMessages`. A file whose bytes or staging fail is logged and kept
+   * without them (its extracted text still goes); failing the run over one file was rejected.
+   * `messageIds` narrows it to those messages (the local agent sends only the last one's).
+   */
+  async attachments(
+    context: ExecutionContext,
+    messageIds?: readonly string[],
+  ): Promise<ReadonlyMap<string, readonly PromptAttachment[]>> {
+    const { run } = context;
+    const reader = this.deps.attachments;
+    const ids =
+      messageIds ?? run.messages.filter((message) => message.role === 'user').map((m) => m.id);
+    const resolved = new Map<string, PromptAttachment[]>();
+    if (reader === undefined || ids.length === 0) return resolved;
+    const stored = await reader.forMessages(run.orgId, ids);
+    for (const [messageId, files] of stored) {
+      const prompt: PromptAttachment[] = [];
+      for (const file of files) prompt.push(await this.stage(context, reader, file));
+      resolved.set(messageId, prompt);
+    }
+    return resolved;
+  }
+
+  private async stage(
+    context: ExecutionContext,
+    reader: AttachmentReaderPort,
+    file: StoredAttachment,
+  ): Promise<PromptAttachment> {
+    const { run } = context;
+    const base: PromptAttachment = {
+      kind: file.kind,
+      mimeType: file.mimeType,
+      name: file.name,
+      ...(file.extractedText === null ? {} : { text: file.extractedText }),
+    };
+    let bytes: Buffer;
+    try {
+      bytes = await reader.bytes(file);
+    } catch (error) {
+      this.logger.warn(
+        `attachment unreadable: run=${run.id} attachment=${file.id} ` +
+          `error=${error instanceof Error ? error.name : 'unknown'}`,
+      );
+      return base;
+    }
+    const native = file.kind === 'image' || file.kind === 'pdf';
+    const withData = native ? { ...base, data: bytes } : base;
+    const path = `${ATTACHMENTS_DIR}/${file.id}/${stagedName(file.name)}`;
+    try {
+      await context.dispatch(() =>
+        this.deps.port.upload(refOf(run), path, bytes, {
+          leaseEpoch: run.epoch,
+          operationId: `${run.id}/attachment-${file.id}`,
+        }),
+      );
+    } catch (error) {
+      if (!(error instanceof SandboxGuardError) && !(error instanceof DaytonaError)) throw error;
+      this.logger.warn(
+        `attachment not staged: run=${run.id} attachment=${file.id} kind=${error.kind}`,
+      );
+      return withData;
+    }
+    return { ...withData, workspacePath: path };
   }
 
   /**

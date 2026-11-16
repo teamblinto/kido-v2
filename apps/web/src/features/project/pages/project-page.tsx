@@ -1,4 +1,4 @@
-import type { CreateRunRequest, RunEvent, RunInputRequest } from '@repo/contracts';
+import type { Attachment, CreateRunRequest, RunEvent, RunInputRequest } from '@repo/contracts';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useParams, useSearchParams } from 'react-router-dom';
@@ -29,7 +29,7 @@ import {
   limitSentence,
   RUN_ON_ORGANISATION,
 } from '@/features/settings/subscription-limit';
-import { answerRun, cancelRun, createRun, getImport } from '../api';
+import { answerRun, attachmentContentUrl, cancelRun, createRun, getImport } from '../api';
 import { ImportFailed } from '../components/import-failed';
 import { invalidateGitSync } from '../hooks/use-git-sync';
 import { usePresence } from '../hooks/use-presence';
@@ -74,6 +74,13 @@ function handoffFrom(state: unknown): {
     ...(credential === 'organisation' ? { credential } : {}),
     ...(typeof prompt === 'string' && prompt.trim().length > 0 ? { prompt } : {}),
   };
+}
+
+/** The ids a request carries for its attachments; nothing at all when there are none. */
+function attachmentIds(attachments: readonly Attachment[]): { attachmentIds?: string[] } {
+  return attachments.length === 0
+    ? {}
+    : { attachmentIds: attachments.map((attachment) => attachment.id) };
 }
 
 /** A message the person sent, and the run it went to once the API said which. */
@@ -293,6 +300,7 @@ export function ProjectPage(): React.JSX.Element {
   const sendTurn = useCallback(
     <T,>(
       text: string,
+      attachments: readonly Attachment[],
       turnRunId: string | undefined,
       request: () => Promise<T>,
       runOf?: (result: T) => string,
@@ -306,6 +314,7 @@ export function ProjectPage(): React.JSX.Element {
         ...current,
         {
           at: turnRunId === undefined ? Number.POSITIVE_INFINITY : sentAt,
+          ...(attachments.length === 0 ? {} : { attachments }),
           id,
           runId: turnRunId,
           text,
@@ -340,7 +349,12 @@ export function ProjectPage(): React.JSX.Element {
   // The model picker's choice is the run's `model` and who pays (spec 043). It applies from this
   // message on; switching between messages is always allowed.
   const startRun = useCallback(
-    (prompt: string, choice: ModelChoice | undefined, credential?: 'organisation') => {
+    (
+      prompt: string,
+      choice: ModelChoice | undefined,
+      credential?: 'organisation',
+      attachments: readonly Attachment[] = [],
+    ) => {
       // Nothing is sent until there is an organisation to send it to. `orgs/…/projects` with an
       // empty segment is a request to a route that does not exist, and the refusal it earns would
       // be reported as the run having failed rather than as the screen not being ready yet.
@@ -349,10 +363,11 @@ export function ProjectPage(): React.JSX.Element {
       }
 
       answer.reset();
-      const body = runBody(prompt, choice);
+      const body = { ...runBody(prompt, choice), ...attachmentIds(attachments) };
 
       return sendTurn(
         prompt,
+        attachments,
         undefined,
         // Spec 032 A3's organisation credential is a catalogue run's alternative only.
         () =>
@@ -368,11 +383,12 @@ export function ProjectPage(): React.JSX.Element {
   );
 
   const answerWaitingRun = useCallback(
-    (message: string, choice: ModelChoice | undefined) => {
+    (message: string, choice: ModelChoice | undefined, attachments: readonly Attachment[] = []) => {
       start.reset();
 
-      return sendTurn(message, runId, () =>
+      return sendTurn(message, attachments, runId, () =>
         answer.mutateAsync({
+          ...attachmentIds(attachments),
           message,
           ...(choice?.model === undefined ? {} : { model: choice.model }),
         }),
@@ -496,17 +512,22 @@ export function ProjectPage(): React.JSX.Element {
 
     return [...opening, ...recorded, ...shown];
   }, [awaitedRunId, items, messages, run, runId, turns]);
-  // A failed or cancelled run is sent again as a new run on the current model: its whole prompt, from
-  // this screen or from the record; the run record carries only an excerpt.
-  const retryPrompt =
-    turns.find((turn) => turn.runId === runId && turn.at === 0)?.text ??
-    messages.find((message) => message.runId === runId && message.role === 'user')?.content;
+  // A failed or cancelled run is sent again as a new run on the current model: its whole prompt and
+  // the same attachments (no re-upload), from this screen or from the record; the run record
+  // carries only an excerpt.
+  const firstSent = turns.find((turn) => turn.runId === runId && turn.at === 0);
+  const firstRecorded = messages.find(
+    (message) => message.runId === runId && message.role === 'user',
+  );
+  const retryPrompt = firstSent?.text ?? firstRecorded?.content;
+  const retryAttachments =
+    firstSent === undefined ? (firstRecorded?.attachments ?? []) : (firstSent.attachments ?? []);
   const { choice } = modelState;
   const retryRun =
     retryPrompt === undefined
       ? undefined
       : () => {
-          startRun(retryPrompt, choice).catch(() => undefined);
+          startRun(retryPrompt, choice, undefined, retryAttachments).catch(() => undefined);
         };
 
   // The request as the API recorded it — from this screen's own stop, or already on the run when
@@ -551,6 +572,11 @@ export function ProjectPage(): React.JSX.Element {
 
       <div className="flex min-h-0 flex-1">
         <ChatPanel
+          attachmentUrl={
+            orgId === undefined
+              ? undefined
+              : (attachmentId) => attachmentContentUrl(orgId, projectId, attachmentId)
+          }
           composer={
             <ChatComposer
               key={projectId}
@@ -561,10 +587,14 @@ export function ProjectPage(): React.JSX.Element {
               modelState={modelState}
               needsConnection={needsConnection}
               onStop={stopRun}
-              onSubmit={(prompt) =>
+              onSubmit={(prompt, attachments) =>
                 // Belt and braces with the API, which redirects a new run to a waiting one too.
-                isAwaitingInput ? answerWaitingRun(prompt, choice) : startRun(prompt, choice)
+                isAwaitingInput
+                  ? answerWaitingRun(prompt, choice, attachments)
+                  : startRun(prompt, choice, undefined, attachments)
               }
+              orgId={orgId}
+              projectId={projectId}
               placeholder="Ask for a change to this project"
             />
           }

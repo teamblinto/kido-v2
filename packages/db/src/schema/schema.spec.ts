@@ -41,6 +41,8 @@ const EXPECTED_TENANT_OWNED_TABLES = [
   // Spec 008. `run_events` is the first partitioned tenant-owned table (ADR 032); its partitions
   // are not tables in their own right here and are excluded by `relispartition` below.
   'agent_runs',
+  // Spec 048. A chat file and which message carried it (`0062_chat_attachments_are_tenant_owned.sql`).
+  'attachments',
   'audit_log',
   // Spec 016. Immutable history: insert-only by grant (`0018_checkpoints_are_append_only.sql`).
   'checkpoints',
@@ -73,6 +75,7 @@ const EXPECTED_TENANT_OWNED_TABLES = [
   'provider_keys',
   'repo_links',
   'run_events',
+  'run_message_attachments',
   'run_messages',
   'sandboxes',
   'secrets',
@@ -380,6 +383,7 @@ describe.skipIf(!databaseReachable)('database schema', () => {
     expect(composite).toEqual([
       'agent_runs_org_id_project_id_fk',
       'agent_runs_org_id_summary_through_message_id_fk',
+      'attachments_org_id_project_id_fk',
       'checkpoints_org_id_parent_id_fk',
       'checkpoints_org_id_project_id_fk',
       'checkpoints_org_id_reverts_id_fk',
@@ -411,6 +415,8 @@ describe.skipIf(!databaseReachable)('database schema', () => {
       'repo_links_org_id_last_pushed_checkpoint_id_fk',
       'repo_links_org_id_project_id_fk',
       'run_events_org_id_run_id_fk',
+      'run_message_attachments_org_id_attachment_id_fk',
+      'run_message_attachments_org_id_message_id_fk',
       'run_messages_org_id_run_id_fk',
       'sandboxes_org_id_project_id_fk',
       'secrets_org_id_dek_id_fk',

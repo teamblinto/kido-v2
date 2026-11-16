@@ -14,11 +14,14 @@ import { useFollowBottom } from '../hooks/use-follow-bottom';
 import { isTerminal } from '../lib/run-phase';
 import { type TimelineRow, type UserTurn, buildTimeline, formatDuration } from '../lib/timeline';
 import type { Connection, TranscriptItem, TranscriptSource } from '../lib/transcript';
+import { MessageAttachments } from './attachment-parts';
 import { ChatMarkdown } from './chat-markdown';
 import { RunStateCard } from './run-state-card';
 import { WorkGroup } from './work-group';
 
 interface ChatPanelProps {
+  /** Where an attachment's bytes are read (spec 048); without it a message's files are not drawn. */
+  attachmentUrl?: (attachmentId: string) => string;
   className?: string;
   /** The box at the foot of the panel; the page owns what sending does. */
   composer?: React.ReactNode;
@@ -65,6 +68,7 @@ function workedFor(run: RunResponse | undefined): string | undefined {
  * the end of a reply is announced once.
  */
 export function ChatPanel({
+  attachmentUrl,
   className,
   composer,
   connection,
@@ -120,6 +124,7 @@ export function ChatPanel({
           {rows.map((row) => (
             <div key={row.id} className={cn(isLive && 'chat-enter')}>
               <Row
+                attachmentUrl={attachmentUrl}
                 isStreaming={isRunning && row === lastRow && row.kind === 'assistant'}
                 isTail={isRunning && row === lastRow}
                 row={row}
@@ -205,10 +210,12 @@ export function ChatPanel({
 }
 
 function Row({
+  attachmentUrl,
   isStreaming,
   isTail,
   row,
 }: {
+  readonly attachmentUrl: ((attachmentId: string) => string) | undefined;
   readonly isStreaming: boolean;
   /** The last row of a live run: a work group there opens to show what is happening. */
   readonly isTail: boolean;
@@ -225,7 +232,10 @@ function Row({
 
     case 'user': {
       return (
-        <div className="flex justify-end">
+        <div className="flex flex-col items-end gap-1.5">
+          {attachmentUrl === undefined ? null : (
+            <MessageAttachments attachments={row.attachments} contentUrl={attachmentUrl} />
+          )}
           <p className="bg-raised border-line-subtle text-body-sm text-foreground max-w-[85%] rounded-2xl rounded-br-md border px-[13px] py-2.5 whitespace-pre-wrap">
             {row.text}
           </p>

@@ -239,6 +239,58 @@ describe('AnthropicProvider', () => {
     expect(result.stop).toBe('tool_use');
   });
 
+  it('SC-5: sends attachments as image, document and text blocks before the words; none keeps a string', async () => {
+    fake.script({ reply: { text: 'ok', usage: USAGE, stopReason: 'end_turn' } });
+    const png = Buffer.from('png-bytes');
+    const pdf = Buffer.from('%PDF-1.7');
+
+    await complete({
+      ...REQUEST,
+      messages: [
+        {
+          role: 'user',
+          content: 'use these',
+          attachments: [
+            {
+              kind: 'image',
+              mimeType: 'image/png',
+              name: 'logo.png',
+              data: png,
+              workspacePath: '.git/kido-attachments/a1/logo.png',
+            },
+            { kind: 'pdf', mimeType: 'application/pdf', name: 'spec.pdf', data: pdf },
+            { kind: 'text', mimeType: 'text/csv', name: 'data.csv', text: 'a,b' },
+          ],
+        },
+        { role: 'user', content: 'plain' },
+      ],
+    }).turn;
+
+    expect(lastBody().messages).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'image',
+            source: { type: 'base64', media_type: 'image/png', data: png.toString('base64') },
+          },
+          {
+            type: 'text',
+            text: '<attachment name="logo.png" kind="image" path=".git/kido-attachments/a1/logo.png" />',
+          },
+          {
+            type: 'document',
+            source: { type: 'base64', media_type: 'application/pdf', data: pdf.toString('base64') },
+          },
+          { type: 'text', text: '<attachment name="spec.pdf" kind="pdf" />' },
+          { type: 'text', text: '<attachment name="data.csv" kind="text">\na,b\n</attachment>' },
+          { type: 'text', text: 'use these' },
+        ],
+      },
+      { role: 'user', content: 'plain' },
+    ]);
+  });
+
   it('sends system and map as two system blocks, both with cache_control', async () => {
     fake.script({ reply: { text: 'ok', usage: USAGE, stopReason: 'end_turn' } });
 

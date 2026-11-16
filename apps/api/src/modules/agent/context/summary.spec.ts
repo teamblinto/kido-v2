@@ -2,7 +2,7 @@ import type { RunMessage } from '@repo/db';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ScriptedProvider } from '../../../../test/support/scripted-provider';
-import type { CredentialContext } from '../llm-provider.port';
+import type { CredentialContext, PromptAttachment } from '../llm-provider.port';
 import { SUMMARY_PROMPT, toMessages } from '../prompt';
 import { summarise, type SummaryScope, type SummaryState } from './summary';
 
@@ -97,6 +97,27 @@ describe('summarise', () => {
     expect(sent).toContain('decision 4');
     expect(sent).toContain('f4.ts');
     expect(sent).not.toContain('decision 5');
+  });
+
+  it('spec 048: names aged attachments in the summary input and keeps them on the tail', async () => {
+    const provider = new ScriptedProvider().script({ text: 's' });
+    const rows = conversation(10);
+    const logo: PromptAttachment = {
+      data: Buffer.from('png'),
+      kind: 'image',
+      mimeType: 'image/png',
+      name: 'logo.png',
+    };
+    const attachments = new Map([['u0', [logo]]]);
+
+    const kept = await summarise(scope(provider, { attachments }), conversation(2), EMPTY);
+    const aged = await summarise(scope(provider, { attachments }), rows, EMPTY);
+
+    expect(kept.messages[0]).toEqual({ attachments: [logo], content: 'fix the bug', role: 'user' });
+    const sent = JSON.stringify(provider.calls[0]?.request.messages);
+    expect(sent).toContain('fix the bug\\n[attached: logo.png (image)]');
+    expect(sent).not.toContain(Buffer.from('png').toString('base64'));
+    expect(aged.update).toBeDefined();
   });
 
   it('a dispatch-boundary resume keeps the pending call inside the tail', async () => {

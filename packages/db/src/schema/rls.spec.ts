@@ -302,6 +302,7 @@ describe.skipIf(!databaseReachable)('row-level security', () => {
   it('finds the tenant-owned tables the schema is supposed to have added', () => {
     expect(tenantOwnedTables).toEqual([
       'agent_runs',
+      'attachments',
       'audit_log',
       'checkpoints',
       'connections',
@@ -323,6 +324,7 @@ describe.skipIf(!databaseReachable)('row-level security', () => {
       'provider_keys',
       'repo_links',
       'run_events',
+      'run_message_attachments',
       'run_messages',
       'sandboxes',
       'secrets',

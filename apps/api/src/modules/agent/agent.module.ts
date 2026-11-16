@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 import { CLOCK, type ClockPort } from '../../common/clock/clock.port';
+import { objectStoreFor } from '../../common/object-store/r2-object-store';
 import type { Environment } from '../../config/environment';
 import { TenantContext } from '../../database/tenant-context';
 
@@ -26,6 +27,10 @@ import {
 } from './agent.constants';
 import { AgentExecutor } from './agent-executor';
 import { AgentRunConsumer } from './agent-run.consumer';
+import { ATTACHMENT_READER, type AttachmentReaderPort } from './attachments/attachment-reader.port';
+import { ATTACHMENT_STORE, AttachmentService } from './attachments/attachment.service';
+import { AttachmentSweeper } from './attachments/attachment-sweeper';
+import { AttachmentsController } from './controllers/attachments.controller';
 import { AnthropicProvider } from './anthropic.adapter';
 import { LLM_PROVIDERS } from '@repo/contracts';
 import { ByosMailConsumer } from './byos/byos-mail.consumer';
@@ -137,6 +142,7 @@ function proxyFetch(
  */
 @Module({
   controllers: [
+    AttachmentsController,
     LinkedAccountController,
     ModelsController,
     ProviderKeyController,
@@ -146,7 +152,8 @@ function proxyFetch(
   // Spec 040: the local agent module registers its executor here and reads a run through the
   // service, so the edge is `local-agent → agent` only.
   // Spec 041: `SandboxTools` is how a local run on the sandbox tool bridge reaches the sandbox.
-  exports: [RunExecutorRegistry, RunService, SandboxTools],
+  // Spec 048: `ATTACHMENT_READER` for the local agent's executor.
+  exports: [ATTACHMENT_READER, RunExecutorRegistry, RunService, SandboxTools],
   imports: [
     CheckpointsModule,
     IdentityModule,
@@ -157,6 +164,14 @@ function proxyFetch(
   ],
   providers: [
     { provide: AGENT_TIMINGS, useValue: DEFAULT_AGENT_TIMINGS },
+    // Spec 048: its own token, so it never meets another module's `OBJECT_STORE`.
+    {
+      inject: [ConfigService],
+      provide: ATTACHMENT_STORE,
+      useFactory: (config: ConfigService<Environment, true>) =>
+        objectStoreFor(config, 'attachments'),
+    },
+    { provide: ATTACHMENT_READER, useExisting: AttachmentService },
     {
       provide: ANTHROPIC_TRANSPORT,
       inject: [ConfigService],
@@ -220,6 +235,8 @@ function proxyFetch(
         SANDBOX_TIMINGS,
         CLOCK,
         { optional: true, token: AGENT_ALLOWED_TOOLS },
+        // Spec 048: a local run on the sandbox bridge stages its files as a cloud run does.
+        { optional: true, token: ATTACHMENT_READER },
       ],
       useFactory: (
         port: SandboxPort,
@@ -229,9 +246,11 @@ function proxyFetch(
         sandboxTimings: SandboxTimings,
         clock: ClockPort,
         allowed: ReadonlySet<ToolName> | undefined,
+        attachments: AttachmentReaderPort | undefined,
       ) =>
         new SandboxTools({
           allowed: allowed ?? ALL_TOOLS,
+          attachments,
           checkpoints,
           clock,
           lifecycle,
@@ -243,6 +262,8 @@ function proxyFetch(
     AgentExecutor,
     AgentRunConsumer,
     AnthropicProvider,
+    AttachmentService,
+    AttachmentSweeper,
     ByosMailConsumer,
     ByosProviders,
     ByosTokenService,

@@ -17,6 +17,7 @@ import {
   LLM_PROVIDER,
   type LlmClient,
   type LlmProvider,
+  type PromptAttachment,
 } from '../llm-provider.port';
 import { SYSTEM_PROMPT } from '../prompt';
 import type { ExecutionContext } from '../run-executor.port';
@@ -38,6 +39,8 @@ export interface AttemptScope {
   readonly dispatch: ExecutionContext['dispatch'];
   /** Read inside `dispatch` only: `TenantContext.tx` throws outside a tenant scope. */
   readonly tenantTx: () => TenantContext['tx'];
+  /** Spec 048: the attempt's resolved files by message id; the summary's rebuild carries them. */
+  readonly attachments?: ReadonlyMap<string, readonly PromptAttachment[]>;
 }
 
 /** Per attempt: the map and the tree state it was built from (R2), and the running summary (R4). */
@@ -179,6 +182,7 @@ export class ContextAssembler {
       // The model call sits outside any dispatch: no tenant transaction is held for up to summaryMs.
       const result = await summarise(
         {
+          attachments: scope.attachments,
           credential: scope.credential,
           emit: scope.emit,
           provider: this.provider,

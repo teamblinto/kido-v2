@@ -13,6 +13,8 @@ import { configureApplication } from '../src/bootstrap';
 import { APP_DATABASE } from '../src/database/database.constants';
 import type { ForgeDatabase } from '../src/database/database.types';
 import { TenantTransactionRunner } from '../src/database/tenant-transaction';
+import { MemoryObjectStore } from '../src/common/object-store/memory-object-store';
+import { ATTACHMENT_STORE } from '../src/modules/agent/attachments/attachment.service';
 import { RunService } from '../src/modules/agent/run.service';
 import { RunStore } from '../src/modules/agent/run-store';
 import type { Environment } from '../src/config/environment';
@@ -85,6 +87,8 @@ const redis = inject('redisReachable');
  * something new is *covered*, and the exceptions have to be argued for in this file.
  */
 const TENANT_PARAMETERS: Readonly<Record<string, (target: Tenant, world: SweepWorld) => string>> = {
+  /** `…/attachments/:attachmentId` (spec 048): a pending file in beta's project, row and bytes. */
+  attachmentId: (_target, world) => world.betaAttachmentId,
   /** `…/checkpoints/:checkpointId` (spec 016): a checkpoint in beta's project, inserted as a row. */
   checkpointId: (_target, world) => world.betaCheckpointId,
   /** `…/connectors/:connectionId` (spec 018): beta's GitHub connection, inserted as a row. */
@@ -326,6 +330,7 @@ const QUERIES: Readonly<Record<string, Readonly<Record<string, string>>>> = {
 
 /** The world plus the two identifiers that only exist once the fixture has signed everybody in. */
 interface SweepWorld extends TwoTenantWorld {
+  readonly betaAttachmentId: string;
   readonly betaCheckpointId: string;
   readonly betaConnectionId: string;
   readonly betaDeliveryId: string;
@@ -366,6 +371,7 @@ describe('Tenant isolation (e2e) — the §17 gate', () => {
     let byAlpha: Probe[];
     let byOutsider: Probe[];
     let byBeta: Probe[];
+    const attachmentStore = new MemoryObjectStore();
 
     /** Beta's tenant-owned rows, bracketed around every probe the suite makes. */
     let before: Record<string, string>;
@@ -378,7 +384,11 @@ describe('Tenant isolation (e2e) — the §17 gate', () => {
       // the outbox and asserts on what happens to its rows.
       suiteLock = await holdOutboxSuiteLock(process.env.DATABASE_URL ?? '');
 
-      const moduleRef = await Test.createTestingModule({ imports: [AppModule] }).compile();
+      // Spec 048: beta's attachment needs bytes for its own download to succeed (the control).
+      const moduleRef = await Test.createTestingModule({ imports: [AppModule] })
+        .overrideProvider(ATTACHMENT_STORE)
+        .useValue(attachmentStore)
+        .compile();
 
       app = moduleRef.createNestApplication();
       configureApplication(app);
@@ -567,8 +577,31 @@ describe('Tenant isolation (e2e) — the §17 gate', () => {
           .returning({ id: schema.mcpGrants.id }),
       );
 
+      // One pending attachment of beta's (048), so `…/attachments/:attachmentId` aims at a row and an
+      // object beta owns.
+      const attachmentKey = `attachments/${seeded.beta.orgId}/${seeded.beta.projectId}/probe`;
+      const [attachment] = await transactions.runInTenantTransaction(seeded.beta.orgId, (tx) =>
+        tx
+          .insert(schema.attachments)
+          .values({
+            extractedText: 'beta attachment',
+            kind: 'text',
+            mimeType: 'text/plain',
+            name: 'beta.txt',
+            objectKey: attachmentKey,
+            orgId: seeded.beta.orgId,
+            projectId: seeded.beta.projectId,
+            sha256: '0'.repeat(64),
+            sizeBytes: 15,
+            uploadedBy: seeded.beta.owner.userId,
+          })
+          .returning({ id: schema.attachments.id }),
+      );
+      await attachmentStore.put(attachmentKey, Buffer.from('beta attachment'), {});
+
       world = {
         ...seeded,
+        betaAttachmentId: attachment!.id,
         betaInvitationId: invitation!.id,
         betaMcpGrantId: mcpGrant!.id,
         betaDeliveryId: delivery!.id,

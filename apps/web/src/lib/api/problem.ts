@@ -96,6 +96,10 @@ export async function readProblem(response: Response): Promise<ProblemDetail | u
  * `unauthorized`; everywhere else that slug means the session ended.
  */
 const MESSAGES: Readonly<Record<ProblemTypeSlug, string>> = {
+  'attachment-not-found': 'That attachment is no longer available — attach it again.',
+  'attachment-rejected':
+    "This file type isn't supported, or its contents don't match its extension.",
+  'attachment-too-large': 'This file is too large.',
   'bad-gateway': 'The service is temporarily unavailable. Please try again shortly.',
   'bad-request': 'That request could not be understood. Please check what you entered.',
   conflict: 'That conflicts with something that already exists.',

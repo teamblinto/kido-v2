@@ -14,6 +14,11 @@ export const PROBLEM_TYPE_BASE_URI = 'https://forge.dev/problems/';
  * `apps/api/src/common/errors/problem-types.ts`, which is checked against this list at compile time.
  */
 export const PROBLEM_TYPE_SLUGS = [
+  // Spec 048: an attachment id on a run that is not this project's (or is gone), a file whose type
+  // is not allowed or whose bytes disagree with its extension, and a file past its kind's cap.
+  'attachment-not-found',
+  'attachment-rejected',
+  'attachment-too-large',
   'bad-gateway',
   'bad-request',
   'conflict',

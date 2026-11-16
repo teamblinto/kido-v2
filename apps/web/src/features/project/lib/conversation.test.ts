@@ -17,7 +17,7 @@ function message(
   content: string,
   runId = RUN,
 ): RunMessage {
-  return { at: at(second), content, id, role, runId };
+  return { at: at(second), attachments: [], content, id, role, runId };
 }
 
 function item(id: string, second: number, type: 'token' | 'usage' = 'usage'): TranscriptItem {

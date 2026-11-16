@@ -10,7 +10,9 @@ import type {
   LlmClient,
   LlmProvider,
   ModelTurn,
+  PromptAttachment,
 } from './llm-provider.port';
+import { renderAttachment } from './prompt';
 import { classify, ProviderError } from './provider-error';
 import { toInputSchema } from './tool-schema';
 
@@ -173,7 +175,21 @@ export function durationMs(value: string): number | undefined {
 function toInputItems(message: ConversationMessage): OpenAI.Responses.ResponseInputItem[] {
   switch (message.role) {
     case 'user':
-      return [{ role: 'user', content: message.content }];
+      // A message without files stays a plain string, so its request bytes (and cache) are as before.
+      if (message.attachments === undefined || message.attachments.length === 0) {
+        return [{ role: 'user', content: message.content }];
+      }
+      return [
+        {
+          role: 'user',
+          content: [
+            ...message.attachments.flatMap(toAttachmentParts),
+            ...(message.content !== ''
+              ? [{ type: 'input_text', text: message.content } as const]
+              : []),
+          ],
+        },
+      ];
     case 'assistant':
       return [
         ...(message.text !== undefined
@@ -195,6 +211,27 @@ function toInputItems(message: ConversationMessage): OpenAI.Responses.ResponseIn
         }),
       );
   }
+}
+
+/**
+ * Spec 048: an image (`input_image`) or PDF (`input_file`) with bytes goes as a data URL, then
+ * (every kind) its text form — for an image or PDF the tag naming its workspace path, for the
+ * rest the extracted text. Uploading through the Files API first was rejected: a stored file per
+ * request to clean up, and the run's key may not be allowed to write files.
+ */
+function toAttachmentParts(attachment: PromptAttachment): OpenAI.Responses.ResponseInputContent[] {
+  const text: OpenAI.Responses.ResponseInputText = {
+    type: 'input_text',
+    text: renderAttachment(attachment),
+  };
+  const { data, kind, mimeType, name } = attachment;
+  if (data === undefined) return [text];
+  const dataUrl = `data:${mimeType};base64,${data.toString('base64')}`;
+  if (kind === 'image') {
+    return [{ type: 'input_image', detail: 'auto', image_url: dataUrl }, text];
+  }
+  if (kind === 'pdf') return [{ type: 'input_file', filename: name, file_data: dataUrl }, text];
+  return [text];
 }
 
 function toTurn(response: OpenAI.Responses.Response): ModelTurn {

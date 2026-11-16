@@ -34,6 +34,20 @@ export interface ProblemType {
 }
 
 export const PROBLEM_TYPES = Object.freeze({
+  // Spec 048. Refinements, each of the status a client without them would still act on: an id
+  // that is not this project's attachment is a 404 (never which org owns it), a file whose type
+  // is not allowed or whose bytes disagree is a 415, and a file past its kind's cap is a 413.
+  'attachment-not-found': { refines: 'not-found', status: 404, title: 'Attachment Not Found' },
+  'attachment-rejected': {
+    refines: 'unsupported-media-type',
+    status: 415,
+    title: 'Attachment Rejected',
+  },
+  'attachment-too-large': {
+    refines: 'payload-too-large',
+    status: 413,
+    title: 'Attachment Too Large',
+  },
   'bad-gateway': { status: 502, title: 'Bad Gateway' },
   'bad-request': { status: 400, title: 'Bad Request' },
   conflict: { status: 409, title: 'Conflict' },

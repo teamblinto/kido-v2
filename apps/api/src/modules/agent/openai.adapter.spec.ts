@@ -321,6 +321,63 @@ describe('OpenAiProvider', () => {
     });
   });
 
+  it('SC-5: sends attachments as input_image, input_file and input_text before the words; none keeps a string', async () => {
+    fake.sse([terminal('response.completed', [])]);
+    const png = Buffer.from('png-bytes');
+    const pdf = Buffer.from('%PDF-1.7');
+
+    await complete({
+      ...REQUEST,
+      messages: [
+        {
+          role: 'user',
+          content: 'use these',
+          attachments: [
+            {
+              kind: 'image',
+              mimeType: 'image/png',
+              name: 'logo.png',
+              data: png,
+              workspacePath: '.git/kido-attachments/a1/logo.png',
+            },
+            { kind: 'pdf', mimeType: 'application/pdf', name: 'spec.pdf', data: pdf },
+            { kind: 'text', mimeType: 'text/csv', name: 'data.csv', text: 'a,b' },
+          ],
+        },
+        { role: 'user', content: 'plain' },
+      ],
+    }).turn;
+
+    expect(lastBody().input).toEqual([
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'input_image',
+            detail: 'auto',
+            image_url: `data:image/png;base64,${png.toString('base64')}`,
+          },
+          {
+            type: 'input_text',
+            text: '<attachment name="logo.png" kind="image" path=".git/kido-attachments/a1/logo.png" />',
+          },
+          {
+            type: 'input_file',
+            filename: 'spec.pdf',
+            file_data: `data:application/pdf;base64,${pdf.toString('base64')}`,
+          },
+          { type: 'input_text', text: '<attachment name="spec.pdf" kind="pdf" />' },
+          {
+            type: 'input_text',
+            text: '<attachment name="data.csv" kind="text">\na,b\n</attachment>',
+          },
+          { type: 'input_text', text: 'use these' },
+        ],
+      },
+      { role: 'user', content: 'plain' },
+    ]);
+  });
+
   it('omits the assistant message item when the turn had no text', async () => {
     fake.sse([terminal('response.completed', [])]);
 

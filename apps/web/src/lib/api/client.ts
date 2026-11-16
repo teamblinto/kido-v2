@@ -64,6 +64,18 @@ function readCookie(name: string): string | undefined {
   return undefined;
 }
 
+/** The absolute address of an API path (`/orgs/…`), under the versioned prefix. */
+export function apiUrl(path: string): string {
+  return joinUrl(env.VITE_API_URL, `${API_PREFIX}${path}`);
+}
+
+/** The double-submit header an unsafe request carries, for callers outside `apiRequest` (an XHR upload). */
+export function csrfHeader(): Readonly<Record<string, string>> {
+  const token = readCookie(env.VITE_CSRF_COOKIE_NAME);
+
+  return token === undefined ? {} : { [CSRF_HEADER]: token };
+}
+
 function buildHeaders(method: HttpMethod, options: RequestOptions<unknown>): Headers {
   const headers = new Headers({ Accept: 'application/json' });
 
@@ -76,10 +88,8 @@ function buildHeaders(method: HttpMethod, options: RequestOptions<unknown>): Hea
   }
 
   if (!SAFE_METHODS.has(method)) {
-    const token = readCookie(env.VITE_CSRF_COOKIE_NAME);
-
-    if (token !== undefined) {
-      headers.set(CSRF_HEADER, token);
+    for (const [name, value] of Object.entries(csrfHeader())) {
+      headers.set(name, value);
     }
   }
 
@@ -92,7 +102,7 @@ async function send(
   options: RequestOptions<unknown>,
 ): Promise<Response> {
   try {
-    return await fetch(joinUrl(env.VITE_API_URL, `${API_PREFIX}${path}`), {
+    return await fetch(apiUrl(path), {
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
       // The session travels as `__Host-forge_session` and the app never sees it. Same-origin in
       // development through the Vite proxy and in production through the edge, so this matters only

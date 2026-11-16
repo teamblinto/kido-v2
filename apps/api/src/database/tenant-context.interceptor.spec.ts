@@ -10,7 +10,7 @@ import { afterAll, beforeAll, describe, expect, inject, it, vi } from 'vitest';
 import { openPool } from '../../test/support/integration-database';
 import type { ForgeDatabase, TenantScope, TenantScopeResolver } from './database.types';
 import { TenantContext } from './tenant-context';
-import { TenantContextInterceptor } from './tenant-context.interceptor';
+import { OwnsTenantTransaction, TenantContextInterceptor } from './tenant-context.interceptor';
 import { TenantTransactionRunner } from './tenant-transaction';
 
 const APP_URL = process.env.DATABASE_URL ?? '';
@@ -20,8 +20,17 @@ const reachable = inject('postgresReachable');
 /** One backend for every request in the file — see `tenant-transaction.spec.ts` for why. */
 const appPool = reachable ? openPool(APP_URL, 1) : undefined;
 
-/** The interceptor only forwards this to the resolver, so a marker object is the honest stand-in. */
-const executionContext = { marker: 'execution-context' } as unknown as ExecutionContext;
+/**
+ * The interceptor forwards this to the resolver and reads the handler's metadata, so a marker with
+ * a bare handler is the honest stand-in.
+ */
+const executionContext = {
+  getHandler: () =>
+    function handler(): undefined {
+      return undefined;
+    },
+  marker: 'execution-context',
+} as unknown as ExecutionContext;
 
 function resolverReturning(scope: TenantScope | null): TenantScopeResolver {
   return { resolve: vi.fn().mockReturnValue(scope) };
@@ -77,6 +86,34 @@ describe.skipIf(!reachable)('TenantContextInterceptor', () => {
 
     await db.delete(orgs).where(inArray(orgs.id, [orgA, orgB]));
     await appPool!.end();
+  });
+
+  /** Spec 048: the upload reads its body before it opens a transaction of its own. */
+  it('runs a handler that owns its transaction outside any tenant transaction', async () => {
+    class Routes {
+      @OwnsTenantTransaction()
+      upload(): undefined {
+        return undefined;
+      }
+    }
+    const owning = {
+      ...executionContext,
+      getHandler: () =>
+        Object.getOwnPropertyDescriptor(Routes.prototype, 'upload')!.value as () => void,
+    } as unknown as ExecutionContext;
+    const interceptor = new TenantContextInterceptor(
+      runner,
+      resolverReturning({ orgId: orgA, userId: null }),
+    );
+
+    const seen = await firstValueFrom(
+      interceptor.intercept(
+        owning,
+        handlerRunning(() => Promise.resolve(context.get())),
+      ),
+    );
+
+    expect(seen).toBeUndefined();
   });
 
   it('opens a tenant transaction and makes the org, user and handle readable in the handler', async () => {

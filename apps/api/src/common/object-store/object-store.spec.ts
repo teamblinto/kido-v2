@@ -8,6 +8,7 @@ import { ConfigService } from '@nestjs/config';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { Environment } from '../../config/environment';
+import { FsObjectStore } from './fs-object-store';
 import {
   type ObjectStorePort,
   ObjectStoreUnconfigured,
@@ -125,7 +126,7 @@ describe('objectStoreFor', () => {
     );
   });
 
-  it('reads the bucket the caller names: repos or artifacts', () => {
+  it('reads the bucket the caller names: repos, artifacts, or attachments in artifacts', () => {
     const configured = new ConfigService<Environment, true>({
       ...CREDENTIALS,
       OBJECT_STORE_BUCKET_ARTIFACTS: 'forge-artifacts',
@@ -134,6 +135,15 @@ describe('objectStoreFor', () => {
 
     expect(bucketOf(objectStoreFor(configured, 'repos'))).toBe('forge-repos');
     expect(bucketOf(objectStoreFor(configured, 'artifacts'))).toBe('forge-artifacts');
+    expect(bucketOf(objectStoreFor(configured, 'attachments'))).toBe('forge-artifacts');
+  });
+
+  it('falls back to the directory for repos and attachments, never for artifacts', () => {
+    const local = new ConfigService<Environment, true>({ OBJECT_STORE_DIR: '/var/forge' });
+
+    expect(objectStoreFor(local, 'repos')).toBeInstanceOf(FsObjectStore);
+    expect(objectStoreFor(local, 'attachments')).toBeInstanceOf(FsObjectStore);
+    expect(objectStoreFor(local, 'artifacts')).toBeInstanceOf(UnconfiguredObjectStore);
   });
 
   it('binds the stand-in when the named bucket alone is missing', () => {

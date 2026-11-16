@@ -154,6 +154,8 @@ describe('RunList · the run line (031)', () => {
               modelState={modelState}
               onStop={vi.fn()}
               onSubmit={(prompt) => start.mutateAsync(prompt)}
+              orgId={ORG}
+              projectId={PROJECT}
               placeholder="Ask for a change to this project"
             />
           }

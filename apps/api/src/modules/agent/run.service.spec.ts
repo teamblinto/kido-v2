@@ -11,6 +11,8 @@ import type { TenantTransaction } from '../../database/database.types';
 import type { TenantContext } from '../../database/tenant-context';
 import type { AuditService } from '../audit/audit.service';
 import type { CheckpointService } from '../checkpoints/checkpoint.service';
+import { AttachmentNotFoundError } from './attachments/attachment.errors';
+import { AttachmentService } from './attachments/attachment.service';
 import type { OutboxWriter } from '../outbox/outbox-writer';
 import type { ProjectService } from '../tenancy/services/project.service';
 import type { CredentialResolver, ResolutionKind } from './byok/credential-resolver';
@@ -29,7 +31,12 @@ const RUN = 'c1000000-0000-4000-8000-000000000004';
 
 // Spec 047's naming check is the one direct read: no provisional name, so no naming request.
 const tx = {
-  select: () => ({ from: () => ({ where: () => Promise.resolve([]) }) }),
+  // `for`: the attachment link's share-locked read.
+  select: () => ({
+    from: () => ({
+      where: () => Object.assign(Promise.resolve([]), { for: () => Promise.resolve([]) }),
+    }),
+  }),
   tag: 'tx',
 } as unknown as TenantTransaction;
 
@@ -100,8 +107,13 @@ describe('RunService', () => {
   let clock: FakeClock;
   let checkpoints: { lockProject: ReturnType<typeof vi.fn> };
   let registry: RunExecutorRegistry;
+  let attachments: { link: ReturnType<typeof vi.fn>; listForMessages: ReturnType<typeof vi.fn> };
 
   beforeEach(() => {
+    attachments = {
+      link: vi.fn(() => Promise.resolve()),
+      listForMessages: vi.fn(() => Promise.resolve(new Map())),
+    };
     clock = new FakeClock(START);
     store = {
       allocateSeq: vi.fn(() => Promise.resolve(1)),
@@ -168,6 +180,7 @@ describe('RunService', () => {
       resolver as unknown as CredentialResolver,
       checkpoints as unknown as CheckpointService,
       registry,
+      attachments as unknown as AttachmentService,
     );
   });
 
@@ -225,6 +238,36 @@ describe('RunService', () => {
         status: 'queued',
         userId: USER,
       });
+    });
+
+    /** Spec 048 SC-4: RLS hides another org's row, so its id finds nothing and the run is refused. */
+    it('refuses another org’s attachment id as attachment-not-found, dispatching nothing', async () => {
+      const real = new AttachmentService(
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        {} as never,
+        clock,
+      );
+      attachments.link.mockImplementation((...args: Parameters<AttachmentService['link']>) =>
+        real.link(...args),
+      );
+      const foreign = 'd2000000-0000-4000-8000-000000000001';
+
+      await expect(
+        service.create(ORG, PROJECT, USER, 'use this', undefined, undefined, undefined, [foreign]),
+      ).rejects.toBeInstanceOf(AttachmentNotFoundError);
+      expect(attachments.link).toHaveBeenCalledWith(tx, ORG, PROJECT, 'm1', [foreign]);
+      expect(outbox.append).not.toHaveBeenCalled();
+    });
+
+    it('links the prompt’s attachments to its message in the run’s transaction', async () => {
+      const ids = ['d2000000-0000-4000-8000-000000000002'];
+
+      await service.create(ORG, PROJECT, USER, 'use this', undefined, undefined, undefined, ids);
+
+      expect(attachments.link).toHaveBeenCalledWith(tx, ORG, PROJECT, 'm1', ids);
     });
 
     /** Spec 009 research R1: seq 1 reaches the stream once it is committed, never before. */
@@ -850,6 +893,7 @@ describe('RunService', () => {
           resolver as unknown as CredentialResolver,
           checkpoints as unknown as CheckpointService,
           registry,
+          attachments as unknown as AttachmentService,
         );
       }
 

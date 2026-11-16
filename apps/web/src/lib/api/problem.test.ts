@@ -36,6 +36,9 @@ describe('messageFor', () => {
     // `MESSAGES` is meant to stay untouched by a feature. A slug added to the contract lands
     // here first, so whoever adds one writes its sentence deliberately rather than by accident.
     expect([...PROBLEM_TYPE_SLUGS].sort()).toEqual([
+      'attachment-not-found',
+      'attachment-rejected',
+      'attachment-too-large',
       'bad-gateway',
       'bad-request',
       'conflict',

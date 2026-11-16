@@ -428,6 +428,20 @@
       "when": 1794801514031,
       "tag": "0060_smart_import",
       "breakpoints": true
+    },
+    {
+      "idx": 61,
+      "version": "7",
+      "when": 1794814440718,
+      "tag": "0061_chat_attachments",
+      "breakpoints": true
+    },
+    {
+      "idx": 62,
+      "version": "7",
+      "when": 1794814441865,
+      "tag": "0062_chat_attachments_are_tenant_owned",
+      "breakpoints": true
     }
   ]
 }

@@ -48,6 +48,25 @@ export {
   type RunStateReason,
 } from './agent/run';
 export {
+  ATTACHMENT_KINDS,
+  ATTACHMENT_TYPES,
+  type Attachment,
+  type AttachmentKind,
+  MAX_ATTACHMENT_BYTES,
+  MAX_ATTACHMENTS_PER_MESSAGE,
+  MAX_EXTRACTED_TEXT_CHARS,
+  MAX_IMAGE_ATTACHMENT_BYTES,
+  type UploadAttachmentQuery,
+  attachmentExtension,
+  attachmentIdsSchema,
+  attachmentKindSchema,
+  attachmentNameSchema,
+  attachmentSchema,
+  attachmentTypeFor,
+  maxBytesFor,
+  uploadAttachmentQuerySchema,
+} from './agent/attachment';
+export {
   RUN_LINE_LIMIT,
   type RunLineConflictReason,
   type RunLineEntry,

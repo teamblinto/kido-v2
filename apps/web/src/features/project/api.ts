@@ -620,3 +620,36 @@ export function runStreamUrl(orgId: string, projectId: string, runId: string): s
     `/api/v1${runsPath(orgId, projectId)}/${encodeURIComponent(runId)}/stream`,
   );
 }
+
+/** `…/projects/:projectId/attachments[/:attachmentId]` (spec 048). */
+function attachmentPath(orgId: string, projectId: string, attachmentId?: string): string {
+  const base = `${projectPath(orgId, projectId)}/attachments`;
+
+  return attachmentId === undefined ? base : `${base}/${encodeURIComponent(attachmentId)}`;
+}
+
+/** The upload address for a file called `name`; the file itself is the body (`attachment-upload.ts`). */
+export function attachmentUploadPath(orgId: string, projectId: string, name: string): string {
+  return `${attachmentPath(orgId, projectId)}${search({ name })}`;
+}
+
+/** Where an attachment's bytes are read: an `<img src>` or a download link, by session cookie. */
+export function attachmentContentUrl(
+  orgId: string,
+  projectId: string,
+  attachmentId: string,
+): string {
+  return joinUrl(
+    env.VITE_API_URL,
+    `/api/v1${attachmentPath(orgId, projectId, attachmentId)}/content`,
+  );
+}
+
+/** Drop an attachment that was uploaded and never sent. `204`; refused once a message links it. */
+export async function deleteAttachment(
+  orgId: string,
+  projectId: string,
+  attachmentId: string,
+): Promise<void> {
+  return apiRequest('DELETE', attachmentPath(orgId, projectId, attachmentId));
+}

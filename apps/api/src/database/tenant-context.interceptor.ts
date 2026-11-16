@@ -1,9 +1,10 @@
 import type { CallHandler, ExecutionContext, NestInterceptor } from '@nestjs/common';
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, SetMetadata } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import type { Observable } from 'rxjs';
 import { firstValueFrom, from } from 'rxjs';
 
-import { TENANT_SCOPE_RESOLVER } from './database.constants';
+import { OWNS_TENANT_TRANSACTION, TENANT_SCOPE_RESOLVER } from './database.constants';
 import type { TenantScope, TenantScopeResolver } from './database.types';
 import { TenantTransactionRunner } from './tenant-transaction';
 
@@ -21,6 +22,10 @@ export class NoTenantScopeResolver implements TenantScopeResolver {
     return Promise.resolve(null);
   }
 }
+
+/** See `OWNS_TENANT_TRANSACTION`: this handler opens its own tenant transaction. */
+export const OwnsTenantTransaction = (): MethodDecorator =>
+  SetMetadata(OWNS_TENANT_TRANSACTION, true);
 
 /**
  * One request, one tenant transaction.
@@ -40,6 +45,7 @@ export class TenantContextInterceptor implements NestInterceptor {
   constructor(
     @Inject(TenantTransactionRunner) private readonly transactions: TenantTransactionRunner,
     @Inject(TENANT_SCOPE_RESOLVER) private readonly resolver: TenantScopeResolver,
+    @Inject(Reflector) private readonly reflector: Reflector = new Reflector(),
   ) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
@@ -49,7 +55,10 @@ export class TenantContextInterceptor implements NestInterceptor {
   private async handle(context: ExecutionContext, next: CallHandler): Promise<unknown> {
     const scope = await this.resolver.resolve(context);
 
-    if (scope === null) {
+    if (
+      scope === null ||
+      this.reflector.get(OWNS_TENANT_TRANSACTION, context.getHandler()) === true
+    ) {
       return firstValueFrom(next.handle());
     }
 

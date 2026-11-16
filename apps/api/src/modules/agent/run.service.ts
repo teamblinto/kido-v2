@@ -31,6 +31,7 @@ import { CheckpointService } from '../checkpoints/checkpoint.service';
 import { OutboxWriter } from '../outbox/outbox-writer';
 import { ProjectService } from '../tenancy/services/project.service';
 import { RUN_LINE_LIMIT } from './agent.constants';
+import { AttachmentService } from './attachments/attachment.service';
 import { keyRefusal } from './byok/byok.errors';
 import { subscriptionRefusal } from './byos/byos.errors';
 import { CredentialResolver, type ResolutionKind } from './byok/credential-resolver';
@@ -65,6 +66,8 @@ export class RunService {
     // 041: admits a `subscription` target (empty when they are off). Required: whether a run
     // is local decides who may answer it, so it must never be skipped for want of the registry.
     @Inject(RunExecutorRegistry) private readonly executors: RunExecutorRegistry,
+    // 048: the prompt's files are linked to its message in the run's transaction.
+    @Inject(AttachmentService) private readonly attachments: AttachmentService,
   ) {
     this.model = config.get('AGENT_DEFAULT_MODEL', { infer: true });
   }
@@ -83,6 +86,7 @@ export class RunService {
     requestedModel?: string,
     credential?: 'organisation',
     subscription?: SubscriptionRunTarget,
+    attachmentIds: readonly string[] = [],
   ): Promise<RunResponse> {
     const tx = this.tenant.tx;
     // 041: a subscription run is paid for by the person's own Claude sign-in in their cloud agent
@@ -104,7 +108,7 @@ export class RunService {
     const holder = await this.store.holder(tx, orgId, projectId);
 
     if (holder?.status === 'awaiting_input') {
-      await this.input(orgId, projectId, holder.id, userId, prompt, requestedModel);
+      await this.input(orgId, projectId, holder.id, userId, prompt, requestedModel, attachmentIds);
 
       return this.read(orgId, projectId, holder.id);
     }
@@ -152,7 +156,14 @@ export class RunService {
     });
     const fence = { orgId, runId: run.id };
 
-    await this.store.insertMessage(tx, { content: prompt, orgId, role: 'user', runId: run.id });
+    const message = await this.store.insertMessage(tx, {
+      content: prompt,
+      orgId,
+      role: 'user',
+      runId: run.id,
+    });
+
+    await this.attachments.link(tx, orgId, projectId, message.id, attachmentIds);
 
     // Refuses (no agent home, not signed in) or records the target, in this transaction: a refused
     // run never committed.
@@ -297,6 +308,7 @@ export class RunService {
     actorId: string,
     message: string,
     model?: string,
+    attachmentIds: readonly string[] = [],
   ): Promise<void> {
     const executors = this.executors;
     const tx = this.tenant.tx;
@@ -346,6 +358,7 @@ export class RunService {
         runId,
       });
 
+      await this.attachments.link(inner, orgId, projectId, inserted.id, attachmentIds);
       await this.audit.record(inner, {
         action: 'agent-run.input',
         actorId,
@@ -434,9 +447,16 @@ export class RunService {
       page,
     );
 
+    // 048: one query for the page's attachments, not one per message.
+    const attached = await this.attachments.listForMessages(
+      orgId,
+      messages.map((message) => message.id),
+    );
+
     return {
       messages: messages.map(({ at, content, id, role, runId }) => ({
         at: at.toISOString(),
+        attachments: [...(attached.get(id) ?? [])],
         content,
         id,
         // The store's filter narrows this; the column's type does not know it.

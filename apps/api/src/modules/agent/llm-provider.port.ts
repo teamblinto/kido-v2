@@ -7,7 +7,7 @@
  * the provider itself holds no key and no cache (FR-016).
  */
 
-import type { LlmProvider as LlmProviderName } from '@repo/contracts';
+import type { AttachmentKind, LlmProvider as LlmProviderName } from '@repo/contracts';
 
 export { LLM_PROVIDER } from './agent.constants';
 export type { LlmProviderName };
@@ -52,9 +52,27 @@ export interface ToolDefinition {
   readonly inputSchema: Record<string, unknown>;
 }
 
+/**
+ * Spec 048: one file a user message carried, resolved for the request. `data` is set for `image`
+ * and `pdf` (sent as native blocks), `text` for the extracted kinds, `workspacePath` when the file
+ * was staged into the sandbox — each absent when that step failed, so the run goes on without it.
+ */
+export interface PromptAttachment {
+  readonly data?: Buffer;
+  readonly kind: AttachmentKind;
+  readonly mimeType: string;
+  readonly name: string;
+  readonly text?: string;
+  readonly workspacePath?: string;
+}
+
 /** R7's provider-neutral rebuild of a `run_messages` row into the shape a request sends. */
 export type ConversationMessage =
-  | { readonly role: 'user'; readonly content: string }
+  | {
+      readonly role: 'user';
+      readonly content: string;
+      readonly attachments?: readonly PromptAttachment[];
+    }
   | {
       readonly role: 'assistant';
       readonly text?: string;
