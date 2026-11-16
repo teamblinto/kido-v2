@@ -438,6 +438,9 @@ describe('Tenant isolation (e2e) — the §17 gate', () => {
 
       // Beta's GitHub connection and one queued sync operation (018), so `…/connectors/:connectionId`
       // and `…/sync/:operationId` aim at rows beta owns. `needs_reauth` keeps GitHub out of the sweep.
+      // An import, requested by beta's owner (spec 047): `…/imports/:operationId` serves only the
+      // requester's own import, and the sync read serves any kind, so one row is a real target —
+      // and a real control — for both routes that take `:operationId`.
       const connection = await transactions.runInTenantTransaction(seeded.beta.orgId, (tx) =>
         app.get(ConnectionRepository).upsert(tx, {
           accountId: 1,
@@ -452,7 +455,7 @@ describe('Tenant isolation (e2e) — the §17 gate', () => {
       );
       const operation = await transactions.runInTenantTransaction(seeded.beta.orgId, (tx) =>
         app.get(SyncRepository).insertQueued(tx, {
-          kind: 'push',
+          kind: 'import',
           orgId: seeded.beta.orgId,
           projectId: seeded.beta.projectId,
           requestedBy: seeded.beta.owner.userId,
