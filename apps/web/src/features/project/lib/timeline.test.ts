@@ -1,8 +1,8 @@
-import type { RunEvent } from '@repo/contracts';
+import type { RunEvent, RunResponse } from '@repo/contracts';
 import { describe, expect, it } from 'vitest';
 
 import { splitMarkdownBlocks } from './markdown-blocks';
-import { buildTimeline, formatDuration, workSummary } from './timeline';
+import { buildTimeline, formatDuration, liveActivity, workSummary } from './timeline';
 import { type TranscriptItem, joinTokens } from './transcript';
 
 const RUN = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
@@ -98,6 +98,94 @@ describe('the chat timeline (spec 043)', () => {
 
     expect(rows.map((row) => row.id)).toEqual(['u-1', rows[1]?.id, 'u-2', rows[3]?.id, 'u-3']);
     expect(rows.map((row) => row.kind)).toEqual(['user', 'assistant', 'user', 'work', 'user']);
+  });
+
+  it('puts an edit’s patch on the edit, and a command’s live output on the command', () => {
+    const rows = buildTimeline([
+      item({
+        data: { input: { path: 'src/a.ts', search: 'x' }, stepId: 's1', tool: 'fs_edit' },
+        seq: 1,
+        type: 'tool.start',
+      }),
+      item({
+        data: { diff: '@@ -1 +1 @@\n-x\n+y\n', path: 'src/a.ts' },
+        seq: 2,
+        type: 'file.patch',
+      }),
+      item({ data: { ok: true, stepId: 's1' }, seq: 3, type: 'tool.end' }),
+      item({
+        data: { input: { command: 'pnpm build' }, stepId: 's2', tool: 'exec' },
+        seq: 4,
+        type: 'tool.start',
+      }),
+      item({ data: { chunk: 'building…\n', stepId: 's2' }, seq: 4, type: 'tool.delta' }),
+    ]);
+    const entries = rows[0]?.kind === 'work' ? rows[0].entries : [];
+
+    expect(entries.map((entry) => entry.kind)).toEqual(['tool', 'tool']);
+    expect(entries[0]).toMatchObject({
+      patches: [{ path: 'src/a.ts' }],
+      status: 'done',
+      tool: 'edit',
+    });
+    expect(entries[1]).toMatchObject({ output: 'building…\n', status: 'running', tool: 'command' });
+  });
+
+  it('marks a command that exited non-zero as failed, whatever tool.end said', () => {
+    const rows = buildTimeline([
+      item({
+        data: { input: { command: 'pnpm test' }, stepId: 's1', tool: 'exec' },
+        seq: 1,
+        type: 'tool.start',
+      }),
+      item({
+        data: { ok: true, output: 'exit 1\n1 failing', stepId: 's1' },
+        seq: 2,
+        type: 'tool.end',
+      }),
+    ]);
+
+    expect(rows[0]?.kind === 'work' ? rows[0].entries[0] : undefined).toMatchObject({
+      exitCode: 1,
+      output: '1 failing',
+      status: 'failed',
+    });
+  });
+
+  it('joins streamed thoughts into one reasoning entry inside the work log', () => {
+    const rows = buildTimeline([
+      item({ data: { text: 'Let me ' }, seq: 0, type: 'thought' }),
+      item({ data: { text: 'check the routes.' }, seq: 0, type: 'thought' }),
+      start(1, 's1', 'fs_read'),
+    ]);
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.kind === 'work' ? rows[0].entries : []).toMatchObject([
+      { kind: 'reasoning', text: 'Let me check the routes.' },
+      { kind: 'tool', tool: 'read' },
+    ]);
+  });
+
+  it('says what a live run is doing, and nothing once it has ended', () => {
+    const run = { createdAt: AT, startedAt: AT } as RunResponse;
+    const writing = buildTimeline([token(1, 'Done.')]);
+
+    expect(liveActivity({ ...run, status: 'queued' }, [])?.label).toMatch(/Queued/);
+    expect(liveActivity({ ...run, status: 'starting' }, [], { preparing: 'resuming' })?.label).toBe(
+      'Waking your workspace',
+    );
+    expect(liveActivity({ ...run, status: 'running' }, writing)?.label).toBe('Writing');
+    // The reply has stopped arriving and the run has not said `succeeded`: the turn-end commit.
+    expect(liveActivity({ ...run, status: 'running' }, writing, { isQuiet: true })?.label).toBe(
+      'Wrapping up',
+    );
+    expect(liveActivity({ ...run, status: 'running' }, [], { isStopping: true })?.label).toMatch(
+      /Stopping/,
+    );
+    expect(liveActivity({ ...run, status: 'awaiting_input' }, writing)).toMatchObject({
+      isActive: false,
+    });
+    expect(liveActivity({ ...run, status: 'succeeded' }, writing)).toBeUndefined();
   });
 
   it('says how long a turn worked', () => {

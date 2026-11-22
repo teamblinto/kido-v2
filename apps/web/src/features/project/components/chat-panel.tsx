@@ -1,21 +1,16 @@
 import { type RunEvent, type RunResponse, SUBSCRIPTION_PROVIDERS } from '@repo/contracts';
-import {
-  ArrowDownIcon,
-  BookmarkIcon,
-  MonitorIcon,
-  RotateCcwIcon,
-  SparklesIcon,
-} from 'lucide-react';
+import { ArrowDownIcon, BookmarkIcon, BoxIcon, MonitorIcon, RotateCcwIcon } from 'lucide-react';
 import { useMemo } from 'react';
 
 import { stateReason } from '@/features/settings/subscription-limit';
 import { cn } from '@/lib/utils';
 import { useFollowBottom } from '../hooks/use-follow-bottom';
 import { isTerminal } from '../lib/run-phase';
-import { type TimelineRow, type UserTurn, buildTimeline, formatDuration } from '../lib/timeline';
+import { type TimelineRow, type UserTurn, buildTimeline } from '../lib/timeline';
 import type { Connection, TranscriptItem, TranscriptSource } from '../lib/transcript';
 import { MessageAttachments } from './attachment-parts';
 import { ChatMarkdown } from './chat-markdown';
+import { LiveActivityRow, TurnOutcome } from './live-activity';
 import { RunStateCard } from './run-state-card';
 import { WorkGroup } from './work-group';
 
@@ -29,6 +24,8 @@ interface ChatPanelProps {
   connection: Connection;
   /** The run is still going: its last message is streaming. */
   isRunning: boolean;
+  /** A stop was asked for and the run is winding down. */
+  isStopping?: boolean;
   items: readonly TranscriptItem[];
   /** Open the stream again after it was given up on. */
   onRetry: () => void;
@@ -51,14 +48,6 @@ interface ChatPanelProps {
   turns?: readonly UserTurn[];
 }
 
-/** How long a finished run worked, from its own record. */
-function workedFor(run: RunResponse | undefined): string | undefined {
-  if (run === undefined || !isTerminal(run.status) || run.endedAt === null) return undefined;
-  const ms = new Date(run.endedAt).getTime() - new Date(run.startedAt ?? run.createdAt).getTime();
-
-  return Number.isNaN(ms) ? undefined : `Worked for ${formatDuration(ms)}`;
-}
-
 /**
  * The run's conversation, and the box to add to it (spec 043, after t3code's timeline).
  *
@@ -73,6 +62,7 @@ export function ChatPanel({
   composer,
   connection,
   isRunning,
+  isStopping = false,
   items,
   onRetry,
   onRetryRun,
@@ -87,7 +77,19 @@ export function ChatPanel({
   const lastRow = rows.at(-1);
   const isLive = source === 'live';
   const finished = run !== undefined && isTerminal(run.status);
-  const worked = workedFor(run);
+
+  // The run's own words for the moments no row covers: the workspace starting, and when it ended.
+  const { endedAt, preparing } = useMemo(() => {
+    let ended: string | undefined;
+    let transition: string | undefined;
+
+    for (const { event } of items) {
+      if (event.type === 'sandbox.preparing') transition = event.data.transition;
+      if (event.type === 'state' && isTerminal(event.data.to)) ended = event.at;
+    }
+
+    return { endedAt: ended, preparing: transition };
+  }, [items]);
   const canRetry =
     onRetryRun !== undefined && (run?.status === 'failed' || run?.status === 'cancelled');
 
@@ -132,10 +134,18 @@ export function ChatPanel({
             </div>
           ))}
           <div className="flex flex-col items-start gap-2 empty:hidden">
-            {run === undefined ? null : (
-              <p className="text-caption text-faint">
-                {[worked, modelLabel(run.model)].filter((part) => part !== undefined).join(' · ')}
-              </p>
+            {isRunning ? (
+              <LiveActivityRow
+                isStopping={isStopping}
+                preparing={preparing}
+                rows={rows}
+                run={run}
+              />
+            ) : null}
+            {run === undefined ? null : finished ? (
+              <TurnOutcome endedAt={endedAt} model={modelLabel(run.model)} run={run} />
+            ) : (
+              <p className="text-caption text-faint">{modelLabel(run.model)}</p>
             )}
             {canRetry ? (
               <button
@@ -197,6 +207,7 @@ export function ChatPanel({
 
       <RunStateCard
         className="mx-4 mb-3"
+        isWorking={isRunning}
         connection={connection}
         failure={failure}
         onRetry={onRetry}
@@ -244,7 +255,7 @@ function Row({
     }
 
     case 'work': {
-      return <WorkGroup defaultExpanded={isTail} entries={row.entries} />;
+      return <WorkGroup defaultExpanded={isTail} entries={row.entries} isLive={isTail} />;
     }
   }
 }
@@ -255,12 +266,17 @@ function Notice({ event }: { readonly event: RunEvent }): React.JSX.Element | nu
     case 'checkpoint': {
       return (
         <div className="bg-raised border-line-subtle flex items-center gap-[9px] rounded-[10px] border px-[11px] py-2.5">
-          <BookmarkIcon className="text-subdued size-3.5 shrink-0" aria-hidden="true" />
+          <BookmarkIcon className="text-success size-3.5 shrink-0" aria-hidden="true" />
           <div className="flex min-w-0 flex-1 flex-col gap-0.5">
             <p className="text-label-sm text-foreground font-medium">
               {event.data.label ?? 'Checkpoint'}
             </p>
-            <p className="text-mono-sm text-faint truncate font-mono">{event.data.checkpointId}</p>
+            <p className="text-caption text-faint truncate">
+              Checkpoint saved ·{' '}
+              <span className="font-mono" title={event.data.checkpointId}>
+                {event.data.checkpointId.slice(0, 7)}
+              </span>
+            </p>
           </div>
         </div>
       );
@@ -278,7 +294,12 @@ function Notice({ event }: { readonly event: RunEvent }): React.JSX.Element | nu
     }
 
     case 'sandbox.preparing': {
-      return <p className="text-caption text-faint">Preparing sandbox: {event.data.transition}</p>;
+      return (
+        <p className="text-caption text-faint flex items-center gap-1.5">
+          <BoxIcon className="size-3.5 shrink-0" aria-hidden="true" />
+          {PREPARING_COPY[event.data.transition]}
+        </p>
+      );
     }
 
     case 'state': {
@@ -289,23 +310,23 @@ function Notice({ event }: { readonly event: RunEvent }): React.JSX.Element | nu
       return reason === undefined ? null : <p className="text-caption text-faint">{reason}</p>;
     }
 
-    case 'thought': {
-      return (
-        <div className="border-line-subtle flex items-center gap-2 rounded-[9px] border px-[11px] py-2">
-          <SparklesIcon className="text-subdued size-[13px] shrink-0" aria-hidden="true" />
-          <span className="text-label-xs text-subdued min-w-0 flex-1 font-medium">
-            {event.data.text}
-          </span>
-        </div>
-      );
-    }
-
     default: {
       // Tokens, tool calls and file changes have rows of their own; the rest has none.
       return null;
     }
   }
 }
+
+/** The workspace's transitions, as a person reads them. */
+const PREPARING_COPY = {
+  creating: 'Creating the workspace',
+  hibernating: 'The workspace was going to sleep — waiting for it',
+  releasing: 'Releasing the workspace',
+  resuming: 'Waking the workspace',
+} as const satisfies Record<
+  Extract<RunEvent, { type: 'sandbox.preparing' }>['data']['transition'],
+  string
+>;
 
 /** A subscription run with no model chosen records its provider's name: the CLI's own default. */
 function modelLabel(model: string): string {

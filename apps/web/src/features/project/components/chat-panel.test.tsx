@@ -210,7 +210,7 @@ describe('ChatPanel — the conversation (spec 043)', () => {
       />,
     );
 
-    expect(screen.getByText('Worked for 1m 20s · Default model')).toBeVisible();
+    expect(screen.getByText('Failed after 1m 20s · Default model')).toBeVisible();
   });
 
   it('says how long a finished run worked and offers to retry a failed one', async () => {
@@ -228,7 +228,8 @@ describe('ChatPanel — the conversation (spec 043)', () => {
       />,
     );
 
-    expect(screen.getByText('Worked for 1m 20s · claude-sonnet-5')).toBeVisible();
+    // A failed run says so: "Worked for" is a finished turn's line.
+    expect(screen.getByText('Failed after 1m 20s · claude-sonnet-5')).toBeVisible();
     expect(screen.getByText('The reply is complete.')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Retry' }));

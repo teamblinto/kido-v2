@@ -320,8 +320,10 @@ describe('ProjectPage', () => {
     await user.click(stageTab(/Git/));
 
     expect(await screen.findByText('2 files changed since your last save')).toBeVisible();
-    expect(screen.getByText('src/rota.ts')).toBeVisible();
-    expect(screen.getByText('src/swap.ts')).toBeVisible();
+    // The conversation names the same paths on its "Changed" lines; this is the stage's list.
+    const stage = screen.getByRole('tabpanel', { name: 'Stage' });
+    expect(within(stage).getByText('src/rota.ts')).toBeVisible();
+    expect(within(stage).getByText('src/swap.ts')).toBeVisible();
 
     await user.click(screen.getByRole('tab', { name: 'History' }));
 
@@ -663,7 +665,7 @@ describe('ProjectPage', () => {
 
       const log = screen.getByRole('log', { name: 'Conversation' });
 
-      expect(await within(log).findByText('Preparing sandbox: creating')).toBeVisible();
+      expect(await within(log).findByText('Creating the workspace')).toBeVisible();
     });
 
     it("shows a credential failure in the run's own words (020 US3, R7)", async () => {

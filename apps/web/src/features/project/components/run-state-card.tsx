@@ -25,6 +25,11 @@ interface RunStateCardProps {
   connection: Connection;
   /** The failed `state` event's data, when the run failed. */
   failure?: Extract<RunEvent, { type: 'state' }>['data'];
+  /**
+   * The run is live and the conversation's own live row is saying what it is doing, so a healthy
+   * open connection needs no card of its own. A dropped or lost one still gets one.
+   */
+  isWorking?: boolean;
   /** Open the stream again after it was given up on. Offered only for `lost`. */
   onRetry: () => void;
   /** The run being reported on, once it has been read. */
@@ -133,13 +138,14 @@ export function RunStateCard({
   className,
   connection,
   failure,
+  isWorking = false,
   onRetry,
   run,
   source,
 }: RunStateCardProps): React.JSX.Element | null {
   const card = copy(connection, run, source);
 
-  if (card === undefined) {
+  if (card === undefined || (isWorking && connection === 'open')) {
     return null;
   }
 

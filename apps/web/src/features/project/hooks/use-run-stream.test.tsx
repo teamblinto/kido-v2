@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import { API, server } from '@/test/server';
 import { frame, sse } from '@/test/sse';
-import { useRunStream } from './use-run-stream';
+import { REOPEN_BASE_MS, useRunStream } from './use-run-stream';
 
 const ORG = '3f2504e0-4f89-11d3-9a0c-0305e82c3301';
 const PROJECT = '6ba7b810-9dad-11d1-80b4-00c04fd430c8';
@@ -479,6 +479,71 @@ describe('useRunStream, interrupted', () => {
     expect(reported).toContain('retrying');
     // It came back on its own, so it never reached the threshold (SC-003).
     expect(reported).not.toContain('lost');
+    unmount();
+  });
+});
+
+describe('useRunStream, a reconnect the browser refuses', () => {
+  // A real `EventSource` never retries a non-`200` answer: it closes for good. These are the runs
+  // that used to keep Stop on screen after they had finished.
+
+  it('opens again by itself after a 502, and settles on the terminal state it then hears', async () => {
+    let opened = 0;
+
+    server.use(
+      ...handlers(() => {
+        opened += 1;
+
+        if (opened === 1) return sse([frame(patch(1))], { closeAfter: true, retryMs: 5 });
+        // The proxy, mid-deploy.
+        if (opened === 2) return new HttpResponse(null, { status: 502 });
+
+        return sse([frame(patch(2)), frame(state(3, 'succeeded'))]);
+      }),
+    );
+
+    const { result, unmount } = renderStream();
+
+    await waitFor(
+      () => {
+        expect(result.current.run?.status).toBe('succeeded');
+      },
+      { timeout: REOPEN_BASE_MS + 4_000 },
+    );
+
+    expect(result.current.connection).toBe('closed');
+    expect(result.current.items.map(({ event }) => event.seq)).toEqual([1, 2, 3]);
+    unmount();
+  });
+
+  it('settles from the run record when the stream answers 204 for a run already over', async () => {
+    // The terminal frame never reached this screen; the reconnect is told there is nothing left
+    // (`204`) and the browser closes. The record — read again on the failure — says the run ended.
+    let reads = 0;
+
+    server.use(
+      http.get(`${RUNS}/${RUN}`, () => {
+        reads += 1;
+
+        return HttpResponse.json(
+          reads === 1
+            ? { ...aRun, lastSeq: 1 }
+            : { ...aRun, endedAt: '2026-01-01T00:05:00.000Z', lastSeq: 2, status: 'succeeded' },
+        );
+      }),
+      http.get(STREAM, () => new HttpResponse(null, { status: 204 })),
+      http.get(EVENTS, () => HttpResponse.json({ events: [patch(1)], lastSeq: 2 })),
+    );
+
+    const { result, unmount } = renderStream();
+
+    await waitFor(() => {
+      expect(result.current.run?.status).toBe('succeeded');
+    });
+
+    await waitFor(() => {
+      expect(result.current.connection).toBe('closed');
+    });
     unmount();
   });
 });

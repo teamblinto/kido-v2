@@ -51,6 +51,18 @@ export interface TranscriptState {
   readonly run: RunResponse | undefined;
   readonly runId: string;
   readonly source: TranscriptSource;
+  /**
+   * The seq the run's current `status` is known as of: the `state` event that set it, or the run
+   * record's `lastSeq` when the record set it. `0` before either.
+   *
+   * What keeps the status monotonic. It has two writers — the stream's `state` events and the run
+   * record read over HTTP — and they race: a record read while the run was `running` can land after
+   * the stream already said `awaiting_input`, and a replayed or paged-in `state` from early in the
+   * run can arrive after a later one. Taking whichever arrived last could put a finished turn back
+   * to `running` — a Stop button that outlived the agent. Each writer carries the seq it speaks
+   * for, and the older word never replaces the newer one.
+   */
+  readonly statusSeq: number;
   readonly transient: readonly TransientEntry[];
 }
 
@@ -68,6 +80,7 @@ export function emptyTranscript(runId: string): TranscriptState {
     run: undefined,
     runId,
     source: 'live',
+    statusSeq: 0,
     transient: [],
   };
 }
@@ -84,18 +97,21 @@ function takeDurable(state: TranscriptState, event: DurableRunEvent): Transcript
 
   durable.set(event.seq, event);
 
+  // A `state` event is the run reporting its own status, so the run record follows it. Without
+  // this the record would say `running` until somebody read the run again, and a run that had
+  // just said it was cancelled would still be offering a stop control (FR-013). `to` is the
+  // status the contract names, so this is the run's word taken at face value — unless the status
+  // is already known as of a later seq, in which case this is a replay or a page of history and
+  // the newer word stands.
+  const takesStatus =
+    state.run !== undefined && event.type === 'state' && event.seq >= state.statusSeq;
+
   return {
     ...state,
     durable,
     highestSeq: Math.max(state.highestSeq, event.seq),
-    // A `state` event is the run reporting its own status, so the run record follows it. Without
-    // this the record would say `running` until somebody read the run again, and a run that had
-    // just said it was cancelled would still be offering a stop control (FR-013). `to` is the
-    // status the contract names, so this is the run's word taken at face value, not an inference.
-    run:
-      state.run !== undefined && event.type === 'state'
-        ? { ...state.run, status: event.data.to }
-        : state.run,
+    run: takesStatus ? { ...state.run, status: event.data.to } : state.run,
+    statusSeq: takesStatus ? event.seq : state.statusSeq,
   };
 }
 
@@ -130,6 +146,7 @@ function applyReset(state: TranscriptState, event: StreamResetEvent): Transcript
     highestSeq: event.seq,
     run: event.data.run,
     source: 'live',
+    statusSeq: event.data.run.lastSeq,
     transient: [],
   };
 }
@@ -172,9 +189,21 @@ export function applyHistory(state: TranscriptState, events: readonly RunEvent[]
   return { ...next, source: 'history' };
 }
 
-/** The run's own record: status, model, `lastSeq`. Replaced wholesale; never merged field-wise. */
+/**
+ * The run's own record: status, model, `lastSeq`. Replaced wholesale — except its `status` when
+ * the transcript already knows a later one.
+ *
+ * A record is a snapshot as of its `lastSeq`. One read before the stream delivered the run's
+ * latest `state` (a refetch still in flight while the run moved on) is older than what is on
+ * screen, and taking its status would walk a finished turn back to `running`. Its other fields —
+ * `endedAt`, token counts — are still the freshest the screen has, so only the status is held.
+ */
 export function applyRun(state: TranscriptState, run: RunResponse): TranscriptState {
-  return { ...state, run };
+  if (state.run !== undefined && run.lastSeq < state.statusSeq) {
+    return { ...state, run: { ...run, status: state.run.status } };
+  }
+
+  return { ...state, run, statusSeq: Math.max(state.statusSeq, run.lastSeq) };
 }
 
 export function setConnection(state: TranscriptState, connection: Connection): TranscriptState {

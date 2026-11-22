@@ -414,6 +414,24 @@
   }
 }
 
+/*
+ * Live text: a soft highlight sweeps through the label of whatever is running right now (after
+ * t3code's `live-tool-shine`). Stepped rather than per-frame, so the compositor paints discrete
+ * frames. Without motion — or in forced colours — it is plain text in its own colour.
+ */
+@keyframes chat-shine {
+  from {
+    background-position:
+      -4.5rem 0,
+      0 0;
+  }
+  to {
+    background-position:
+      calc(100% + 4.5rem) 0,
+      0 0;
+  }
+}
+
 /* A running tool's label breathes: still readable at its faintest. */
 @keyframes chat-shimmer {
   50% {
@@ -444,5 +462,21 @@
 
   .chat-shimmer {
     animation: chat-shimmer 1.6s ease-in-out infinite;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) and (forced-colors: none) {
+  .chat-shine {
+    color: transparent;
+    background-image:
+      linear-gradient(to right, transparent, var(--color-foreground, #18181b), transparent),
+      linear-gradient(var(--color-subdued), var(--color-subdued));
+    background-size:
+      4.5rem 100%,
+      100% 100%;
+    background-repeat: no-repeat;
+    background-clip: text;
+    -webkit-background-clip: text;
+    animation: chat-shine 2.2s steps(30) infinite;
   }
 }

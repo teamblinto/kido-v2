@@ -65,8 +65,9 @@ Object.defineProperty(document, 'elementFromPoint', {
  * which is transport-free precisely so those guarantees can be proved without a socket.
  *
  * What it does: `GET` with credentials, SSE framing (`data:`, `id:`, `event:`, `retry:` and
- * comments), `message` events carrying `lastEventId`, `Last-Event-ID` on reconnect, and a
- * `close()` that aborts the request and stops retrying.
+ * comments), `message` events carrying `lastEventId`, `Last-Event-ID` on reconnect, a `close()`
+ * that aborts the request and stops retrying, and — as the browser does — no retry at all after a
+ * response that is not a `200` stream.
  *
  * ponytail: enough for the console's use and no more, on purpose. It is not conformant and must
  * not grow into one — no `withCredentials` negotiation, no BOM handling, no back-off schedule,
@@ -144,8 +145,15 @@ class FetchEventSource extends EventTarget {
       return;
     }
 
-    if (!response.ok || response.body === null) {
-      this.#fail();
+    // The one place the double must match the browser, because the hook's correctness rests on
+    // it: a response that is not a `200` event stream — a `204` for a run already over, a `502`
+    // from a proxy mid-deploy, a `503` — *fails* the connection. `readyState` goes to `CLOSED`,
+    // one `error` fires, and the browser never reconnects. Only a network error or a body that
+    // ends is retried. A double that retried here too hid a hook that sat on "Reconnecting" over a
+    // run that had long finished (the Stop button that never turned back into Send).
+    if (!response.ok || response.status !== 200 || response.body === null) {
+      this.readyState = this.CLOSED;
+      this.#emit(new Event('error'), this.onerror);
 
       return;
     }

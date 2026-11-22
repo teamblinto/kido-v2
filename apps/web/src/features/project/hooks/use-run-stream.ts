@@ -5,7 +5,7 @@ import {
   type StreamEvent,
   streamEventSchema,
 } from '@repo/contracts';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
 import { getRun, getRunEvents, runStreamUrl } from '../api';
@@ -51,6 +51,29 @@ interface UseRunStreamOptions {
  * times it has ever dropped.
  */
 const RETRY_LIMIT = 3;
+
+/**
+ * How long after the browser *closed* a stream (a non-`200` answer: `204`, `502`, `503`) the hook
+ * opens one itself, doubling per consecutive failure up to `REOPEN_MAX_MS`.
+ *
+ * The browser retries only a dropped connection, never a refused one, so without this a stream
+ * that met one `502` during a deploy stayed shut for good — and the run it was watching went on to
+ * finish unseen, leaving Stop on screen over a run that was over.
+ */
+export const REOPEN_BASE_MS = 1_000;
+const REOPEN_MAX_MS = 15_000;
+
+/**
+ * How often a live run's record is read again while the stream is open, and while it is not.
+ *
+ * The record is the authority on status (it is the row the worker transitions), and the stream is
+ * only the fast path to it. Reading it on an interval is what guarantees the screen converges on
+ * the truth whatever went wrong between them: a terminal frame lost to a proxy, a reconnect the
+ * browser refused, a stream given up on. One row, by primary key — cheap enough to do while
+ * someone is watching, and `transcript.ts` keeps an older record from ever undoing a newer event.
+ */
+export const RECONCILE_LIVE_MS = 20_000;
+export const RECONCILE_DETACHED_MS = 4_000;
 
 const DURABLE_TYPES = new Set<string>(DURABLE_RUN_EVENT_TYPES);
 
@@ -180,6 +203,15 @@ export function useRunStream({ onEvent, orgId, projectId, runId }: UseRunStreamO
   const [transcript, dispatch] = useReducer(reduce, emptyTranscript(runId ?? ''));
   const [attempt, setAttempt] = useState(0);
 
+  // Consecutive failed connections, across the reopens this hook makes itself (each reopen is a
+  // fresh `EventSource`, so a counter local to one would never reach the limit). A successful open
+  // and a change of run reset it.
+  const failures = useRef(0);
+
+  useEffect(() => {
+    failures.current = 0;
+  }, [runId]);
+
   const subscriber = useRef(onEvent);
 
   // Assigned in an effect, not during render: a render can be discarded or replayed, and a ref
@@ -190,6 +222,7 @@ export function useRunStream({ onEvent, orgId, projectId, runId }: UseRunStreamO
   });
 
   const retry = useCallback(() => {
+    failures.current = 0;
     setAttempt((value) => value + 1);
   }, []);
 
@@ -209,14 +242,40 @@ export function useRunStream({ onEvent, orgId, projectId, runId }: UseRunStreamO
    * subscription is not a query.
    */
   const canRead = orgId !== undefined && projectId !== undefined && runId !== undefined;
+  const queryClient = useQueryClient();
+
+  // What the transport is doing, read by the record's refetch interval without re-creating it.
+  const connectionRef = useRef<Connection>(transcript.connection);
+
+  useEffect(() => {
+    connectionRef.current = transcript.connection;
+  });
 
   const runQuery = useQuery({
     enabled: canRead,
     queryFn: ({ signal }) => getRun(orgId ?? '', projectId ?? '', runId ?? '', signal),
     queryKey: ['run', orgId, projectId, runId],
+    // Reconciliation (see `RECONCILE_LIVE_MS`): while the record says the run is still going, it
+    // is read again — often when the stream is not delivering, rarely when it is. A terminal
+    // record stops it.
+    refetchInterval: (query) => {
+      const status = query.state.data?.status;
+
+      if (status !== undefined && isTerminal(status)) return false;
+
+      return connectionRef.current === 'open' ? RECONCILE_LIVE_MS : RECONCILE_DETACHED_MS;
+    },
+    // A cached record may be minutes old by the time this screen shows the run again; the status
+    // it carries decides whether a stream opens, so it is always checked on mount.
+    staleTime: 0,
   });
 
   const runRecord = runQuery.data;
+  const refetchRun = useRef(runQuery.refetch);
+
+  useEffect(() => {
+    refetchRun.current = runQuery.refetch;
+  });
 
   useEffect(() => {
     if (runRecord !== undefined) {
@@ -284,27 +343,44 @@ export function useRunStream({ onEvent, orgId, projectId, runId }: UseRunStreamO
      * is given up on and reported `lost`, because a transcript that stopped receiving must not
      * keep looking live (FR-010, SC-004). `retry()` is what opens one again.
      */
-    let failures = 0;
+    let reopen: ReturnType<typeof setTimeout> | undefined;
 
     source.onopen = () => {
-      failures = 0;
+      failures.current = 0;
       dispatch({ kind: 'connection', connection: 'open' });
     };
 
     source.onerror = () => {
-      failures += 1;
+      failures.current += 1;
+      // Whatever broke, the record knows whether the run is still going. A run that ended while
+      // the stream was down resolves from it — the stream effect sees a terminal status and stops
+      // — instead of waiting on a stream that may never come back.
+      void refetchRun.current();
 
-      if (failures < RETRY_LIMIT) {
-        dispatch({ kind: 'connection', connection: 'retrying' });
+      if (failures.current >= RETRY_LIMIT) {
+        // Closing is part of saying `lost`: a screen that reads "not receiving updates" over a
+        // transport still hammering the server every two seconds is telling the person one thing
+        // and the server another. The record goes on being read (`RECONCILE_DETACHED_MS`), so the
+        // status still settles.
+        source.close();
+        dispatch({ kind: 'connection', connection: 'lost' });
 
         return;
       }
 
-      // Closing is part of saying `lost`: a screen that reads "not receiving updates" over a
-      // transport still hammering the server every two seconds is telling the person one thing
-      // and the server another.
-      source.close();
-      dispatch({ kind: 'connection', connection: 'lost' });
+      dispatch({ kind: 'connection', connection: 'retrying' });
+
+      // A dropped connection the browser retries by itself. A *refused* one (`readyState` is
+      // `CLOSED`: a `204`, a `502` from a proxy mid-deploy, a `503`) it never retries, so the hook
+      // does, after a back-off — by which time the record read above has usually said whether
+      // there is anything left to open for.
+      if (source.readyState === EventSource.CLOSED) {
+        const delay = Math.min(REOPEN_BASE_MS * 2 ** (failures.current - 1), REOPEN_MAX_MS);
+
+        reopen = setTimeout(() => {
+          setAttempt((value) => value + 1);
+        }, delay);
+      }
     };
 
     // Every frame the server writes is named (`event: <type>`), and a named frame reaches only a
@@ -339,6 +415,10 @@ export function useRunStream({ onEvent, orgId, projectId, runId }: UseRunStreamO
       if (parsed.type === 'state' && isTerminal(parsed.data.to)) {
         source.close();
         dispatch({ kind: 'connection', connection: 'closed' });
+        // The record carries what the event does not — `endedAt` for "Worked for", the final
+        // token counts — and the run list's chip reads the list query, not this transcript.
+        void queryClient.invalidateQueries({ queryKey: ['run', orgId, projectId, runId] });
+        void queryClient.invalidateQueries({ queryKey: ['runs', orgId, projectId, 'list'] });
       }
     };
 
@@ -347,12 +427,43 @@ export function useRunStream({ onEvent, orgId, projectId, runId }: UseRunStreamO
     }
 
     return () => {
+      if (reopen !== undefined) clearTimeout(reopen);
       source.close();
     };
     // Keyed on known/finished, never on `status` itself: a fresh connection replays the run from
     // seq 1, its `state` events walk `status` through queued → … → awaiting_input, and reopening on
     // each step replays again — a reconnect storm that also remounted the preview every replay.
-  }, [orgId, projectId, runId, isKnown, isFinished, attempt]);
+  }, [orgId, projectId, runId, isKnown, isFinished, attempt, queryClient]);
+
+  /*
+   * Coming back: the network returned, or the tab is visible again after the laptop slept. A
+   * stream given up on is opened again without waiting for the person to press "Try again", and
+   * the record is read at once — the run may have finished while nobody was looking.
+   */
+  const connection = transcript.connection;
+
+  useEffect(() => {
+    if (!canRead || isFinished) return;
+
+    const onReturn = () => {
+      if (document.visibilityState === 'hidden') return;
+
+      void refetchRun.current();
+
+      if (connection === 'lost') {
+        failures.current = 0;
+        setAttempt((value) => value + 1);
+      }
+    };
+
+    window.addEventListener('online', onReturn);
+    document.addEventListener('visibilitychange', onReturn);
+
+    return () => {
+      window.removeEventListener('online', onReturn);
+      document.removeEventListener('visibilitychange', onReturn);
+    };
+  }, [canRead, connection, isFinished]);
 
   const rendered = useMemo(() => renderItems(transcript), [transcript]);
 

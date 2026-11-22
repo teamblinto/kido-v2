@@ -600,6 +600,7 @@ export function ProjectPage(): React.JSX.Element {
           }
           connection={connection}
           isRunning={isRunning}
+          isStopping={isStopping}
           items={items}
           onRetry={retry}
           onRetryRun={retryRun}

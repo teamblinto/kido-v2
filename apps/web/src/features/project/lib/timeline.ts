@@ -1,6 +1,13 @@
-import type { Attachment, RunEvent } from '@repo/contracts';
+import type { Attachment, RunEvent, RunResponse } from '@repo/contracts';
 
-import type { ToolKind, ToolStatus } from '../types';
+import {
+  type ToolKind,
+  type ToolStatus,
+  classifyTool,
+  diffStat,
+  readOutput,
+  toolPath,
+} from './tool-activity';
 import { type TranscriptItem, joinTokens } from './transcript';
 
 /**
@@ -23,16 +30,34 @@ export interface UserTurn {
   readonly text: string;
 }
 
+/** A file change the run reported (`file.patch`), as a unified diff. */
+export interface FilePatch {
+  readonly diff: string;
+  readonly path: string;
+}
+
 export type WorkEntry =
   | {
+      /** The failure's own words, when the call failed. */
       readonly detail?: string;
+      /** A command's exit status, when its output reported one. */
+      readonly exitCode?: number;
       readonly id: string;
+      /** What the call was given, as the executor sent it. */
+      readonly input: unknown;
       readonly kind: 'tool';
+      /** What it printed: its `tool.end` output, or the `tool.delta` chunks so far while it runs. */
+      readonly output: string;
+      /** The changes this call made, matched from the `file.patch` events that followed it. */
+      readonly patches: readonly FilePatch[];
       readonly status: ToolStatus;
+      /** The tool's own name, verbatim. */
       readonly title: string;
       readonly tool: ToolKind;
     }
-  | { readonly id: string; readonly kind: 'patch'; readonly path: string };
+  | ({ readonly id: string; readonly kind: 'patch' } & FilePatch)
+  /** The model thinking aloud (`thought`), consecutive deltas joined. */
+  | { readonly id: string; readonly kind: 'reasoning'; readonly text: string };
 
 export type TimelineRow =
   | { readonly id: string; readonly kind: 'assistant'; readonly text: string }
@@ -45,22 +70,12 @@ export type TimelineRow =
     }
   | { readonly entries: readonly WorkEntry[]; readonly id: string; readonly kind: 'work' };
 
-/** The tool's icon family, from its name. Unrecognised tools get the neutral one. */
-export function toolKind(tool: string): ToolKind {
-  if (tool.includes('edit') || tool.includes('write') || tool.includes('file')) {
-    return 'edit';
-  }
-
-  return tool.includes('install') || tool.includes('package') || tool.startsWith('pkg')
-    ? 'package'
-    : 'exec';
-}
-
 /** Events with no row of their own; they neither show nor break a work group. */
 function isSilent(event: RunEvent): boolean {
   switch (event.type) {
-    // `tool.end` is the other half of its `tool.start`; `tool.delta` is the activity log's; usage
-    // is on the run record. Approvals are history from retired local-agent runs (spec 040).
+    // `tool.end` is the other half of its `tool.start`, and `tool.delta` is its live output — both
+    // are folded into the call's entry. Usage is on the run record. Approvals are history from
+    // retired local-agent runs (spec 040).
     case 'approval.request':
     case 'approval.resolved':
     case 'tool.delta':
@@ -83,10 +98,15 @@ export function buildTimeline(
 ): TimelineRow[] {
   const joined = joinTokens(items);
   // `tool.end` is matched to the `tool.start` sharing its `stepId`; unpaired means still running.
+  // `tool.delta` chunks are the same call's output as it prints, joined in arrival order.
   const ends = new Map<string, Extract<RunEvent, { type: 'tool.end' }>>();
+  const deltas = new Map<string, string>();
 
   for (const { event } of joined) {
     if (event.type === 'tool.end') ends.set(event.data.stepId, event);
+    if (event.type === 'tool.delta') {
+      deltas.set(event.data.stepId, (deltas.get(event.data.stepId) ?? '') + event.data.chunk);
+    }
   }
 
   const rows: TimelineRow[] = [];
@@ -112,26 +132,68 @@ export function buildTimeline(
 
     if (isSilent(event)) return;
 
-    if (event.type === 'tool.start' || event.type === 'file.patch') {
+    if (event.type === 'tool.start' || event.type === 'file.patch' || event.type === 'thought') {
       if (work === undefined) {
         work = [];
         rows.push({ entries: work, id: item.id, kind: 'work' });
       }
 
-      if (event.type === 'file.patch') {
-        work.push({ id: item.id, kind: 'patch', path: event.data.path });
-      } else {
-        const end = ends.get(event.data.stepId);
-        const status: ToolStatus = end === undefined ? 'running' : end.data.ok ? 'done' : 'failed';
-        work.push({
-          ...(end?.data.error === undefined ? {} : { detail: end.data.error }),
-          id: item.id,
-          kind: 'tool',
-          status,
-          title: event.data.tool,
-          tool: toolKind(event.data.tool),
-        });
+      if (event.type === 'thought') {
+        // One reasoning entry per stretch of thinking: deltas arrive a few words at a time, and a
+        // row each was a column of fragments (t3code keeps reasoning inside the work log too).
+        const last = work.at(-1);
+
+        if (last?.kind === 'reasoning') {
+          work[work.length - 1] = { ...last, text: last.text + event.data.text };
+        } else {
+          work.push({ id: item.id, kind: 'reasoning', text: event.data.text });
+        }
+
+        return;
       }
+
+      if (event.type === 'file.patch') {
+        // The change an edit just made belongs on that edit's line, not on a second "Changed"
+        // line beneath it: matched to the latest call in this group that names the same path.
+        const { diff, path } = event.data;
+        let owner = -1;
+
+        for (let index = work.length - 1; index >= 0 && owner === -1; index -= 1) {
+          const entry = work[index];
+          if (entry?.kind === 'tool' && entry.tool === 'edit' && toolPath(entry.input) === path) {
+            owner = index;
+          }
+        }
+        const target = work[owner];
+
+        if (target?.kind === 'tool') {
+          work[owner] = { ...target, patches: [...target.patches, { diff, path }] };
+        } else {
+          work.push({ diff, id: item.id, kind: 'patch', path });
+        }
+
+        return;
+      }
+
+      const end = ends.get(event.data.stepId);
+      const read = readOutput(end?.data.output);
+      const failed = end !== undefined && (!end.data.ok || read.failed);
+      const status: ToolStatus = end === undefined ? 'running' : failed ? 'failed' : 'done';
+      const detail =
+        end?.data.error ?? (read.failed && read.exitCode === undefined ? read.text : undefined);
+
+      work.push({
+        ...(detail === undefined ? {} : { detail }),
+        ...(read.exitCode === undefined ? {} : { exitCode: read.exitCode }),
+        id: item.id,
+        input: event.data.input,
+        kind: 'tool',
+        output: end === undefined ? (deltas.get(event.data.stepId) ?? '') : read.text,
+        patches: [],
+        status,
+        title: event.data.tool,
+        tool: classifyTool(event.data.tool),
+      });
 
       return;
     }
@@ -153,23 +215,158 @@ function plural(count: number, one: string, many: string): string {
   return `${String(count)} ${count === 1 ? one : many}`;
 }
 
-/** "Edited 2 files · ran 3 commands" — what a work group did, counted from its entries. */
+/**
+ * "Read 3 files · edited 2 files · ran 3 commands" — what a work group did, counted from its
+ * entries in the order a reader cares about (t3code's `summarizeToolGroup`). Edited files are
+ * distinct paths when the run reported its patches, so editing one file twice is one file.
+ */
 export function workSummary(entries: readonly WorkEntry[]): string {
   const tools = entries.filter((entry) => entry.kind === 'tool');
-  const paths = new Set(entries.flatMap((entry) => (entry.kind === 'patch' ? [entry.path] : [])));
-  const edits = paths.size > 0 ? paths.size : tools.filter((tool) => tool.tool === 'edit').length;
-  const commands = tools.filter((tool) => tool.tool === 'exec').length;
-  const packages = tools.filter((tool) => tool.tool === 'package').length;
+  const count = (kind: ToolKind) => tools.filter((tool) => tool.tool === kind).length;
+  const paths = new Set(
+    entries.flatMap((entry) =>
+      entry.kind === 'patch'
+        ? [entry.path]
+        : entry.kind === 'tool'
+          ? entry.patches.map((patch) => patch.path)
+          : [],
+    ),
+  );
+  const edits = paths.size > 0 ? paths.size : count('edit');
+  const reads = new Set(
+    tools.filter((tool) => tool.tool === 'read').map((tool) => toolPath(tool.input) ?? tool.id),
+  ).size;
+  const others = count('other') + count('task') + count('preview') + count('list');
   const parts = [
+    reads > 0 ? `read ${plural(reads, 'file', 'files')}` : undefined,
     edits > 0 ? `edited ${plural(edits, 'file', 'files')}` : undefined,
-    commands > 0 ? `ran ${plural(commands, 'command', 'commands')}` : undefined,
-    packages > 0 ? `installed ${plural(packages, 'package', 'packages')}` : undefined,
+    count('command') > 0 ? `ran ${plural(count('command'), 'command', 'commands')}` : undefined,
+    count('search') > 0 ? `searched ${plural(count('search'), 'time', 'times')}` : undefined,
+    count('package') > 0
+      ? `installed ${plural(count('package'), 'package', 'packages')}`
+      : undefined,
+    count('web') > 0 ? `searched the web ${plural(count('web'), 'time', 'times')}` : undefined,
+    count('agent') > 0 ? `ran ${plural(count('agent'), 'subagent', 'subagents')}` : undefined,
+    others > 0 ? `used ${plural(others, 'tool', 'tools')}` : undefined,
   ].filter((part): part is string => part !== undefined);
   const sentence = parts.join(' · ');
 
-  return sentence.length === 0
-    ? 'Worked'
-    : `${sentence[0]?.toUpperCase() ?? ''}${sentence.slice(1)}`;
+  if (sentence.length === 0) {
+    return entries.some((entry) => entry.kind === 'reasoning') ? 'Thought' : 'Worked';
+  }
+
+  return `${sentence[0]?.toUpperCase() ?? ''}${sentence.slice(1)}`;
+}
+
+/** `+12 −3` over every change a group's entries made. */
+export function workDiffStat(entries: readonly WorkEntry[]): {
+  readonly added: number;
+  readonly removed: number;
+} {
+  let added = 0;
+  let removed = 0;
+
+  for (const entry of entries) {
+    const patches = entry.kind === 'patch' ? [entry] : entry.kind === 'tool' ? entry.patches : [];
+
+    for (const patch of patches) {
+      const stat = diffStat(patch.diff);
+      added += stat.added;
+      removed += stat.removed;
+    }
+  }
+
+  return { added, removed };
+}
+
+/** What the run is doing right now, for the live row at the foot of the conversation. */
+export interface LiveActivity {
+  /** Whether it is working (animated, timed) or waiting on something (still). */
+  readonly isActive: boolean;
+  readonly label: string;
+}
+
+const PREPARING: Readonly<Record<string, string>> = {
+  creating: 'Creating your workspace',
+  hibernating: 'Waiting for the workspace to settle',
+  releasing: 'Releasing the workspace',
+  resuming: 'Waking your workspace',
+};
+
+/**
+ * The live row's words, from the run's status and the rows so far (t3code's working/thinking
+ * rows). `undefined` when the run is not live — finished, or not read yet — so nothing claims work
+ * that is not happening. The tool currently running is named on its own line in the work group;
+ * this says what the run as a whole is doing, including the stretches no row covers: the queue,
+ * the workspace starting, and the turn-end commit between the last word and `succeeded`.
+ */
+export function liveActivity(
+  run: RunResponse | undefined,
+  rows: readonly TimelineRow[],
+  options: {
+    readonly isStopping?: boolean;
+    /** Nothing new has arrived for a moment: a reply that has finished streaming. */
+    readonly isQuiet?: boolean;
+    /** The last `sandbox.preparing` transition, while the run is `starting`. */
+    readonly preparing?: string | undefined;
+  } = {},
+): LiveActivity | undefined {
+  if (run === undefined) return undefined;
+
+  switch (run.status) {
+    case 'cancelled':
+    case 'failed':
+    case 'succeeded': {
+      return undefined;
+    }
+    case 'awaiting_input': {
+      return { isActive: false, label: 'Waiting for your reply' };
+    }
+    case 'paused': {
+      return { isActive: false, label: 'Paused' };
+    }
+    case 'queued': {
+      return { isActive: true, label: 'Queued — waiting for a free worker' };
+    }
+    case 'starting': {
+      return {
+        isActive: true,
+        label:
+          (options.preparing === undefined ? undefined : PREPARING[options.preparing]) ??
+          'Starting',
+      };
+    }
+    case 'tool_error':
+    case 'running': {
+      if (options.isStopping === true) {
+        return { isActive: true, label: 'Stopping after the current step' };
+      }
+      if (run.status === 'tool_error') {
+        return { isActive: true, label: 'A step failed — working out a fix' };
+      }
+
+      const last = rows.at(-1);
+
+      if (last?.kind === 'work') {
+        const entry = last.entries.at(-1);
+
+        if (entry?.kind === 'tool' && entry.status === 'running') {
+          return { isActive: true, label: 'Working' };
+        }
+
+        // Thinking aloud, or every call has answered and the model is reading the results.
+        return { isActive: true, label: 'Thinking' };
+      }
+
+      // After the reply has stopped arriving, the turn-end commit (`checkpoint`) still runs before
+      // the run says `succeeded` — the stretch that used to look like a finished run holding Stop.
+      if (last?.kind === 'assistant') {
+        return { isActive: true, label: options.isQuiet === true ? 'Wrapping up' : 'Writing' };
+      }
+
+      return { isActive: true, label: 'Working' };
+    }
+  }
 }
 
 /** "1m 20s", "45s", "2h 5m": how long a finished turn worked. */

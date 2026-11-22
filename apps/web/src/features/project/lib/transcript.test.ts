@@ -219,6 +219,66 @@ describe('the run record', () => {
 
     expect(state.run).toBe(aRun);
   });
+
+  /** A status change at `seq`, from `running`. */
+  function moved(seq: number, to: RunResponse['status']): RunEvent {
+    return {
+      at: '2026-01-01T00:00:00.000Z',
+      data: { from: 'running', to },
+      run: RUN,
+      seq,
+      type: 'state',
+    };
+  }
+
+  it('keeps a newer status over a run record read before it (the stuck Stop button)', () => {
+    // The stream says the turn is over and the run waits for the person (seq 9); a refetch of the
+    // record that left while the run was still `running` (lastSeq 7) lands after it. Taking the
+    // record's status put Stop back on a run that had finished its turn.
+    const live = applyEvent(
+      applyRun(emptyTranscript(RUN), { ...aRun, lastSeq: 5 }),
+      moved(9, 'awaiting_input'),
+    );
+    const stale = applyRun(live, {
+      ...aRun,
+      endedAt: null,
+      inputTokens: 42,
+      lastSeq: 7,
+      status: 'running',
+    });
+
+    expect(stale.run?.status).toBe('awaiting_input');
+    // The rest of the record is still the freshest the screen has.
+    expect(stale.run?.inputTokens).toBe(42);
+  });
+
+  it('takes a run record that is as new as the status it replaces, or newer', () => {
+    const live = applyEvent(applyRun(emptyTranscript(RUN), aRun), moved(3, 'awaiting_input'));
+    const fresh = applyRun(live, { ...aRun, lastSeq: 6, status: 'succeeded' });
+
+    expect(fresh.run?.status).toBe('succeeded');
+    expect(fresh.statusSeq).toBe(6);
+  });
+
+  it('never walks the status back on a replayed or paged-in earlier state event', () => {
+    // A fresh connection replays the run from seq 1, and a history page brings the whole run:
+    // the `running` of seq 2 must not undo the `succeeded` of seq 8 that is already known.
+    const ended = applyRun(emptyTranscript(RUN), { ...aRun, lastSeq: 8, status: 'succeeded' });
+    const replayed = applyEvent(ended, moved(2, 'running'));
+    const paged = applyHistory(ended, [moved(2, 'running'), patch(3)]);
+
+    expect(replayed.run?.status).toBe('succeeded');
+    expect(paged.run?.status).toBe('succeeded');
+  });
+
+  it('follows the latest state event when the stream delivers past the record', () => {
+    const state = [moved(4, 'tool_error'), moved(5, 'running'), moved(6, 'succeeded')].reduce(
+      applyEvent,
+      applyRun(emptyTranscript(RUN), { ...aRun, lastSeq: 3 }),
+    );
+
+    expect(state.run?.status).toBe('succeeded');
+  });
 });
 
 describe('a history page', () => {

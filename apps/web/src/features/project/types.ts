@@ -31,9 +31,3 @@ export type StageTab = 'code' | 'git' | 'preview';
 
 /** Git has two views behind one tab: what has changed, and what came before. */
 export type GitView = 'changes' | 'history';
-
-/** How a tool call ended. Drives the trailing glyph on its card. */
-export type ToolStatus = 'done' | 'failed' | 'running';
-
-/** The tool that ran, mapped to an icon by the card. */
-export type ToolKind = 'edit' | 'exec' | 'package';
