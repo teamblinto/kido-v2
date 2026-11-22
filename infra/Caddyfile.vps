@@ -110,3 +110,8 @@ https://*.{$PREVIEW_DOMAIN} {
 		flush_interval -1
 	}
 }
+
+# Sites of other apps on this host, which share this edge because it holds 80 and 443: one
+# `<name>.caddy` file each in the host's /etc/kido/caddy-sites.d (compose.vps.yaml). No match is
+# a warning, not an error. See infra/sandboxd/README.md, "Other sites on the VPS".
+import /etc/caddy/sites.d/*.caddy

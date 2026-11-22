@@ -344,6 +344,20 @@ The job builds the web app, sends a tarball of the release (compose files, `infr
 `--password-stdin` and logs out right after the pull. To retry, re-run the `deploy` job from the
 Actions page; to undo, `kido-deploy rollback` on the server.
 
+### Other sites on the VPS
+
+The edge Caddy holds 80 and 443, so another app on the host (Bee Bot at `beebot.blinto.co`)
+is served through it. Its site block goes in `/etc/kido/caddy-sites.d/<name>.caddy` on the
+host, never in a release directory, which the next deploy replaces. `kido-deploy` restarts the
+edge on a deploy; to apply a change between deploys, `docker restart kido-caddy-1` (admin is
+off, so there is no reload). Files must be readable by others (0644): the container runs
+under Docker's remapped uids.
+
+    beebot.blinto.co {
+    	header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+    	reverse_proxy 10.210.0.1:8480
+    }
+
 ## Upgrade and rollback
 
 On the kido VPS use `kido-deploy` (above). Elsewhere:

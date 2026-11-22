@@ -59,6 +59,9 @@ services:
       - '443:443/udp'
     volumes:
       - ./infra/Caddyfile.vps:/etc/caddy/Caddyfile:ro
+      # Other sites this host serves through this edge (infra/Caddyfile.vps, last line). It lives
+      # outside the release directories, so a deploy never drops them.
+      - /etc/kido/caddy-sites.d:/etc/caddy/sites.d:ro
       - ./apps/web/dist:/srv:ro
       - caddy-data:/data
 
