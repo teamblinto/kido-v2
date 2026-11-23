@@ -300,12 +300,8 @@
           "name": "agent_runs_org_id_orgs_id_fk",
           "tableFrom": "agent_runs",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -313,12 +309,8 @@
           "name": "agent_runs_user_id_users_id_fk",
           "tableFrom": "agent_runs",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -326,14 +318,8 @@
           "name": "agent_runs_org_id_project_id_fk",
           "tableFrom": "agent_runs",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -341,14 +327,8 @@
           "name": "agent_runs_org_id_summary_through_message_id_fk",
           "tableFrom": "agent_runs",
           "tableTo": "run_messages",
-          "columnsFrom": [
-            "org_id",
-            "summary_through_message_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "summary_through_message_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -358,10 +338,7 @@
         "agent_runs_org_id_id_key": {
           "name": "agent_runs_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -529,12 +506,8 @@
           "name": "run_messages_org_id_orgs_id_fk",
           "tableFrom": "run_messages",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -542,14 +515,8 @@
           "name": "run_messages_org_id_run_id_fk",
           "tableFrom": "run_messages",
           "tableTo": "agent_runs",
-          "columnsFrom": [
-            "org_id",
-            "run_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "run_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -559,10 +526,7 @@
         "run_messages_org_id_id_key": {
           "name": "run_messages_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -690,12 +654,8 @@
           "name": "attachments_org_id_orgs_id_fk",
           "tableFrom": "attachments",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -703,12 +663,8 @@
           "name": "attachments_uploaded_by_users_id_fk",
           "tableFrom": "attachments",
           "tableTo": "users",
-          "columnsFrom": [
-            "uploaded_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["uploaded_by"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -716,14 +672,8 @@
           "name": "attachments_org_id_project_id_fk",
           "tableFrom": "attachments",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -733,10 +683,7 @@
         "attachments_org_id_id_key": {
           "name": "attachments_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -821,12 +768,8 @@
           "name": "run_message_attachments_org_id_orgs_id_fk",
           "tableFrom": "run_message_attachments",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -834,14 +777,8 @@
           "name": "run_message_attachments_org_id_message_id_fk",
           "tableFrom": "run_message_attachments",
           "tableTo": "run_messages",
-          "columnsFrom": [
-            "org_id",
-            "message_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "message_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -849,14 +786,8 @@
           "name": "run_message_attachments_org_id_attachment_id_fk",
           "tableFrom": "run_message_attachments",
           "tableTo": "attachments",
-          "columnsFrom": [
-            "org_id",
-            "attachment_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "attachment_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -866,19 +797,12 @@
         "run_message_attachments_org_id_id_key": {
           "name": "run_message_attachments_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         },
         "run_message_attachments_message_attachment_key": {
           "name": "run_message_attachments_message_attachment_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "message_id",
-            "attachment_id"
-          ]
+          "columns": ["org_id", "message_id", "attachment_id"]
         }
       },
       "policies": {},
@@ -1004,12 +928,8 @@
           "name": "audit_log_org_id_orgs_id_fk",
           "tableFrom": "audit_log",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1019,10 +939,7 @@
         "audit_log_org_id_id_key": {
           "name": "audit_log_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -1105,12 +1022,8 @@
           "name": "provider_keys_added_by_users_id_fk",
           "tableFrom": "provider_keys",
           "tableTo": "users",
-          "columnsFrom": [
-            "added_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["added_by"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -1118,12 +1031,8 @@
           "name": "provider_keys_org_id_orgs_id_fk",
           "tableFrom": "provider_keys",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1131,14 +1040,8 @@
           "name": "provider_keys_org_id_secret_id_fk",
           "tableFrom": "provider_keys",
           "tableTo": "secrets",
-          "columnsFrom": [
-            "org_id",
-            "secret_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "secret_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1148,18 +1051,12 @@
         "provider_keys_org_id_id_key": {
           "name": "provider_keys_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         },
         "provider_keys_org_id_provider_key": {
           "name": "provider_keys_org_id_provider_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "provider"
-          ]
+          "columns": ["org_id", "provider"]
         }
       },
       "policies": {},
@@ -1342,12 +1239,8 @@
           "name": "linked_accounts_user_id_users_id_fk",
           "tableFrom": "linked_accounts",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -1357,10 +1250,7 @@
         "linked_accounts_user_id_provider_key": {
           "name": "linked_accounts_user_id_provider_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "user_id",
-            "provider"
-          ]
+          "columns": ["user_id", "provider"]
         }
       },
       "policies": {},
@@ -1512,12 +1402,8 @@
           "name": "checkpoints_actor_id_users_id_fk",
           "tableFrom": "checkpoints",
           "tableTo": "users",
-          "columnsFrom": [
-            "actor_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["actor_id"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -1525,12 +1411,8 @@
           "name": "checkpoints_org_id_orgs_id_fk",
           "tableFrom": "checkpoints",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1538,14 +1420,8 @@
           "name": "checkpoints_org_id_project_id_fk",
           "tableFrom": "checkpoints",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1553,14 +1429,8 @@
           "name": "checkpoints_org_id_parent_id_fk",
           "tableFrom": "checkpoints",
           "tableTo": "checkpoints",
-          "columnsFrom": [
-            "org_id",
-            "parent_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "parent_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -1568,14 +1438,8 @@
           "name": "checkpoints_org_id_reverts_id_fk",
           "tableFrom": "checkpoints",
           "tableTo": "checkpoints",
-          "columnsFrom": [
-            "org_id",
-            "reverts_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "reverts_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -1583,14 +1447,8 @@
           "name": "checkpoints_org_id_sync_operation_id_fk",
           "tableFrom": "checkpoints",
           "tableTo": "sync_operations",
-          "columnsFrom": [
-            "org_id",
-            "sync_operation_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "sync_operation_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1600,19 +1458,12 @@
         "checkpoints_org_id_id_key": {
           "name": "checkpoints_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         },
         "checkpoints_org_id_project_id_git_sha_key": {
           "name": "checkpoints_org_id_project_id_git_sha_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "project_id",
-            "git_sha"
-          ]
+          "columns": ["org_id", "project_id", "git_sha"]
         }
       },
       "policies": {},
@@ -1781,12 +1632,8 @@
           "name": "connections_connected_by_users_id_fk",
           "tableFrom": "connections",
           "tableTo": "users",
-          "columnsFrom": [
-            "connected_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["connected_by"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -1794,12 +1641,8 @@
           "name": "connections_org_id_orgs_id_fk",
           "tableFrom": "connections",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1807,14 +1650,8 @@
           "name": "connections_org_id_secret_id_fk",
           "tableFrom": "connections",
           "tableTo": "secrets",
-          "columnsFrom": [
-            "org_id",
-            "secret_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "secret_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -1824,18 +1661,12 @@
         "connections_org_id_id_key": {
           "name": "connections_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         },
         "connections_org_id_provider_key": {
           "name": "connections_org_id_provider_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "provider"
-          ]
+          "columns": ["org_id", "provider"]
         }
       },
       "policies": {},
@@ -1927,12 +1758,8 @@
           "name": "connector_bindings_bound_by_users_id_fk",
           "tableFrom": "connector_bindings",
           "tableTo": "users",
-          "columnsFrom": [
-            "bound_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["bound_by"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -1940,12 +1767,8 @@
           "name": "connector_bindings_org_id_orgs_id_fk",
           "tableFrom": "connector_bindings",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1953,14 +1776,8 @@
           "name": "connector_bindings_org_id_project_id_fk",
           "tableFrom": "connector_bindings",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -1968,14 +1785,8 @@
           "name": "connector_bindings_org_id_connection_id_fk",
           "tableFrom": "connector_bindings",
           "tableTo": "connections",
-          "columnsFrom": [
-            "org_id",
-            "connection_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "connection_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -1985,19 +1796,12 @@
         "connector_bindings_org_id_id_key": {
           "name": "connector_bindings_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         },
         "connector_bindings_org_id_project_id_provider_key": {
           "name": "connector_bindings_org_id_project_id_provider_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "project_id",
-            "provider"
-          ]
+          "columns": ["org_id", "project_id", "provider"]
         }
       },
       "policies": {},
@@ -2182,12 +1986,8 @@
           "name": "connector_operations_org_id_orgs_id_fk",
           "tableFrom": "connector_operations",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -2195,12 +1995,8 @@
           "name": "connector_operations_requested_by_users_id_fk",
           "tableFrom": "connector_operations",
           "tableTo": "users",
-          "columnsFrom": [
-            "requested_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["requested_by"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -2208,14 +2004,8 @@
           "name": "connector_operations_org_id_project_id_fk",
           "tableFrom": "connector_operations",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -2223,14 +2013,8 @@
           "name": "connector_operations_org_id_binding_id_fk",
           "tableFrom": "connector_operations",
           "tableTo": "connector_bindings",
-          "columnsFrom": [
-            "org_id",
-            "binding_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "binding_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -2238,14 +2022,8 @@
           "name": "connector_operations_org_id_resource_id_fk",
           "tableFrom": "connector_operations",
           "tableTo": "connector_resources",
-          "columnsFrom": [
-            "org_id",
-            "resource_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "resource_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -2253,14 +2031,8 @@
           "name": "connector_operations_org_id_domain_id_fk",
           "tableFrom": "connector_operations",
           "tableTo": "domains",
-          "columnsFrom": [
-            "org_id",
-            "domain_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "domain_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -2268,14 +2040,8 @@
           "name": "connector_operations_org_id_deployment_id_fk",
           "tableFrom": "connector_operations",
           "tableTo": "deployments",
-          "columnsFrom": [
-            "org_id",
-            "deployment_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "deployment_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -2285,10 +2051,7 @@
         "connector_operations_org_id_id_key": {
           "name": "connector_operations_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -2454,12 +2217,8 @@
           "name": "connector_resources_org_id_orgs_id_fk",
           "tableFrom": "connector_resources",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -2467,14 +2226,8 @@
           "name": "connector_resources_org_id_connection_id_fk",
           "tableFrom": "connector_resources",
           "tableTo": "connections",
-          "columnsFrom": [
-            "org_id",
-            "connection_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "connection_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -2482,14 +2235,8 @@
           "name": "connector_resources_org_id_binding_id_fk",
           "tableFrom": "connector_resources",
           "tableTo": "connector_bindings",
-          "columnsFrom": [
-            "org_id",
-            "binding_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "binding_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -2497,14 +2244,8 @@
           "name": "connector_resources_org_id_domain_id_fk",
           "tableFrom": "connector_resources",
           "tableTo": "domains",
-          "columnsFrom": [
-            "org_id",
-            "domain_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "domain_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -2512,14 +2253,8 @@
           "name": "connector_resources_org_id_secret_id_fk",
           "tableFrom": "connector_resources",
           "tableTo": "secrets",
-          "columnsFrom": [
-            "org_id",
-            "secret_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "secret_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -2529,10 +2264,7 @@
         "connector_resources_org_id_id_key": {
           "name": "connector_resources_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -2656,12 +2388,8 @@
           "name": "repo_links_linked_by_users_id_fk",
           "tableFrom": "repo_links",
           "tableTo": "users",
-          "columnsFrom": [
-            "linked_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["linked_by"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -2669,12 +2397,8 @@
           "name": "repo_links_org_id_orgs_id_fk",
           "tableFrom": "repo_links",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -2682,14 +2406,8 @@
           "name": "repo_links_org_id_project_id_fk",
           "tableFrom": "repo_links",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -2697,14 +2415,8 @@
           "name": "repo_links_org_id_connection_id_fk",
           "tableFrom": "repo_links",
           "tableTo": "connections",
-          "columnsFrom": [
-            "org_id",
-            "connection_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "connection_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -2712,14 +2424,8 @@
           "name": "repo_links_org_id_last_pushed_checkpoint_id_fk",
           "tableFrom": "repo_links",
           "tableTo": "checkpoints",
-          "columnsFrom": [
-            "org_id",
-            "last_pushed_checkpoint_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "last_pushed_checkpoint_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -2729,18 +2435,12 @@
         "repo_links_org_id_id_key": {
           "name": "repo_links_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         },
         "repo_links_org_id_project_id_key": {
           "name": "repo_links_org_id_project_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "project_id"
-          ]
+          "columns": ["org_id", "project_id"]
         }
       },
       "policies": {},
@@ -2924,12 +2624,8 @@
           "name": "sync_operations_org_id_orgs_id_fk",
           "tableFrom": "sync_operations",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -2937,12 +2633,8 @@
           "name": "sync_operations_requested_by_users_id_fk",
           "tableFrom": "sync_operations",
           "tableTo": "users",
-          "columnsFrom": [
-            "requested_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["requested_by"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -2950,14 +2642,8 @@
           "name": "sync_operations_org_id_project_id_fk",
           "tableFrom": "sync_operations",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -2965,14 +2651,8 @@
           "name": "sync_operations_org_id_link_id_fk",
           "tableFrom": "sync_operations",
           "tableTo": "repo_links",
-          "columnsFrom": [
-            "org_id",
-            "link_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "link_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -2982,10 +2662,7 @@
         "sync_operations_org_id_id_key": {
           "name": "sync_operations_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -3049,14 +2726,8 @@
           "name": "project_context_org_id_project_id_fk",
           "tableFrom": "project_context",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -3064,10 +2735,7 @@
       "compositePrimaryKeys": {
         "project_context_pkey": {
           "name": "project_context_pkey",
-          "columns": [
-            "org_id",
-            "project_id"
-          ]
+          "columns": ["org_id", "project_id"]
         }
       },
       "uniqueConstraints": {},
@@ -3306,12 +2974,8 @@
           "name": "deployments_org_id_orgs_id_fk",
           "tableFrom": "deployments",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -3319,12 +2983,8 @@
           "name": "deployments_requested_by_users_id_fk",
           "tableFrom": "deployments",
           "tableTo": "users",
-          "columnsFrom": [
-            "requested_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["requested_by"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -3332,14 +2992,8 @@
           "name": "deployments_org_id_project_id_fk",
           "tableFrom": "deployments",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -3347,14 +3001,8 @@
           "name": "deployments_org_id_checkpoint_id_fk",
           "tableFrom": "deployments",
           "tableTo": "checkpoints",
-          "columnsFrom": [
-            "org_id",
-            "checkpoint_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "checkpoint_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -3364,10 +3012,7 @@
         "deployments_org_id_id_key": {
           "name": "deployments_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -3627,12 +3272,8 @@
           "name": "domains_added_by_users_id_fk",
           "tableFrom": "domains",
           "tableTo": "users",
-          "columnsFrom": [
-            "added_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["added_by"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -3640,12 +3281,8 @@
           "name": "domains_org_id_orgs_id_fk",
           "tableFrom": "domains",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -3653,14 +3290,8 @@
           "name": "domains_org_id_project_id_fk",
           "tableFrom": "domains",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -3670,10 +3301,7 @@
         "domains_org_id_id_key": {
           "name": "domains_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -3781,12 +3409,8 @@
           "name": "project_sites_org_id_orgs_id_fk",
           "tableFrom": "project_sites",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -3794,12 +3418,8 @@
           "name": "project_sites_updated_by_users_id_fk",
           "tableFrom": "project_sites",
           "tableTo": "users",
-          "columnsFrom": [
-            "updated_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["updated_by"],
+          "columnsTo": ["id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -3807,14 +3427,8 @@
           "name": "project_sites_org_id_project_id_fk",
           "tableFrom": "project_sites",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -3822,14 +3436,8 @@
           "name": "project_sites_org_id_current_deployment_id_fk",
           "tableFrom": "project_sites",
           "tableTo": "deployments",
-          "columnsFrom": [
-            "org_id",
-            "current_deployment_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "current_deployment_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -3839,25 +3447,17 @@
         "project_sites_org_id_id_key": {
           "name": "project_sites_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         },
         "project_sites_org_id_project_id_key": {
           "name": "project_sites_org_id_project_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "project_id"
-          ]
+          "columns": ["org_id", "project_id"]
         },
         "project_sites_site_label_key": {
           "name": "project_sites_site_label_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "site_label"
-          ]
+          "columns": ["site_label"]
         }
       },
       "policies": {},
@@ -4082,12 +3682,8 @@
           "name": "agent_homes_device_id_local_agent_devices_id_fk",
           "tableFrom": "agent_homes",
           "tableTo": "local_agent_devices",
-          "columnsFrom": [
-            "device_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["device_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -4095,12 +3691,8 @@
           "name": "agent_homes_user_id_users_id_fk",
           "tableFrom": "agent_homes",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -4223,12 +3815,8 @@
           "name": "local_agent_devices_user_id_users_id_fk",
           "tableFrom": "local_agent_devices",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -4330,12 +3918,8 @@
           "name": "local_agent_runs_device_id_local_agent_devices_id_fk",
           "tableFrom": "local_agent_runs",
           "tableTo": "local_agent_devices",
-          "columnsFrom": [
-            "device_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["device_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -4343,14 +3927,8 @@
           "name": "local_agent_runs_org_id_run_id_fk",
           "tableFrom": "local_agent_runs",
           "tableTo": "agent_runs",
-          "columnsFrom": [
-            "org_id",
-            "run_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "run_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -4358,10 +3936,7 @@
       "compositePrimaryKeys": {
         "local_agent_runs_pkey": {
           "name": "local_agent_runs_pkey",
-          "columns": [
-            "org_id",
-            "run_id"
-          ]
+          "columns": ["org_id", "run_id"]
         }
       },
       "uniqueConstraints": {},
@@ -4591,12 +4166,8 @@
           "name": "mcp_grants_client_id_mcp_clients_id_fk",
           "tableFrom": "mcp_grants",
           "tableTo": "mcp_clients",
-          "columnsFrom": [
-            "client_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["client_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -4604,12 +4175,8 @@
           "name": "mcp_grants_org_id_orgs_id_fk",
           "tableFrom": "mcp_grants",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -4617,12 +4184,8 @@
           "name": "mcp_grants_user_id_users_id_fk",
           "tableFrom": "mcp_grants",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -4632,10 +4195,7 @@
         "mcp_grants_org_id_id_key": {
           "name": "mcp_grants_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -4721,12 +4281,8 @@
           "name": "oauth_identities_user_id_users_id_fk",
           "tableFrom": "oauth_identities",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -4736,10 +4292,7 @@
         "oauth_identities_user_id_provider_key": {
           "name": "oauth_identities_user_id_provider_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "user_id",
-            "provider"
-          ]
+          "columns": ["user_id", "provider"]
         }
       },
       "policies": {},
@@ -4905,10 +4458,7 @@
       "compositePrimaryKeys": {
         "processed_events_consumer_event_id_pk": {
           "name": "processed_events_consumer_event_id_pk",
-          "columns": [
-            "consumer",
-            "event_id"
-          ]
+          "columns": ["consumer", "event_id"]
         }
       },
       "uniqueConstraints": {},
@@ -5056,12 +4606,8 @@
           "name": "invitations_invited_by_users_id_fk",
           "tableFrom": "invitations",
           "tableTo": "users",
-          "columnsFrom": [
-            "invited_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["invited_by"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -5069,12 +4615,8 @@
           "name": "invitations_org_id_orgs_id_fk",
           "tableFrom": "invitations",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -5084,10 +4626,7 @@
         "invitations_org_id_id_key": {
           "name": "invitations_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -5231,12 +4770,8 @@
           "name": "project_invitations_accepted_by_users_id_fk",
           "tableFrom": "project_invitations",
           "tableTo": "users",
-          "columnsFrom": [
-            "accepted_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["accepted_by"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -5244,12 +4779,8 @@
           "name": "project_invitations_invited_by_users_id_fk",
           "tableFrom": "project_invitations",
           "tableTo": "users",
-          "columnsFrom": [
-            "invited_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["invited_by"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -5257,12 +4788,8 @@
           "name": "project_invitations_org_id_orgs_id_fk",
           "tableFrom": "project_invitations",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -5270,14 +4797,8 @@
           "name": "project_invitations_org_id_project_id_fk",
           "tableFrom": "project_invitations",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -5287,10 +4808,7 @@
         "project_invitations_org_id_id_key": {
           "name": "project_invitations_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -5413,9 +4931,7 @@
         "sandbox_pool_daytona_id_unique": {
           "name": "sandbox_pool_daytona_id_unique",
           "nullsNotDistinct": false,
-          "columns": [
-            "daytona_id"
-          ]
+          "columns": ["daytona_id"]
         }
       },
       "policies": {},
@@ -5586,12 +5102,8 @@
           "name": "sandboxes_org_id_orgs_id_fk",
           "tableFrom": "sandboxes",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -5599,14 +5111,8 @@
           "name": "sandboxes_org_id_project_id_fk",
           "tableFrom": "sandboxes",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -5616,25 +5122,17 @@
         "sandboxes_org_id_id_key": {
           "name": "sandboxes_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         },
         "sandboxes_org_id_project_id_key": {
           "name": "sandboxes_org_id_project_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "project_id"
-          ]
+          "columns": ["org_id", "project_id"]
         },
         "sandboxes_daytona_id_key": {
           "name": "sandboxes_daytona_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "daytona_id"
-          ]
+          "columns": ["daytona_id"]
         }
       },
       "policies": {},
@@ -5737,19 +5235,14 @@
       "compositePrimaryKeys": {
         "template_versions_pk": {
           "name": "template_versions_pk",
-          "columns": [
-            "template",
-            "digest"
-          ]
+          "columns": ["template", "digest"]
         }
       },
       "uniqueConstraints": {
         "template_versions_snapshot_key": {
           "name": "template_versions_snapshot_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "snapshot"
-          ]
+          "columns": ["snapshot"]
         }
       },
       "policies": {},
@@ -5835,12 +5328,8 @@
           "name": "org_data_keys_org_id_orgs_id_fk",
           "tableFrom": "org_data_keys",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -5850,10 +5339,7 @@
         "org_data_keys_org_id_id_key": {
           "name": "org_data_keys_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -5950,12 +5436,8 @@
           "name": "secrets_org_id_orgs_id_fk",
           "tableFrom": "secrets",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -5963,14 +5445,8 @@
           "name": "secrets_org_id_dek_id_fk",
           "tableFrom": "secrets",
           "tableTo": "org_data_keys",
-          "columnsFrom": [
-            "org_id",
-            "dek_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "dek_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -5980,10 +5456,7 @@
         "secrets_org_id_id_key": {
           "name": "secrets_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -6069,12 +5542,8 @@
           "name": "memberships_invited_by_users_id_fk",
           "tableFrom": "memberships",
           "tableTo": "users",
-          "columnsFrom": [
-            "invited_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["invited_by"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -6082,12 +5551,8 @@
           "name": "memberships_org_id_orgs_id_fk",
           "tableFrom": "memberships",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -6095,12 +5560,8 @@
           "name": "memberships_user_id_users_id_fk",
           "tableFrom": "memberships",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -6110,18 +5571,12 @@
         "memberships_org_id_id_key": {
           "name": "memberships_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         },
         "memberships_org_id_user_id_key": {
           "name": "memberships_org_id_user_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "user_id"
-          ]
+          "columns": ["org_id", "user_id"]
         }
       },
       "policies": {},
@@ -6303,12 +5758,8 @@
           "name": "project_grants_org_id_orgs_id_fk",
           "tableFrom": "project_grants",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -6316,12 +5767,8 @@
           "name": "project_grants_user_id_users_id_fk",
           "tableFrom": "project_grants",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -6329,14 +5776,8 @@
           "name": "project_grants_org_id_project_id_fk",
           "tableFrom": "project_grants",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -6346,19 +5787,12 @@
         "project_grants_org_id_id_key": {
           "name": "project_grants_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         },
         "project_grants_org_id_project_id_user_id_key": {
           "name": "project_grants_org_id_project_id_user_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "project_id",
-            "user_id"
-          ]
+          "columns": ["org_id", "project_id", "user_id"]
         }
       },
       "policies": {},
@@ -6497,12 +5931,8 @@
           "name": "projects_org_id_orgs_id_fk",
           "tableFrom": "projects",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -6510,14 +5940,8 @@
           "name": "projects_org_id_workspace_id_fk",
           "tableFrom": "projects",
           "tableTo": "workspaces",
-          "columnsFrom": [
-            "org_id",
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "workspace_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -6527,10 +5951,7 @@
         "projects_org_id_id_key": {
           "name": "projects_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -6616,12 +6037,8 @@
           "name": "workspace_members_org_id_orgs_id_fk",
           "tableFrom": "workspace_members",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -6629,12 +6046,8 @@
           "name": "workspace_members_user_id_users_id_fk",
           "tableFrom": "workspace_members",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -6642,14 +6055,8 @@
           "name": "workspace_members_org_id_workspace_id_fk",
           "tableFrom": "workspace_members",
           "tableTo": "workspaces",
-          "columnsFrom": [
-            "org_id",
-            "workspace_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "workspace_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -6659,19 +6066,12 @@
         "workspace_members_org_id_id_key": {
           "name": "workspace_members_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         },
         "workspace_members_org_id_workspace_id_user_id_key": {
           "name": "workspace_members_org_id_workspace_id_user_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "workspace_id",
-            "user_id"
-          ]
+          "columns": ["org_id", "workspace_id", "user_id"]
         }
       },
       "policies": {},
@@ -6728,12 +6128,8 @@
           "name": "workspaces_org_id_orgs_id_fk",
           "tableFrom": "workspaces",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -6743,10 +6139,7 @@
         "workspaces_org_id_id_key": {
           "name": "workspaces_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -6846,12 +6239,8 @@
           "name": "email_verification_tokens_user_id_users_id_fk",
           "tableFrom": "email_verification_tokens",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -6912,12 +6301,8 @@
           "name": "mfa_recovery_codes_user_id_users_id_fk",
           "tableFrom": "mfa_recovery_codes",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -6927,10 +6312,7 @@
         "mfa_recovery_codes_user_id_code_hash_key": {
           "name": "mfa_recovery_codes_user_id_code_hash_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "user_id",
-            "code_hash"
-          ]
+          "columns": ["user_id", "code_hash"]
         }
       },
       "policies": {},
@@ -7024,12 +6406,8 @@
           "name": "password_reset_tokens_user_id_users_id_fk",
           "tableFrom": "password_reset_tokens",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -7168,10 +6546,7 @@
         "webhook_deliveries_provider_delivery_id_key": {
           "name": "webhook_deliveries_provider_delivery_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "provider",
-            "delivery_id"
-          ]
+          "columns": ["provider", "delivery_id"]
         }
       },
       "policies": {},
@@ -7228,12 +6603,8 @@
           "name": "webhook_endpoint_projects_org_id_orgs_id_fk",
           "tableFrom": "webhook_endpoint_projects",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -7241,14 +6612,8 @@
           "name": "webhook_endpoint_projects_org_id_endpoint_id_fk",
           "tableFrom": "webhook_endpoint_projects",
           "tableTo": "webhook_endpoints",
-          "columnsFrom": [
-            "org_id",
-            "endpoint_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "endpoint_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -7256,14 +6621,8 @@
           "name": "webhook_endpoint_projects_org_id_project_id_fk",
           "tableFrom": "webhook_endpoint_projects",
           "tableTo": "projects",
-          "columnsFrom": [
-            "org_id",
-            "project_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "project_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -7273,18 +6632,12 @@
         "webhook_endpoint_projects_org_id_id_key": {
           "name": "webhook_endpoint_projects_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         },
         "webhook_endpoint_projects_endpoint_id_project_id_key": {
           "name": "webhook_endpoint_projects_endpoint_id_project_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "endpoint_id",
-            "project_id"
-          ]
+          "columns": ["endpoint_id", "project_id"]
         }
       },
       "policies": {},
@@ -7432,12 +6785,8 @@
           "name": "webhook_endpoints_org_id_orgs_id_fk",
           "tableFrom": "webhook_endpoints",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -7445,14 +6794,8 @@
           "name": "webhook_endpoints_org_id_secret_id_fk",
           "tableFrom": "webhook_endpoints",
           "tableTo": "secrets",
-          "columnsFrom": [
-            "org_id",
-            "secret_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "secret_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         },
@@ -7460,14 +6803,8 @@
           "name": "webhook_endpoints_org_id_previous_secret_id_fk",
           "tableFrom": "webhook_endpoints",
           "tableTo": "secrets",
-          "columnsFrom": [
-            "org_id",
-            "previous_secret_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "previous_secret_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "no action",
           "onUpdate": "no action"
         }
@@ -7477,10 +6814,7 @@
         "webhook_endpoints_org_id_id_key": {
           "name": "webhook_endpoints_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -7616,12 +6950,8 @@
           "name": "webhook_send_attempts_org_id_orgs_id_fk",
           "tableFrom": "webhook_send_attempts",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -7629,14 +6959,8 @@
           "name": "webhook_send_attempts_org_id_send_id_fk",
           "tableFrom": "webhook_send_attempts",
           "tableTo": "webhook_sends",
-          "columnsFrom": [
-            "org_id",
-            "send_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "send_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -7646,10 +6970,7 @@
         "webhook_send_attempts_org_id_id_key": {
           "name": "webhook_send_attempts_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         }
       },
       "policies": {},
@@ -7849,12 +7170,8 @@
           "name": "webhook_sends_org_id_orgs_id_fk",
           "tableFrom": "webhook_sends",
           "tableTo": "orgs",
-          "columnsFrom": [
-            "org_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["org_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -7862,14 +7179,8 @@
           "name": "webhook_sends_org_id_endpoint_id_fk",
           "tableFrom": "webhook_sends",
           "tableTo": "webhook_endpoints",
-          "columnsFrom": [
-            "org_id",
-            "endpoint_id"
-          ],
-          "columnsTo": [
-            "org_id",
-            "id"
-          ],
+          "columnsFrom": ["org_id", "endpoint_id"],
+          "columnsTo": ["org_id", "id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -7879,18 +7190,12 @@
         "webhook_sends_org_id_id_key": {
           "name": "webhook_sends_org_id_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "org_id",
-            "id"
-          ]
+          "columns": ["org_id", "id"]
         },
         "webhook_sends_endpoint_id_event_id_key": {
           "name": "webhook_sends_endpoint_id_event_id_key",
           "nullsNotDistinct": false,
-          "columns": [
-            "endpoint_id",
-            "event_id"
-          ]
+          "columns": ["endpoint_id", "event_id"]
         }
       },
       "policies": {},
@@ -7907,11 +7212,7 @@
     "public.credential_mode": {
       "name": "credential_mode",
       "schema": "public",
-      "values": [
-        "PLATFORM",
-        "BYOK",
-        "BYOS"
-      ]
+      "values": ["PLATFORM", "BYOK", "BYOS"]
     },
     "public.run_failure_class": {
       "name": "run_failure_class",
@@ -7928,11 +7229,7 @@
     "public.run_message_role": {
       "name": "run_message_role",
       "schema": "public",
-      "values": [
-        "user",
-        "assistant",
-        "tool"
-      ]
+      "values": ["user", "assistant", "tool"]
     },
     "public.run_status": {
       "name": "run_status",
@@ -7952,74 +7249,42 @@
     "public.attachment_kind": {
       "name": "attachment_kind",
       "schema": "public",
-      "values": [
-        "image",
-        "pdf",
-        "document",
-        "text",
-        "archive"
-      ]
+      "values": ["image", "pdf", "document", "text", "archive"]
     },
     "public.llm_provider": {
       "name": "llm_provider",
       "schema": "public",
-      "values": [
-        "anthropic",
-        "openai"
-      ]
+      "values": ["anthropic", "openai"]
     },
     "public.byos_provider_status": {
       "name": "byos_provider_status",
       "schema": "public",
-      "values": [
-        "in_force",
-        "withdrawn"
-      ]
+      "values": ["in_force", "withdrawn"]
     },
     "public.checkpoint_kind": {
       "name": "checkpoint_kind",
       "schema": "public",
-      "values": [
-        "baseline",
-        "turn",
-        "revert",
-        "pull",
-        "edit"
-      ]
+      "values": ["baseline", "turn", "revert", "pull", "edit"]
     },
     "public.binding_state": {
       "name": "binding_state",
       "schema": "public",
-      "values": [
-        "bound",
-        "disconnected"
-      ]
+      "values": ["bound", "disconnected"]
     },
     "public.connector_account_type": {
       "name": "connector_account_type",
       "schema": "public",
-      "values": [
-        "organization",
-        "user"
-      ]
+      "values": ["organization", "user"]
     },
     "public.connector_auth_type": {
       "name": "connector_auth_type",
       "schema": "public",
-      "values": [
-        "app_installation",
-        "oauth",
-        "token"
-      ]
+      "values": ["app_installation", "oauth", "token"]
     },
     "public.connector_health": {
       "name": "connector_health",
       "schema": "public",
-      "values": [
-        "healthy",
-        "needs_reauth",
-        "unavailable"
-      ]
+      "values": ["healthy", "needs_reauth", "unavailable"]
     },
     "public.connector_op_kind": {
       "name": "connector_op_kind",
@@ -8059,32 +7324,17 @@
     "public.connector_op_state": {
       "name": "connector_op_state",
       "schema": "public",
-      "values": [
-        "queued",
-        "running",
-        "succeeded",
-        "failed"
-      ]
+      "values": ["queued", "running", "succeeded", "failed"]
     },
     "public.connector_provider": {
       "name": "connector_provider",
       "schema": "public",
-      "values": [
-        "github",
-        "netlify",
-        "supabase",
-        "neon",
-        "resend",
-        "cloudflare"
-      ]
+      "values": ["github", "netlify", "supabase", "neon", "resend", "cloudflare"]
     },
     "public.repo_link_state": {
       "name": "repo_link_state",
       "schema": "public",
-      "values": [
-        "linked",
-        "disconnected"
-      ]
+      "values": ["linked", "disconnected"]
     },
     "public.resource_kind": {
       "name": "resource_kind",
@@ -8099,13 +7349,7 @@
     "public.resource_state": {
       "name": "resource_state",
       "schema": "public",
-      "values": [
-        "provisioning",
-        "live",
-        "releasing",
-        "released",
-        "failed"
-      ]
+      "values": ["provisioning", "live", "releasing", "released", "failed"]
     },
     "public.sync_failure_reason": {
       "name": "sync_failure_reason",
@@ -8138,29 +7382,17 @@
     "public.sync_kind": {
       "name": "sync_kind",
       "schema": "public",
-      "values": [
-        "push",
-        "pull",
-        "import"
-      ]
+      "values": ["push", "pull", "import"]
     },
     "public.sync_state": {
       "name": "sync_state",
       "schema": "public",
-      "values": [
-        "queued",
-        "running",
-        "succeeded",
-        "failed"
-      ]
+      "values": ["queued", "running", "succeeded", "failed"]
     },
     "public.sync_trigger": {
       "name": "sync_trigger",
       "schema": "public",
-      "values": [
-        "manual",
-        "auto"
-      ]
+      "values": ["manual", "auto"]
     },
     "public.deployment_failure_reason": {
       "name": "deployment_failure_reason",
@@ -8178,21 +7410,12 @@
     "public.deployment_state": {
       "name": "deployment_state",
       "schema": "public",
-      "values": [
-        "queued",
-        "building",
-        "uploading",
-        "succeeded",
-        "failed",
-        "cancelled"
-      ]
+      "values": ["queued", "building", "uploading", "succeeded", "failed", "cancelled"]
     },
     "public.deployment_target": {
       "name": "deployment_target",
       "schema": "public",
-      "values": [
-        "forge-static"
-      ]
+      "values": ["forge-static"]
     },
     "public.domain_failure_reason": {
       "name": "domain_failure_reason",
@@ -8209,129 +7432,67 @@
     "public.domain_state": {
       "name": "domain_state",
       "schema": "public",
-      "values": [
-        "pending",
-        "active",
-        "drifted",
-        "removing",
-        "failed",
-        "removed"
-      ]
+      "values": ["pending", "active", "drifted", "removing", "failed", "removed"]
     },
     "public.oauth_provider": {
       "name": "oauth_provider",
       "schema": "public",
-      "values": [
-        "github",
-        "google"
-      ]
+      "values": ["github", "google"]
     },
     "public.sandbox_pool_state": {
       "name": "sandbox_pool_state",
       "schema": "public",
-      "values": [
-        "creating",
-        "ready",
-        "releasing"
-      ]
+      "values": ["creating", "ready", "releasing"]
     },
     "public.sandbox_state": {
       "name": "sandbox_state",
       "schema": "public",
-      "values": [
-        "pooled",
-        "active",
-        "idle",
-        "hibernated",
-        "archived"
-      ]
+      "values": ["pooled", "active", "idle", "hibernated", "archived"]
     },
     "public.sandbox_transition": {
       "name": "sandbox_transition",
       "schema": "public",
-      "values": [
-        "creating",
-        "resuming",
-        "hibernating",
-        "releasing"
-      ]
+      "values": ["creating", "resuming", "hibernating", "releasing"]
     },
     "public.template_version_state": {
       "name": "template_version_state",
       "schema": "public",
-      "values": [
-        "building",
-        "ready",
-        "failed",
-        "retired"
-      ]
+      "values": ["building", "ready", "failed", "retired"]
     },
     "public.org_role": {
       "name": "org_role",
       "schema": "public",
-      "values": [
-        "owner",
-        "admin",
-        "member",
-        "billing"
-      ]
+      "values": ["owner", "admin", "member", "billing"]
     },
     "public.preview_visibility": {
       "name": "preview_visibility",
       "schema": "public",
-      "values": [
-        "private",
-        "org",
-        "public"
-      ]
+      "values": ["private", "org", "public"]
     },
     "public.project_role": {
       "name": "project_role",
       "schema": "public",
-      "values": [
-        "owner",
-        "editor",
-        "commenter",
-        "viewer"
-      ]
+      "values": ["owner", "editor", "commenter", "viewer"]
     },
     "public.workspace_role": {
       "name": "workspace_role",
       "schema": "public",
-      "values": [
-        "admin",
-        "editor",
-        "viewer"
-      ]
+      "values": ["admin", "editor", "viewer"]
     },
     "public.webhook_delivery_state": {
       "name": "webhook_delivery_state",
       "schema": "public",
-      "values": [
-        "received",
-        "processed",
-        "ignored",
-        "failed"
-      ]
+      "values": ["received", "processed", "ignored", "failed"]
     },
     "public.webhook_endpoint_state": {
       "name": "webhook_endpoint_state",
       "schema": "public",
-      "values": [
-        "enabled",
-        "disabled",
-        "paused"
-      ]
+      "values": ["enabled", "disabled", "paused"]
     },
     "public.webhook_send_state": {
       "name": "webhook_send_state",
       "schema": "public",
-      "values": [
-        "pending",
-        "succeeded",
-        "failed",
-        "not_sent"
-      ]
+      "values": ["pending", "succeeded", "failed", "not_sent"]
     }
   },
   "schemas": {},
