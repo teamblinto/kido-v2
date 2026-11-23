@@ -11,6 +11,7 @@ import {
   type ConnectorsHarness,
   startConnectorsHarness,
 } from '../../../test/fixtures/connectors-harness';
+import type { TenantTransaction } from '../../database/database.types';
 import type { Envelope } from '../outbox/envelope';
 import { type Readiness, SANDBOX_LIFECYCLE } from '../sandbox/sandbox-lifecycle';
 import { type ExecResult, SANDBOX_PORT } from '../sandbox/sandbox.port';
@@ -102,7 +103,9 @@ describe('ImportRunner', () => {
     let work: string;
     let headSha: string;
     const sandbox = new DiskSandbox();
-    const ensureReady = vi.fn((): Promise<Readiness> => Promise.resolve({ ready: true }));
+    const ensureReady = vi.fn((_tx: TenantTransaction): Promise<Readiness> =>
+      Promise.resolve({ ready: true }),
+    );
 
     /** The imported project — the one the harness did not create. */
     async function importedProject(): Promise<{ id: string } | undefined> {
@@ -555,6 +558,44 @@ describe('ImportRunner', () => {
         );
         expect(checkpoints).toEqual([]);
         broken.mockRestore();
+      });
+
+      /**
+       * The claim of a warm-pool sandbox is written by `ensureReady` in the transaction it is
+       * given. A failed step after the sandbox was touched must not roll it back: that returned the
+       * half-imported container to the pool as `ready`, and the next project created on the
+       * template inherited a commit-less `.git` without a `.gitignore` (incident: its baseline
+       * `git add -A` staged `node_modules` and timed out, failing every run as `checkpoint`).
+       */
+      it('a failed checkout keeps the sandbox claim it made committed', async () => {
+        // What a pool claim leaves in the caller's transaction, observable once the import is over.
+        ensureReady.mockImplementation(async (tx: TenantTransaction) => {
+          await tx.insert(schema.auditLog).values({
+            action: 'sandbox.claimed',
+            orgId: harness.orgId,
+            target: randomUUID(),
+          });
+          return { ready: true };
+        });
+        const broken = vi
+          .spyOn(sandbox, 'exec')
+          .mockImplementation((ref: unknown, command: string) =>
+            command.startsWith('git checkout')
+              ? Promise.resolve({
+                  exitCode: 128,
+                  output: 'fatal: cut here\n',
+                  timedOut: false,
+                  truncated: false,
+                })
+              : DiskSandbox.prototype.exec.call(sandbox, ref, command),
+          );
+
+        const operation = await runImport();
+        broken.mockRestore();
+
+        expect(operation).toMatchObject({ reason: 'import-checkout-failed', state: 'failed' });
+        // The claim's write outlived the failed step: the release can find and destroy the sandbox.
+        expect(await harness.auditActions()).toContain('sandbox.claimed');
       });
 
       /**

@@ -240,7 +240,7 @@ export class SandboxService implements SandboxPort {
         path: posix.relative(box.root, match.file),
         text: match.content,
       })),
-      this.searchBounds,
+      { ...this.searchBounds, within: posix.relative(box.root, dir) },
     );
   }
 
@@ -255,7 +255,7 @@ export class SandboxService implements SandboxPort {
 
     return filterSearch(
       files.map((file) => posix.relative(box.root, file)),
-      this.searchBounds,
+      { ...this.searchBounds, within: posix.relative(box.root, dir) },
     );
   }
 

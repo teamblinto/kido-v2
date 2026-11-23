@@ -10,6 +10,7 @@ import type {
   SandboxPort,
   SandboxRef,
 } from '../sandbox/sandbox.port';
+import { DEFAULT_DAYTONA_TIMINGS } from '../sandbox/sandbox.constants';
 
 /** Wire name of one of the seven tools the model may call (contracts/tool-broker.md). */
 export type ToolName =
@@ -128,8 +129,11 @@ export const TOOLS: readonly ToolSpec[] = Object.freeze([
     call: async (port, ref, input: z.output<typeof execInput>, ctx) => ({
       output: formatExec(await port.exec(ref, input.command, ctx)),
     }),
+    // The model cannot avoid a refusal it was never told about, and each one costs a step of the
+    // run's bound: the list is the guard's own (`checkCommand`), so the two cannot drift.
     description:
-      'Run one allowlisted program with a 120 s timeout and a 64 KiB head/tail cap on combined stdout and stderr.',
+      `Run one program with a 120 s timeout and a 64 KiB head/tail cap on combined stdout and stderr. The program must be one of: ${DEFAULT_DAYTONA_TIMINGS.execAllowlist.join(', ')}. ` +
+      'The command is one program and its arguments: any of ; & | ` $ < > or a newline, even quoted, is refused. To locate files or text, use the find and search tools.',
     input: execInput,
     name: 'exec',
   }),

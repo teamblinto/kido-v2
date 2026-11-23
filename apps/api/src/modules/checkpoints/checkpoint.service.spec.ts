@@ -317,8 +317,9 @@ describe('CheckpointService', () => {
 
       await service.ensureRepository(ref, BASELINE_CTX, tx);
 
-      expect(git.commands.slice(0, 4)).toEqual([
+      expect(git.commands.slice(0, 5)).toEqual([
         gitGitDir(),
+        gitRevParse(),
         gitStatus(),
         gitAdd(),
         gitCommit('Baseline: workspace as found'),
@@ -339,6 +340,7 @@ describe('CheckpointService', () => {
 
       expect(git.commands).toEqual([
         gitGitDir(),
+        gitRevParse(),
         gitStatus(),
         gitRevParse(),
         gitDiffTree(null, head),
@@ -373,6 +375,34 @@ describe('CheckpointService', () => {
       // The other run's commit and no second one; the row names it.
       expect(git.commits.size).toBe(before + 1);
       expect(rows[0]).toMatchObject({ gitSha: git.head(), kind: 'baseline', parentId: null });
+    });
+
+    /**
+     * The incident's workspace: a warm-pool sandbox that an interrupted import had `git init`ed,
+     * so `.git` exists with no commit and no `.gitignore`. Taken "as found", its baseline staged
+     * `node_modules` and `.npm` and timed out; it is a fresh repository and gets the default rules.
+     */
+    it('treats a .git with no commit as fresh: the default .gitignore, the template label', async () => {
+      fresh();
+      handler({ command: gitInit() });
+      write('README.md', 'hello\n');
+      write('node_modules/x/index.js', 'x');
+      write('.npm/_cacache/index', 'x');
+      git.commands.length = 0;
+
+      await service.ensureRepository(ref, BASELINE_CTX, tx);
+
+      expect(git.commands.slice(0, 5)).toEqual([
+        gitGitDir(),
+        gitRevParse(),
+        gitStatus(),
+        gitAdd(),
+        gitCommit('Baseline: vite-react forge-tpl-2026-09-01'),
+      ]);
+      expect(fileAt('.gitignore')).toBe(
+        'node_modules/\ndist/\n.next/\n__pycache__/\n.venv/\n.env*\n.npm/\n.cache/\n',
+      );
+      expect(rows[0]!.files.map((file) => file.path)).toEqual(['.gitignore', 'README.md']);
     });
 
     it('labels the baseline as found when the project has no template', async () => {

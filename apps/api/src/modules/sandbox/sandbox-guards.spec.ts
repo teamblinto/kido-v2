@@ -149,4 +149,24 @@ describe('sandbox guards', () => {
       })),
     );
   });
+
+  // Incident: three searches into an installed package answered "no matches" for text it held,
+  // and the agent spent its step budget looking for a component that was there all along.
+  it('tests only what lies below the directory or file searched, so a vendor path can be asked for', () => {
+    const options = { cap: 9, excludes: DEFAULT_DAYTONA_TIMINGS.searchExcludes };
+    const pkg = 'node_modules/@scope/ui';
+    expect(
+      filterSearch([`${pkg}/index.d.ts`, `${pkg}/node_modules/dep/x.js`, `${pkg}/dist/index.js`], {
+        ...options,
+        within: pkg,
+      }),
+    ).toEqual([`${pkg}/index.d.ts`]);
+    expect(
+      filterSearch([`${pkg}/index.d.ts`], { ...options, within: `${pkg}/index.d.ts` }),
+    ).toEqual([`${pkg}/index.d.ts`]);
+    // The workspace root as `within` keeps the old answer.
+    expect(filterSearch(['node_modules/a.js', 'src/a.ts'], { ...options, within: '' })).toEqual([
+      'src/a.ts',
+    ]);
+  });
 });

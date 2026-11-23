@@ -119,8 +119,13 @@ export class CheckpointService {
     if (initialised && (await this.repository.head(tx, ref.orgId, ref.projectId)) !== null) return;
 
     let label = 'Baseline: workspace as found';
-    if (!initialised) {
-      await this.exec(ref, gitInit(), ctx);
+    if (!initialised) await this.exec(ref, gitInit(), ctx);
+    // "As found" is for a repository that already has history. A `.git` with no commit (a git step
+    // that never finished) holds nothing to keep, and without the default ignores its baseline
+    // `git add -A` stages `node_modules` and `.npm` and times out — failing every run's pre-flight.
+    const head = initialised ? await this.port.exec(ref, gitRevParse(), ctx) : undefined;
+    const born = head !== undefined && !head.timedOut && head.exitCode === 0;
+    if (!born) {
       const entries = await this.port.list(ref, '.', ctx);
       const own = entries.some((entry) => entry.name === '.gitignore')
         ? await this.port.read(ref, '.gitignore', ctx)

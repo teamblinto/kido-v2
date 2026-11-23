@@ -246,12 +246,19 @@ export class ImportRunner implements PullRunnerPort<ImportPrepared | undefined> 
       return { body: await readFile(bundlePath), runConfig, sha: head.stdout.trim() };
     });
 
+    // A new project's first `ensureReady` claims a warm-pool sandbox, and that claim is a row
+    // delete in the transaction it runs in. It commits on its own, before the sandbox is touched:
+    // in the steps' transaction, a failed step rolled the claim back and put the half-imported
+    // container back in the pool as `ready`, for the next project to inherit. Committed, a failure
+    // withdraws the project and the release destroys the container, as the agent's pre-flight does.
+    const readiness = await this.transactions.runInTenantScope({ orgId, userId: null }, (tx) =>
+      this.lifecycle.ensureReady(tx, ref, ctx),
+    );
+
+    if (!readiness.ready) throw new RetryableFailure('timeout');
+
     // The port resolves the sandbox through the tenant context, so every step shares one scope.
-    await this.transactions.runInTenantScope({ orgId, userId: null }, async (tx) => {
-      const readiness = await this.lifecycle.ensureReady(tx, ref, ctx);
-
-      if (!readiness.ready) throw new RetryableFailure('timeout');
-
+    await this.transactions.runInTenantScope({ orgId, userId: null }, async () => {
       const probe = await this.port.exec(ref, 'git rev-parse --git-dir', ctx);
 
       if (probe.timedOut || probe.exitCode !== 0) {

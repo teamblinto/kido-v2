@@ -143,16 +143,29 @@ export function assertFileSize(bytes: number, cap: number): void {
 
 /**
  * FR-007: at most `cap` results, none under an excluded directory wherever it sits in the tree.
- * Binary files are the daemon's own exclusion (research R2). Paths are root-relative.
+ * Binary files are the daemon's own exclusion (research R2). Paths are root-relative; `within` is
+ * the root-relative directory searched, and only what lies below it is tested — a search the agent
+ * points into `node_modules/<pkg>` answers that package, not a false "no matches".
  */
 export function filterSearch<T extends string | { readonly path: string }>(
   matches: readonly T[],
-  options: { readonly cap: number; readonly excludes: readonly string[] },
+  options: {
+    readonly cap: number;
+    readonly excludes: readonly string[];
+    readonly within?: string;
+  },
 ): T[] {
-  const pathOf = (match: T): string => (typeof match === 'string' ? match : match.path);
+  const within = options.within ?? '';
+  const base = within === '' ? '' : `${within}/`;
+  const below = (match: T): string => {
+    const path = typeof match === 'string' ? match : match.path;
+    // A search of one file names that file: nothing of it lies below what was asked for.
+    if (path === within) return '';
+    return path.startsWith(base) ? path.slice(base.length) : path;
+  };
   return matches
     .filter(
-      (match) => !options.excludes.some((prefix) => `/${pathOf(match)}`.includes(`/${prefix}`)),
+      (match) => !options.excludes.some((prefix) => `/${below(match)}`.includes(`/${prefix}`)),
     )
     .slice(0, options.cap);
 }
