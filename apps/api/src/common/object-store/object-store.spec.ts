@@ -4,6 +4,8 @@ import {
   HeadObjectCommand,
   PutObjectCommand,
 } from '@aws-sdk/client-s3';
+import { join } from 'node:path';
+
 import { ConfigService } from '@nestjs/config';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -138,12 +140,15 @@ describe('objectStoreFor', () => {
     expect(bucketOf(objectStoreFor(configured, 'attachments'))).toBe('forge-artifacts');
   });
 
-  it('falls back to the directory for repos and attachments, never for artifacts', () => {
+  it('falls back to the directory for every store, artifacts in a subdirectory of their own', () => {
     const local = new ConfigService<Environment, true>({ OBJECT_STORE_DIR: '/var/forge' });
+    const rootOf = (store: ObjectStorePort): string => (store as unknown as { root: string }).root;
 
     expect(objectStoreFor(local, 'repos')).toBeInstanceOf(FsObjectStore);
     expect(objectStoreFor(local, 'attachments')).toBeInstanceOf(FsObjectStore);
-    expect(objectStoreFor(local, 'artifacts')).toBeInstanceOf(UnconfiguredObjectStore);
+    expect(objectStoreFor(local, 'artifacts')).toBeInstanceOf(FsObjectStore);
+    expect(rootOf(objectStoreFor(local, 'repos'))).toBe('/var/forge');
+    expect(rootOf(objectStoreFor(local, 'artifacts'))).toBe(join('/var/forge', 'artifacts'));
   });
 
   it('binds the stand-in when the named bucket alone is missing', () => {

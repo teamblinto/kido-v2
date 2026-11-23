@@ -1,3 +1,5 @@
+import { join } from 'node:path';
+
 import {
   DeleteObjectCommand,
   GetObjectCommand,
@@ -105,13 +107,15 @@ export function objectStoreFor(
     secretAccessKey === undefined ||
     bucket === undefined
   ) {
-    // Not artifacts: built sites are read back by the gateway over S3, which a directory cannot
-    // serve. Repos and attachments are read back by the API itself.
+    // A single host with no bucket keeps every store on its persistent directory. Artifacts get a
+    // subdirectory of their own, so a release's blobs never share a namespace with the mirrors.
+    // The gateway serves platform-hosted sites over S3 only, so such a host has no `SITE_DOMAIN`
+    // serving; what reads artifacts there is the worker's Netlify publish (`ReleaseReader`).
     const dir = config.get('OBJECT_STORE_DIR', { infer: true });
 
-    return bucketName !== 'artifacts' && dir !== undefined
-      ? new FsObjectStore(dir)
-      : new UnconfiguredObjectStore();
+    if (dir === undefined) return new UnconfiguredObjectStore();
+
+    return new FsObjectStore(bucketName === 'artifacts' ? join(dir, 'artifacts') : dir);
   }
 
   return new R2ObjectStore(

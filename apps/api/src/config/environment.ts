@@ -491,7 +491,10 @@ export const environmentSchema = z
     OBJECT_STORE_ACCESS_KEY_ID: z.string().trim().min(1).optional(),
     OBJECT_STORE_BUCKET_ARTIFACTS: z.string().trim().min(1).optional(),
     OBJECT_STORE_BUCKET_REPOS: z.string().trim().min(1).optional(),
-    /** A persistent directory for repository mirrors, where no bucket is configured. */
+    /**
+     * A persistent directory for every store where no bucket is configured (a single host):
+     * repository mirrors and attachments at its root, release artifacts under `artifacts/`.
+     */
     OBJECT_STORE_DIR: z.string().trim().min(1).optional(),
     OBJECT_STORE_ENDPOINT: z.url().optional(),
     OBJECT_STORE_SECRET_ACCESS_KEY: z.string().trim().min(1).optional(),

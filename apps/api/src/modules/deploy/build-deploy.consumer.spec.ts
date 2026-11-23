@@ -856,7 +856,8 @@ describe('BuildDeployConsumer', () => {
         const done = await row(deployment.id);
         expect(done).toMatchObject({ failureReason: 'platform', state: 'failed' });
         expect(done.uploadStartedAt).toBeInstanceOf(Date);
-        expect(done.logTail).toContain('upload failed');
+        // Which failure it was, by class name: the deploy log says why, never a credential.
+        expect(done.logTail).toMatch(/upload failed: (ServiceUnavailable|RetryableFailure)\n$/u);
         expect(await site()).toBeUndefined();
       });
 

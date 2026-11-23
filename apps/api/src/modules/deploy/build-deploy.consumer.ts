@@ -237,14 +237,25 @@ export class BuildDeployConsumer extends EventConsumer<'deploy.requested', Build
     try {
       artifact = await upload(this.store, orgId, projectId, outcome.files);
     } catch (error) {
-      return this.failPastBoundary(deployment, epoch, `${outcome.log}upload failed\n`, error);
+      // The class name says which failure (unconfigured store, S3 refusal, timeout), never a secret.
+      return this.failPastBoundary(
+        deployment,
+        epoch,
+        `${outcome.log}upload failed: ${nameOf(error)}\n`,
+        error,
+      );
     }
 
     try {
       await this.goLive(deployment, epoch, artifact, outcome.log);
     } catch (error) {
       // The go-live transaction rolled back whole: the row is still this epoch's `uploading`.
-      await this.failPastBoundary(deployment, epoch, `${outcome.log}go-live failed\n`, error);
+      await this.failPastBoundary(
+        deployment,
+        epoch,
+        `${outcome.log}go-live failed: ${nameOf(error)}\n`,
+        error,
+      );
     }
   }
 

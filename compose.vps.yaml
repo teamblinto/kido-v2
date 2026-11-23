@@ -143,7 +143,9 @@ services:
       KEK_ENV_MASTER_KEY: ${KEK_ENV_MASTER_KEY:?generate once with openssl rand -base64 32}
       KEK_PROVIDER: env
       # This host has no bucket: the repository mirrors, the only copy of a project's files that
-      # outlives its sandbox, live on the repo-mirrors volume. Back it up with Postgres.
+      # outlives its sandbox, live on the repo-mirrors volume. Back it up with Postgres. Built
+      # releases live there too (artifacts/), written by the worker's build and read by its Netlify
+      # publish; the gateway serves platform-hosted sites from a bucket only, so none here.
       OBJECT_STORE_DIR: /var/lib/forge/repos
       PREVIEW_DOMAIN: ${PREVIEW_DOMAIN:?}
       PREVIEW_SIGNING_KEY: ${PREVIEW_SIGNING_KEY:?}

@@ -1,7 +1,14 @@
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import type { Deployment } from '@repo/db';
+import { ConfigService } from '@nestjs/config';
 import { describe, expect, it } from 'vitest';
 
 import { MemoryObjectStore } from '../../common/object-store/memory-object-store';
+import { objectStoreFor } from '../../common/object-store/r2-object-store';
+import type { Environment } from '../../config/environment';
 import type { TenantTransaction } from '../../database/database.types';
 import { blobKey, buildManifest, upload } from './artifact';
 import type { DeploymentRepository } from './deployment.repository';
@@ -94,5 +101,46 @@ describe('ReleaseReader.progress', () => {
     await expect(reader.progress(tx, ORG, PROJECT, 'd-failed')).resolves.toBe('failed');
     await expect(reader.progress(tx, ORG, PROJECT, 'd-cancelled')).resolves.toBe('failed');
     await expect(reader.progress(tx, ORG, PROJECT, OTHER_DEPLOYMENT)).resolves.toBeUndefined();
+  });
+});
+
+/**
+ * A single host with no bucket (`OBJECT_STORE_DIR`, the VPS): the build's upload and the Netlify
+ * publish's read go through the directory store, and a release reads back byte for byte.
+ */
+describe('ReleaseReader over the directory store', () => {
+  it('reads back the manifest and every blob a build uploaded', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'forge-artifacts-'));
+    const store = objectStoreFor(
+      new ConfigService<Environment, true>({ OBJECT_STORE_DIR: dir }),
+      'artifacts',
+    );
+    const files = [
+      { body: Buffer.from('<!doctype html><div id="root"></div>'), path: 'index.html' },
+      { body: Buffer.alloc(190_000, 7), path: 'assets/index-DpqUGku5.js' },
+    ];
+
+    try {
+      const { artifactSha } = await upload(store, ORG, PROJECT, files);
+      const reader = new ReleaseReader(
+        repository([
+          { artifactSha, id: DEPLOYMENT, orgId: ORG, projectId: PROJECT, state: 'succeeded' },
+        ]),
+        store,
+      );
+      const manifest = await reader.manifest(tx, ORG, PROJECT, DEPLOYMENT);
+
+      expect(Object.keys(manifest!.files).sort()).toEqual([
+        'assets/index-DpqUGku5.js',
+        'index.html',
+      ]);
+      for (const file of files) {
+        await expect(reader.blob(ORG, PROJECT, manifest!.files[file.path]!.sha)).resolves.toEqual(
+          file.body,
+        );
+      }
+    } finally {
+      await rm(dir, { force: true, recursive: true });
+    }
   });
 });
