@@ -3,7 +3,7 @@ import type { ConfigService } from '@nestjs/config';
 import type { TestingModule } from '@nestjs/testing';
 import { Test } from '@nestjs/testing';
 import { type ConnectorResource, schema } from '@repo/db';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 
@@ -112,8 +112,22 @@ describe.skipIf(!postgres || !redis)('US3 operation handlers', () => {
 
   const ref = () => ({ orgId, projectId });
 
+  /**
+   * This suite runs each operation itself. An e2e suite sharing the database with the events
+   * profile on would relay the same `connector.op.requested` and run it a second time, so what a
+   * transaction here writes to the outbox is marked published before it commits: no relay sees it.
+   */
   function inTenant<T>(fn: (tx: TenantTransaction) => Promise<T>): Promise<T> {
-    return transactions.runInTenantTransaction(orgId, fn);
+    return transactions.runInTenantTransaction(orgId, async (tx) => {
+      const result = await fn(tx);
+
+      await tx
+        .update(schema.outbox)
+        .set({ publishedAt: new Date() })
+        .where(and(eq(schema.outbox.originOrgId, orgId), isNull(schema.outbox.publishedAt)));
+
+      return result;
+    });
   }
 
   function event(operationId: string): Envelope<'connector.op.requested'> {
