@@ -38,6 +38,11 @@ export interface PublishPollTimings {
 
 const DONE = 'ready';
 const BROKEN = new Set(['error']);
+/**
+ * An `async: true` create answers before Netlify has diffed the digests: `required` is not
+ * there yet. Netlify's file-digest flow polls the deploy until it leaves these, then uploads.
+ */
+const PREPARING = new Set(['new', 'preparing']);
 
 /** `provider_state` while the publish waits on its release's build — ours, not Netlify's. */
 export const BUILDING_STATE = 'building';
@@ -140,7 +145,11 @@ export class NetlifyPublishHandler implements OperationHandler {
       files._redirects = digest;
     }
 
-    const deploy = await this.deployFor(context, token, siteId, files);
+    const deploy = await this.awaitPrepared(
+      context,
+      token,
+      await this.deployFor(context, token, siteId, files),
+    );
     const pathOf = new Map(Object.entries(files).map(([path, digest]) => [digest, path]));
 
     for (const digest of new Set(deploy.required)) {
@@ -250,6 +259,35 @@ export class NetlifyPublishHandler implements OperationHandler {
         providerState: deploy.state,
       }),
     );
+
+    return deploy;
+  }
+
+  /**
+   * The deploy once Netlify knows which digests it still needs: read again while it is
+   * `preparing` (each state on the timeline), within the same budget as the ready poll. Past it
+   * the job retries and resumes by the recorded id, as a ready poll does.
+   */
+  private async awaitPrepared(
+    context: OperationContext,
+    token: Plaintext,
+    created: NetlifyDeploy,
+  ): Promise<NetlifyDeploy> {
+    const { operation } = context;
+    const deadline = Date.now() + this.pollTimings.budgetMs;
+    let deploy = created;
+
+    while (PREPARING.has(deploy.state)) {
+      if (Date.now() >= deadline) throw new ProviderFailure('unavailable');
+
+      await new Promise((resolve) => setTimeout(resolve, this.pollTimings.intervalMs));
+      deploy = await this.netlify.deploy(token, deploy.id);
+
+      const { state } = deploy;
+      await context.inTenant((tx) =>
+        this.operations.setProgress(tx, operation.orgId, operation.id, { providerState: state }),
+      );
+    }
 
     return deploy;
   }

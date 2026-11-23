@@ -111,10 +111,13 @@ describe('NetlifyClient sites and deploys', () => {
     const files = { 'assets/app.js': sha1('a'), 'index.html': sha1('i') };
     const deploy = await client.createDeploy(token, 'site-1', files, 'forge:op-1');
 
-    expect(deploy).toEqual({
+    // `async: true`: the create answers `preparing`, before Netlify has worked out `required`;
+    // the next read has it.
+    expect(deploy).toEqual({ id: 'deploy-1', required: [], state: 'preparing' });
+    await expect(client.deploy(token, 'deploy-1')).resolves.toEqual({
       id: 'deploy-1',
       required: expect.arrayContaining([sha1('a'), sha1('i')]) as string[],
-      state: 'uploading',
+      state: 'prepared',
     });
     const request = fixture.requests[0]!;
     expect(request.method).toBe('POST');

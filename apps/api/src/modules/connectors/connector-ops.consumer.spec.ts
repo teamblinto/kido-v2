@@ -2,7 +2,7 @@ import { ConfigModule } from '@nestjs/config';
 import type { TestingModule } from '@nestjs/testing';
 import { Test } from '@nestjs/testing';
 import { schema } from '@repo/db';
-import { and, asc, eq, gt } from 'drizzle-orm';
+import { and, asc, eq, gt, isNull } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import { afterAll, beforeAll, beforeEach, describe, expect, inject, it } from 'vitest';
 
@@ -687,7 +687,7 @@ describe('ConnectorOpsConsumer', () => {
 
       await expect(run(id)).rejects.toBeInstanceOf(RetryableFailure);
 
-      expect(publishProgress[0]).toEqual({ externalRef: 'deploy-1', providerState: 'uploading' });
+      expect(publishProgress[0]).toEqual({ externalRef: 'deploy-1', providerState: 'preparing' });
       expect(await operation(id)).toMatchObject({ externalRef: 'deploy-1', state: 'running' });
     });
 
@@ -715,8 +715,11 @@ describe('ConnectorOpsConsumer', () => {
 
       await run(id);
 
+      // Netlify's async digest deploy: created `preparing`, read until `prepared` (when `required`
+      // is known and the uploads go), then processed to `ready`.
       expect(publishProgress.map((p) => p.providerState)).toEqual([
-        'uploading',
+        'preparing',
+        'prepared',
         'processing',
         'processing',
         'ready',
@@ -781,8 +784,22 @@ describe.skipIf(!postgres || !redis)('ConnectorOpsConsumer — Resend sending ke
   const ref = () => ({ orgId, projectId });
   const keyName = () => `forge-${projectId}`;
 
+  /**
+   * The suite runs each operation itself; a suite sharing the database with the events profile on
+   * would relay the same `connector.op.requested` and run it again. What a transaction here
+   * writes to the outbox is marked published before it commits, so no relay sees it.
+   */
   function inTenant<T>(fn: (tx: TenantTransaction) => Promise<T>): Promise<T> {
-    return transactions.runInTenantTransaction(orgId, fn);
+    return transactions.runInTenantTransaction(orgId, async (tx) => {
+      const result = await fn(tx);
+
+      await tx
+        .update(schema.outbox)
+        .set({ publishedAt: new Date() })
+        .where(and(eq(schema.outbox.originOrgId, orgId), isNull(schema.outbox.publishedAt)));
+
+      return result;
+    });
   }
 
   function event(operationId: string): Envelope<'connector.op.requested'> {

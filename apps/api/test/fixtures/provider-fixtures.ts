@@ -210,7 +210,10 @@ export interface NetlifyDeploy {
   readonly title: string;
   /** `path → sha1` as the create named them. */
   readonly files: Record<string, string>;
-  /** The digests Netlify asked for; each goes when its bytes arrive. */
+  /**
+   * The digests Netlify will ask for; each goes when its bytes arrive. Not answered while the
+   * deploy is `preparing`: an `async: true` create returns before Netlify has worked them out.
+   */
   required: string[];
   state: string;
   /** Polls still to answer `processing` once every file is in. */
@@ -253,7 +256,7 @@ export async function startNetlifyFixture({ port }: FixtureOptions = {}): Promis
   });
   const toDeploy = (deploy: NetlifyDeploy) => ({
     id: deploy.id,
-    required: deploy.required,
+    required: deploy.state === 'preparing' ? [] : deploy.required,
     site_id: deploy.siteId,
     state: deploy.state,
     title: deploy.title,
@@ -320,7 +323,8 @@ export async function startNetlifyFixture({ port }: FixtureOptions = {}): Promis
           processingPolls: 1,
           required: [...new Set(Object.values(body.files))].filter((d) => !have.has(d)),
           siteId: siteId!,
-          state: 'uploading',
+          // Netlify's async digest deploy: `preparing` until the first read, then `prepared`.
+          state: 'preparing',
           title: body.title,
         };
         deploys.push(deploy);
@@ -342,7 +346,9 @@ export async function startNetlifyFixture({ port }: FixtureOptions = {}): Promis
         const deploy = deploys.find((d) => d.id === deployId);
         if (deploy === undefined) return notFound;
 
-        if (deploy.state === 'uploading' && deploy.required.length === 0) {
+        if (deploy.state === 'preparing') {
+          deploy.state = 'prepared';
+        } else if (deploy.state === 'prepared' && deploy.required.length === 0) {
           deploy.state = 'processing';
         } else if (deploy.state === 'processing') {
           if (deploy.processingPolls > 0) deploy.processingPolls -= 1;
