@@ -861,7 +861,9 @@ describe('Deploys (e2e)', () => {
                     eq(schema.auditLog.action, 'site.released'),
                     eq(schema.auditLog.target, seeded.projectId),
                   ),
-                ),
+                )
+                // Without an order Postgres may return the two switches either way round.
+                .orderBy(schema.auditLog.at),
             );
             expect(released).toEqual([
               {

@@ -1364,8 +1364,12 @@ describe('Sandbox lifecycle (e2e)', () => {
 
         /** SC-013, quickstart row SC-013 (FR-032): every job either queue received in this suite. */
         it('every queued payload is ids and a target state only', async () => {
+          // The ops queue also carries `SandboxProjectConsumer`'s events; one still queued when this
+          // runs (timing-dependent) is walked like the rest, not looked up as an unknown shape.
           const shapes = {
             'maintenance.due': Object.keys(EVENTS['maintenance.due'].payload.shape),
+            'project.archived': Object.keys(EVENTS['project.archived'].payload.shape),
+            'project.env.changed': Object.keys(EVENTS['project.env.changed'].payload.shape),
             'sandbox.op.requested': Object.keys(EVENTS['sandbox.op.requested'].payload.shape),
           };
           const envelopes: Envelope[] = [];
