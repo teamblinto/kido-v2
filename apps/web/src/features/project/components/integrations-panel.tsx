@@ -184,7 +184,7 @@ export function IntegrationsPanel({
   );
 }
 
-interface SectionProps {
+export interface SectionProps {
   readonly binding: Binding | undefined;
   /** `org:connectors.manage`: bind, unbind and apply migrations. */
   readonly canManage: boolean;
@@ -659,7 +659,7 @@ function SupabaseSection(props: SectionProps): React.JSX.Element {
 }
 
 /** Spec 030 US4: bind to an existing Netlify site, or create one now; publishing is on the Site panel. */
-function NetlifySection(props: SectionProps): React.JSX.Element {
+export function NetlifySection(props: SectionProps): React.JSX.Element {
   const { binding, canManage, connection, orgId, projectId } = props;
   const sites = useNetlifySites(orgId, pickerConnection(props));
   const bind = useBind(orgId, projectId, 'netlify');

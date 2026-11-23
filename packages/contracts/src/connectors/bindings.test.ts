@@ -78,6 +78,9 @@ describe('bindings', () => {
     expect(netlifyPublishRequestSchema.parse({ deploymentId: UUID })).toEqual({
       deploymentId: UUID,
     });
+    // No release named: build the head and publish it.
+    expect(netlifyPublishRequestSchema.parse({})).toEqual({});
+    expect(netlifyPublishRequestSchema.safeParse({ checkpointId: UUID }).success).toBe(false);
   });
 
   it('pages the bind form listings', () => {

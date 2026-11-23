@@ -39,7 +39,8 @@ describe('operation enums', () => {
       'connection_remove',
     ]);
     expect(CONNECTOR_OP_STATES).toEqual(['queued', 'running', 'succeeded', 'failed']);
-    expect(CONNECTOR_OP_REASONS).toHaveLength(14);
+    expect(CONNECTOR_OP_REASONS).toHaveLength(15);
+    expect(CONNECTOR_OP_REASONS).toContain('build-failed');
     expect(CONNECTOR_OP_REASONS).toContain('site-gone');
   });
 });

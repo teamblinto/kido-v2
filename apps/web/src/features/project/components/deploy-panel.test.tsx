@@ -1,6 +1,7 @@
 import {
   type Binding,
   type Checkpoint,
+  type Connection,
   DEPLOYMENT_FAILURE_REASONS,
   type Deployment,
   type Operation,
@@ -89,14 +90,50 @@ const neverDeployed: Site = {
 
 const live: Site = { currentDeploymentId: D1, deployable: true, offline: false, url: URL_LIVE };
 
+const NETLIFY_CONNECTION: Connection = {
+  account: { name: 'Acme', ref: 'acme' },
+  authType: 'token',
+  connectedAt: '2026-09-20T10:00:00.000Z',
+  connectedBy: { id: aUser.id, name: 'Rakibul' },
+  credentialFingerprint: 'a1b2c3d4',
+  failedResources: [],
+  health: 'healthy',
+  id: '55555555-5555-4555-8555-555555555555',
+  lastVerifiedAt: '2026-09-20T10:00:00.000Z',
+  provider: 'netlify',
+  removalRequestedAt: null,
+  scopes: ['account'],
+};
+
 function handlers({
+  connections = [],
   deployments = [],
+  role = 'owner',
   site = neverDeployed,
 }: {
+  connections?: readonly Connection[];
   deployments?: readonly Deployment[];
+  role?: string;
   site?: Site;
 } = {}) {
   return [
+    http.get(`${API}/orgs`, () =>
+      HttpResponse.json({
+        orgs: [
+          {
+            access: 'member',
+            createdAt: '2026-08-01T09:00:00.000Z',
+            id: ORG,
+            name: 'Blinto',
+            plan: 'free',
+            role,
+            slug: 'blinto',
+          },
+        ],
+      }),
+    ),
+    // The organisation's connections: none unless a test says so.
+    http.get(`${API}/orgs/${ORG}/connectors`, () => HttpResponse.json({ connections })),
     http.get(`${BASE}/checkpoints`, () =>
       HttpResponse.json({
         items: [aCheckpoint(HEAD, 'Add the pricing page'), aCheckpoint(OLDER, 'First draft')],
@@ -347,7 +384,11 @@ describe('DeployPanel — Netlify', () => {
         publishes = [aPublish()];
         return HttpResponse.json(aPublish(), { status: 202 });
       }),
-      ...handlers({ deployments: [succeeded(D1, true)], site: live }),
+      ...handlers({
+        connections: [NETLIFY_CONNECTION],
+        deployments: [succeeded(D1, true)],
+        site: live,
+      }),
     );
 
     render();
@@ -355,7 +396,7 @@ describe('DeployPanel — Netlify', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Publish to Netlify' }));
 
     await waitFor(() => expect(posted).toEqual([{ deploymentId: D1 }]));
-    expect(await screen.findByText('Netlify: uploading')).toBeInTheDocument();
+    expect(await screen.findByText('Uploading to Netlify…')).toBeInTheDocument();
     expect(
       await screen.findByText('Published to Netlify', {}, { timeout: 5000 }),
     ).toBeInTheDocument();
@@ -385,5 +426,180 @@ describe('DeployPanel — Netlify', () => {
 
     await screen.findByRole('list', { name: 'Deploy history' });
     expect(screen.queryByRole('button', { name: 'Publish to Netlify' })).not.toBeInTheDocument();
+  });
+});
+
+/** "Deploy to Netlify": the site choice, one button, and the publish's lifecycle with its links. */
+describe('DeployPanel — Deploy to Netlify', () => {
+  it('without a Netlify connection, says where an admin connects it and offers no deploy', async () => {
+    server.use(...handlers());
+
+    render();
+
+    const section = await screen.findByTestId('netlify-deploy');
+
+    expect(await within(section).findByText(/No Netlify connection/u)).toBeInTheDocument();
+    expect(within(section).getByRole('link', { name: 'settings' })).toHaveAttribute(
+      'href',
+      '/settings/connectors',
+    );
+    expect(screen.queryByRole('button', { name: 'Deploy to Netlify' })).not.toBeInTheDocument();
+  });
+
+  it('connected but unbound, an admin chooses an existing site', async () => {
+    const bound: unknown[] = [];
+
+    server.use(
+      ...handlers({ connections: [NETLIFY_CONNECTION] }),
+      http.get(`${API}/orgs/${ORG}/connectors/${NETLIFY_CONNECTION.id}/netlify/sites`, () =>
+        HttpResponse.json({
+          items: [{ id: 'site-1', name: 'acme-site', url: 'https://acme-site.netlify.app' }],
+        }),
+      ),
+      http.put(`${BASE}/connectors/netlify`, async ({ request }) => {
+        bound.push(await request.json());
+        return HttpResponse.json(NETLIFY_BINDING);
+      }),
+    );
+
+    render();
+
+    await screen.findByRole('option', { name: 'acme-site' });
+    await userEvent.selectOptions(screen.getByLabelText('Netlify site'), 'site-1');
+    await userEvent.click(screen.getByRole('button', { name: 'Use this site' }));
+
+    await waitFor(() => expect(bound).toEqual([{ siteId: 'site-1' }]));
+  });
+
+  it('builds and publishes in one request, then shows each stage to a live link', async () => {
+    const posted: unknown[] = [];
+    let publishes: Operation[] = [];
+    const stages = [
+      aPublish({ providerState: 'building', state: 'running' }),
+      aPublish({ providerState: 'uploading', state: 'running' }),
+      aPublish({
+        finishedAt: '2026-09-22T10:09:00.000Z',
+        providerState: 'ready',
+        state: 'succeeded',
+      }),
+    ];
+
+    server.use(
+      http.get(`${BASE}/connectors`, () => HttpResponse.json({ items: [NETLIFY_BINDING] })),
+      http.get(`${BASE}/connectors/operations`, () => {
+        if (publishes.length > 0) publishes = [stages.shift() ?? publishes[0]!];
+        return HttpResponse.json({ items: publishes });
+      }),
+      http.post(`${BASE}/connectors/netlify/publish`, async ({ request }) => {
+        posted.push(await request.json());
+        publishes = [aPublish()];
+        return HttpResponse.json(aPublish(), { status: 202 });
+      }),
+      ...handlers({ connections: [NETLIFY_CONNECTION] }),
+    );
+
+    render();
+
+    expect(
+      await screen.findByText(/Builds the latest checkpoint .* publishes the output to acme-site/u),
+    ).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Deploy to Netlify' }));
+
+    // Nothing built for the head yet: no release named, the API builds it first.
+    await waitFor(() => expect(posted).toEqual([{}]));
+    expect(await screen.findByText('Building on Kido…')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Deploy to Netlify' })).toBeDisabled();
+    expect(
+      await screen.findByText('Published to Netlify', {}, { timeout: 8000 }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Open live site/u })).toHaveAttribute(
+      'href',
+      'https://acme-site.netlify.app',
+    );
+    expect(screen.getByRole('link', { name: /Deploys on Netlify/u })).toHaveAttribute(
+      'href',
+      'https://app.netlify.com/sites/acme-site/deploys',
+    );
+  }, 15_000);
+
+  it('publishes the head’s succeeded build as it is, without building again', async () => {
+    const posted: unknown[] = [];
+
+    server.use(
+      http.get(`${BASE}/connectors`, () => HttpResponse.json({ items: [NETLIFY_BINDING] })),
+      http.get(`${BASE}/connectors/operations`, () => HttpResponse.json({ items: [] })),
+      http.post(`${BASE}/connectors/netlify/publish`, async ({ request }) => {
+        posted.push(await request.json());
+        return HttpResponse.json(aPublish(), { status: 202 });
+      }),
+      ...handlers({
+        connections: [NETLIFY_CONNECTION],
+        deployments: [succeeded(D1, true)],
+        site: live,
+      }),
+    );
+
+    render();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Deploy to Netlify' }));
+
+    await waitFor(() => expect(posted).toEqual([{ deploymentId: D1 }]));
+  });
+
+  it('says why a deploy failed, with the build’s failure in its own words', async () => {
+    server.use(
+      http.get(`${BASE}/connectors`, () => HttpResponse.json({ items: [NETLIFY_BINDING] })),
+      http.get(`${BASE}/connectors/operations`, () =>
+        HttpResponse.json({
+          items: [aPublish({ reason: 'build-failed', state: 'failed' })],
+        }),
+      ),
+      ...handlers({ connections: [NETLIFY_CONNECTION] }),
+    );
+
+    render();
+
+    expect(await screen.findByText(/The build failed, so nothing was sent/u)).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Deploys on Netlify/u })).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Open live site/u })).not.toBeInTheDocument();
+  });
+
+  it('puts a refused deploy’s reason on screen', async () => {
+    server.use(
+      http.get(`${BASE}/connectors`, () => HttpResponse.json({ items: [NETLIFY_BINDING] })),
+      http.get(`${BASE}/connectors/operations`, () => HttpResponse.json({ items: [] })),
+      http.post(`${BASE}/connectors/netlify/publish`, () =>
+        problemResponse('conflict', 409, { reason: 'in-flight' }),
+      ),
+      ...handlers({ connections: [NETLIFY_CONNECTION] }),
+    );
+
+    render();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Deploy to Netlify' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/already running/u);
+  });
+
+  it('locks the deploy while the Netlify connection needs reconnecting', async () => {
+    server.use(
+      http.get(`${BASE}/connectors`, () => HttpResponse.json({ items: [NETLIFY_BINDING] })),
+      http.get(`${BASE}/connectors/operations`, () => HttpResponse.json({ items: [] })),
+      ...handlers({ connections: [{ ...NETLIFY_CONNECTION, health: 'needs_reauth' }] }),
+    );
+
+    render();
+
+    expect(await screen.findByText(/needs to be reconnected/u)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Deploy to Netlify' })).toBeDisabled();
+  });
+
+  it('offers nothing Netlify on a project whose template has no build', async () => {
+    server.use(...handlers({ site: { ...neverDeployed, deployable: false } }));
+
+    render();
+
+    await screen.findByTestId('not-deployable');
+    expect(screen.queryByTestId('netlify-deploy')).not.toBeInTheDocument();
   });
 });

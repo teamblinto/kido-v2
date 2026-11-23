@@ -96,8 +96,12 @@ export const BIND_REQUEST_SCHEMAS = {
   supabase: supabaseBindRequestSchema,
 } as const satisfies Record<BindingProvider, z.ZodType>;
 
-/** `POST …/connectors/netlify/publish`: a `succeeded` release of this project. */
-export const netlifyPublishRequestSchema = z.strictObject({ deploymentId: z.uuid() });
+/**
+ * `POST …/connectors/netlify/publish`: a release of this project — `succeeded`, or still building
+ * (the publish waits for it). Without one, the head checkpoint is built and then published (or the
+ * build already in flight is joined), so "Deploy to Netlify" is one request.
+ */
+export const netlifyPublishRequestSchema = z.strictObject({ deploymentId: z.uuid().optional() });
 
 export type NetlifyPublishRequest = z.output<typeof netlifyPublishRequestSchema>;
 

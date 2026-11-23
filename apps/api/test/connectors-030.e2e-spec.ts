@@ -850,11 +850,13 @@ describe('Connectors 030 (e2e)', () => {
         expect(netlify.deploys).toHaveLength(1);
         expect(netlify.deploys[0]).toMatchObject({ siteId, title: publishTitle(firstId) });
         const stored = netlify.uploads.get('deploy-1')!;
-        const manifestDigests = Object.fromEntries(
-          RELEASE.map((file) => [`/${file.path}`, sha1(file.body)]),
-        );
+        const manifestDigests = {
+          ...Object.fromEntries(RELEASE.map((file) => [`/${file.path}`, sha1(file.body)])),
+          // The SPA fallback Kido's own host gives a release with an index.html.
+          '/_redirects': sha1(Buffer.from('/*    /index.html    200\n')),
+        };
         expect(netlify.deploys[0]!.files).toEqual(manifestDigests);
-        // SC-006: every digest stored is the SHA1 of the release's bytes, each distinct one once.
+        // SC-006: every digest stored is the SHA1 of the bytes sent, each distinct one once.
         expect(new Set(stored.values())).toEqual(new Set(Object.values(manifestDigests)));
 
         const operations = await http(app)
@@ -948,6 +950,66 @@ describe('Connectors 030 (e2e)', () => {
         const id = (published.body as { id: string }).id;
         expect(await until(settled(id), 60_000)).toBe(true);
         expect(await operationRow(id)).toMatchObject({ state: 'succeeded' });
+      }, 120_000);
+
+      it('Deploy to Netlify: one request builds the head and publishes it once the build lands; a second is refused with no second build', async () => {
+        const { orgId, projectId } = a();
+        await paste('netlify', NETLIFY_TOKEN).expect(201);
+        await unsafe(http(app).put(`${bindingsPath()}/netlify`), [owner()])
+          .send({ siteId: 'site-1' })
+          .expect(200);
+        // A head checkpoint to build (with an older release beside it).
+        await release();
+        await waitForPublishSlot();
+        const buildsOf = () =>
+          transactions.runInTenantTransaction(orgId, (tx) =>
+            tx
+              .select()
+              .from(schema.deployments)
+              .where(
+                and(
+                  eq(schema.deployments.projectId, projectId),
+                  eq(schema.deployments.state, 'queued'),
+                ),
+              ),
+          );
+
+        const answer = await unsafe(http(app).post(`${bindingsPath()}/netlify/publish`), [
+          owner(),
+        ]).send({});
+        bodies.push(answer.body);
+        expect(answer.status).toBe(202);
+        const id = (answer.body as { id: string; deploymentId: string }).id;
+        const [build] = await buildsOf();
+        // The publish names the build it queued, and waits on it.
+        expect((answer.body as { deploymentId: string }).deploymentId).toBe(build!.id);
+        expect(
+          await until(async () => (await operationRow(id)).providerState === 'building', 30_000),
+        ).toBe(true);
+
+        // A second press while that publish runs: 409 in-flight, and its build rolled back with it.
+        const again = await unsafe(http(app).post(`${bindingsPath()}/netlify/publish`), [
+          owner(),
+        ]).send({});
+        bodies.push(again.body);
+        expect(again.status).toBe(409);
+        expect(again.body).toMatchObject({ reason: 'in-flight' });
+        expect(await buildsOf()).toHaveLength(1);
+
+        // The build lands (the build consumer is the agent profile's, not started here).
+        const { artifactSha } = await upload(artifacts, orgId, projectId, RELEASE);
+        await transactions.runInTenantTransaction(orgId, (tx) =>
+          tx
+            .update(schema.deployments)
+            .set({ artifactSha, finishedAt: new Date(), startedAt: new Date(), state: 'succeeded' })
+            .where(eq(schema.deployments.id, build!.id)),
+        );
+
+        expect(await until(settled(id), 60_000)).toBe(true);
+        expect(await operationRow(id)).toMatchObject({
+          providerState: 'ready',
+          state: 'succeeded',
+        });
       }, 120_000);
     });
 

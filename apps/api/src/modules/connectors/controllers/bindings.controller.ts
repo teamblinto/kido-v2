@@ -133,10 +133,17 @@ export class BindingsController {
   @Post('netlify/publish')
   @HttpCode(HttpStatus.ACCEPTED)
   @RequirePermission('project:deploy')
-  @ApiOperation({ summary: 'Publish a succeeded release to the bound Netlify site' })
+  @ApiOperation({
+    summary:
+      'Publish a release to the bound Netlify site; with no `deploymentId`, build the head first',
+  })
   @ApiResponse({ status: 202, type: OperationResponseDto })
-  @ApiResponse({ description: 'Another project’s release, or none.', status: 404 })
-  @ApiResponse({ description: 'A publish is already in flight (`in-flight`).', status: 409 })
+  @ApiResponse({ description: 'Another project’s release, a failed one, or none.', status: 404 })
+  @ApiResponse({
+    description:
+      'A publish is already in flight (`in-flight`), or the build is refused (`reason`).',
+    status: 409,
+  })
   async publishNetlify(
     @CurrentUser() caller: AuthenticatedUser,
     @Param('orgId') orgId: string,

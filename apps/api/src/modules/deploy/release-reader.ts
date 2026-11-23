@@ -18,16 +18,32 @@ export class ReleaseReader {
     @Inject(ARTIFACT_STORE) private readonly store: ObjectStorePort,
   ) {}
 
-  /** A `succeeded` release of this project: what a publish may name (contracts/bindings.md § 2). */
-  async isRelease(
+  /**
+   * Where a release stands for a publish (contracts/bindings.md § 2), which may wait on it:
+   * `succeeded` with its artifact; `building` while queued, building or
+   * uploading; `failed` once failed or cancelled; `undefined` for another project's or none.
+   */
+  async progress(
     tx: TenantTransaction,
     orgId: string,
     projectId: string,
     deploymentId: string,
-  ): Promise<boolean> {
+  ): Promise<'building' | 'failed' | 'succeeded' | undefined> {
     const row = await this.deployments.byId(tx, orgId, projectId, deploymentId);
 
-    return row?.state === 'succeeded' && row.artifactSha !== null;
+    if (row === undefined) return undefined;
+    if (row.state === 'succeeded') return row.artifactSha === null ? 'failed' : 'succeeded';
+
+    return row.state === 'failed' || row.state === 'cancelled' ? 'failed' : 'building';
+  }
+
+  /** The id of the project's build in flight, if any — what "Deploy to Netlify" joins. */
+  async inFlight(
+    tx: TenantTransaction,
+    orgId: string,
+    projectId: string,
+  ): Promise<string | undefined> {
+    return (await this.deployments.inFlight(tx, orgId, projectId))?.id;
   }
 
   async manifest(

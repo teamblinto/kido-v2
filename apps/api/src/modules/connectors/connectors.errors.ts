@@ -43,6 +43,7 @@ export function providerUnavailable(
 
 /** Spec 030 contracts/bindings.md § 5: what each refusal reason is to a person. */
 const REFUSAL_DETAIL: Readonly<Record<ConnectorOpReason, string>> = {
+  'build-failed': 'The build this publish waited on failed.',
   disconnected: 'The organisation has no connection to this provider.',
   'in-flight': 'An operation of this kind is already running for this project.',
   'missing-scope': 'The credential is missing a permission this needs.',

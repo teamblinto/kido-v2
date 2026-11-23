@@ -4,6 +4,8 @@ import { Inject, Injectable } from '@nestjs/common';
 import { netlifyBindingConfigSchema } from '@repo/contracts';
 
 import type { Plaintext } from '../../common/crypto/branded';
+import type { Manifest } from '../deploy/artifact';
+import { BUILD_TIMEOUT_MS } from '../deploy/deploy.constants';
 import { ReleaseReader } from '../deploy/release-reader';
 import { BindingRepository } from './binding.repository';
 import {
@@ -24,14 +26,35 @@ export function publishTitle(operationId: string): string {
   return `forge:${operationId}`;
 }
 
-/** How often and for how long one attempt polls the deploy; past the budget the job retries. */
+/**
+ * How often and for how long one attempt polls: the deploy (past `budgetMs` the job retries), and
+ * first the release's build (past `buildBudgetMs` the publish is `timed-out`).
+ */
 export interface PublishPollTimings {
   readonly budgetMs: number;
+  readonly buildBudgetMs: number;
   readonly intervalMs: number;
 }
 
 const DONE = 'ready';
 const BROKEN = new Set(['error']);
+
+/** `provider_state` while the publish waits on its release's build — ours, not Netlify's. */
+export const BUILDING_STATE = 'building';
+
+/**
+ * Kido's own host answers an extensionless path it holds no file for with `index.html` (the SPA
+ * fallback, `apps/gateway/src/site-serve.ts`); Netlify serves only the files it is given. A
+ * release with an `index.html` and no redirect config of its own gets the same fallback as a
+ * Netlify rewrite, which Netlify applies only where no file matches (shadowing).
+ */
+export function spaRedirects(files: Manifest['files']): Buffer | undefined {
+  const own = ['_redirects', 'netlify.toml'].some((path) => Object.hasOwn(files, path));
+
+  return Object.hasOwn(files, 'index.html') && !own
+    ? Buffer.from('/*    /index.html    200\n')
+    : undefined;
+}
 
 /**
  * `netlify_publish` (spec 030 research R11, FR-016–FR-018): a succeeded release's files as a
@@ -49,8 +72,15 @@ const BROKEN = new Set(['error']);
  */
 @Injectable()
 export class NetlifyPublishHandler implements OperationHandler {
-  /** A suite shortens both. */
-  pollTimings: PublishPollTimings = { budgetMs: 5 * 60_000, intervalMs: 2_000 };
+  /**
+   * A suite shortens them. The build wait is the build's own cap plus queueing slack, so build
+   * wait and publish together stay inside the sweep's `STALE_PUBLISH_MS` (30 min).
+   */
+  pollTimings: PublishPollTimings = {
+    budgetMs: 5 * 60_000,
+    buildBudgetMs: BUILD_TIMEOUT_MS + 5 * 60_000,
+    intervalMs: 2_000,
+  };
 
   constructor(
     @Inject(NETLIFY_CLIENT) private readonly netlify: NetlifyClient,
@@ -74,6 +104,7 @@ export class NetlifyPublishHandler implements OperationHandler {
     const { siteId } = netlifyBindingConfigSchema.parse(binding.config);
 
     await this.siteOrGone(context, token, siteId, bindingId);
+    await this.awaitRelease(context, projectId, deploymentId);
 
     const manifest = await context.inTenant((tx) =>
       this.releases.manifest(tx, orgId, projectId, deploymentId),
@@ -99,17 +130,29 @@ export class NetlifyPublishHandler implements OperationHandler {
       files[path] = digest;
     }
 
+    // Files the publish adds to the release, by SHA1, with their bytes.
+    const generated = new Map<string, Buffer>();
+    const redirects = spaRedirects(manifest.files);
+
+    if (redirects !== undefined) {
+      const digest = createHash('sha1').update(redirects).digest('hex');
+      generated.set(digest, redirects);
+      files._redirects = digest;
+    }
+
     const deploy = await this.deployFor(context, token, siteId, files);
     const pathOf = new Map(Object.entries(files).map(([path, digest]) => [digest, path]));
 
     for (const digest of new Set(deploy.required)) {
       const path = pathOf.get(digest);
       const sha256 = sha256Of.get(digest);
+      const body =
+        generated.get(digest) ??
+        (sha256 === undefined ? undefined : await this.blob(orgId, projectId, sha256));
 
       // Netlify asked for a digest this release does not hold: nothing we can send.
-      if (path === undefined || sha256 === undefined) throw new ProviderFailure('validation');
+      if (path === undefined || body === undefined) throw new ProviderFailure('validation');
 
-      const body = await this.blob(orgId, projectId, sha256);
       await this.netlify.uploadFile(token, deploy.id, path, body, body.length);
     }
 
@@ -134,6 +177,43 @@ export class NetlifyPublishHandler implements OperationHandler {
       }
 
       throw error;
+    }
+  }
+
+  /**
+   * "Deploy to Netlify" queues the publish with the build it starts: wait for that build to land,
+   * with `building` on the timeline meanwhile. A failed or cancelled build is `build-failed`; a
+   * build still going past the budget is `timed-out` (the deploy sweep settles it on its side).
+   */
+  private async awaitRelease(
+    context: OperationContext,
+    projectId: string,
+    deploymentId: string,
+  ): Promise<void> {
+    const { operation } = context;
+    const deadline = Date.now() + this.pollTimings.buildBudgetMs;
+    let marked = false;
+
+    for (;;) {
+      const progress = await context.inTenant((tx) =>
+        this.releases.progress(tx, operation.orgId, projectId, deploymentId),
+      );
+
+      if (progress === 'succeeded') return;
+      if (progress === undefined) throw new OperationFailure('not-found');
+      if (progress === 'failed') throw new OperationFailure('build-failed');
+      if (Date.now() >= deadline) throw new OperationFailure('timed-out');
+
+      if (!marked) {
+        await context.inTenant((tx) =>
+          this.operations.setProgress(tx, operation.orgId, operation.id, {
+            providerState: BUILDING_STATE,
+          }),
+        );
+        marked = true;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, this.pollTimings.intervalMs));
     }
   }
 

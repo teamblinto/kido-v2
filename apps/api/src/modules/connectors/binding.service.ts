@@ -20,6 +20,7 @@ import { OrgCacheKey } from '../../common/redis/cache-key';
 import { OrgCache } from '../../common/redis/org-cache';
 import type { TenantTransaction } from '../../database/database.types';
 import { AuditService } from '../audit/audit.service';
+import { DeploymentService } from '../deploy/deployment.service';
 import { ReleaseReader } from '../deploy/release-reader';
 import type { SandboxRef } from '../sandbox/sandbox.port';
 import { type BindingRecord, BindingRepository } from './binding.repository';
@@ -98,6 +99,7 @@ export class BindingService {
     @Inject(ConnectorListings) private readonly listings: ConnectorListings,
     @Inject(ReleaseReader) private readonly releases: ReleaseReader,
     @Inject(OrgCache) private readonly cache: OrgCache,
+    @Inject(DeploymentService) private readonly deployments: DeploymentService,
   ) {}
 
   async list(tx: TenantTransaction, ref: SandboxRef): Promise<Binding[]> {
@@ -313,15 +315,18 @@ export class BindingService {
   }
 
   /**
-   * `POST /netlify/publish` (US4, R11): a `netlify_publish` of a `succeeded` release of this
-   * project — another project's release is a `404` like a missing one; `409 in-flight` while a
+   * `POST /netlify/publish` (US4, R11): a `netlify_publish` of a release of this project — one
+   * that `succeeded`, or one still building, which the publish waits on. With no release named
+   * ("Deploy to Netlify"), the build in flight is joined, else the head checkpoint is built — on
+   * this same transaction, so a refused publish (`409 in-flight`) leaves no build behind. Another
+   * project's release, or a failed one, is a `404` like a missing one; `409 in-flight` while a
    * publish of the binding is queued or running.
    */
   async requestNetlifyPublish(
     tx: TenantTransaction,
     ref: SandboxRef,
     actorId: string,
-    deploymentId: string,
+    deploymentId?: string,
   ): Promise<Operation> {
     await this.project(tx, ref, { writable: true });
 
@@ -331,15 +336,27 @@ export class BindingService {
       throw new NotFoundError('The project is not bound to a Netlify site.');
     }
 
-    if (!(await this.releases.isRelease(tx, ref.orgId, ref.projectId, deploymentId))) {
-      throw new NotFoundError('No such release.');
-    }
-
     await this.connections.ensureUsable(tx, ref.orgId, 'netlify');
+
+    let release = deploymentId;
+
+    if (release === undefined) {
+      // shortcut: joins whatever build is in flight, even of an older checkpoint; it is the one
+      // the Deploy button is already waiting on, and the next "Deploy to Netlify" builds the head.
+      release =
+        (await this.releases.inFlight(tx, ref.orgId, ref.projectId)) ??
+        (await this.deployments.request(tx, ref, actorId, {})).id;
+    } else {
+      const progress = await this.releases.progress(tx, ref.orgId, ref.projectId, release);
+
+      if (progress === undefined || progress === 'failed') {
+        throw new NotFoundError('No such release.');
+      }
+    }
 
     const operation: ConnectorOperation = await this.operations.request(tx, ref.orgId, {
       bindingId: row.id,
-      deploymentId,
+      deploymentId: release,
       kind: 'netlify_publish',
       projectId: ref.projectId,
       requestedBy: actorId,

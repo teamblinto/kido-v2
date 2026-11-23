@@ -145,6 +145,17 @@ describe('BindingsController', () => {
     await expect(
       controller.publishNetlify(CALLER, ORG, PROJECT, { deploymentId: 'nope' }),
     ).rejects.toBeInstanceOf(ValidationFailedError);
+
+    // "Deploy to Netlify": no release named, the service builds the head and publishes it.
+    await expect(controller.publishNetlify(CALLER, ORG, PROJECT, {})).resolves.toEqual({
+      id: 'op',
+    });
+    expect(bindings.requestNetlifyPublish).toHaveBeenLastCalledWith(
+      TX,
+      { orgId: ORG, projectId: PROJECT },
+      CALLER.userId,
+      undefined,
+    );
   });
 
   it('DELETE answers the release operation', async () => {

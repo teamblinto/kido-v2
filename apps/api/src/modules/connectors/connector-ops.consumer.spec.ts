@@ -55,7 +55,7 @@ import {
   OperationFailure,
 } from './connector-ops.consumer';
 import { ConnectorsModule } from './connectors.module';
-import { NetlifyPublishHandler, publishTitle } from './netlify-publish.handler';
+import { BUILDING_STATE, NetlifyPublishHandler, publishTitle } from './netlify-publish.handler';
 import { OperationRepository } from './operation.repository';
 import { NetlifyClient } from './providers/netlify/netlify.client';
 import type { ConfigService } from '@nestjs/config';
@@ -119,6 +119,12 @@ describe('ConnectorOpsConsumer', () => {
     const publishProgress: { externalRef?: string; providerState?: string }[] = [];
     /** Every blob key the publish read, in order. */
     const blobReads: string[] = [];
+    let publishHandler: NetlifyPublishHandler;
+    /** Called with each progress write on its transaction: a build landing mid-wait. */
+    let onProgress: (
+      tx: TenantTransaction,
+      progress: { externalRef?: string; providerState?: string },
+    ) => Promise<void> = () => Promise.resolve();
 
     function inTenant<T>(fn: (tx: TenantTransaction) => Promise<T>): Promise<T> {
       return transactions.runInTenantTransaction(orgId, fn);
@@ -234,9 +240,10 @@ describe('ConnectorOpsConsumer', () => {
       netlify = await startNetlifyFixture();
       const progressRows = new OperationRepository();
       const setProgress = progressRows.setProgress.bind(progressRows);
-      progressRows.setProgress = (tx, org, id, progress) => {
+      progressRows.setProgress = async (tx, org, id, progress) => {
         publishProgress.push(progress);
-        return setProgress(tx, org, id, progress);
+        await setProgress(tx, org, id, progress);
+        await onProgress(tx, progress);
       };
       const get = store.get.bind(store);
       store.get = (key) => {
@@ -252,7 +259,8 @@ describe('ConnectorOpsConsumer', () => {
         new BindingRepository(),
         progressRows,
       );
-      publish.pollTimings = { budgetMs: 5_000, intervalMs: 0 };
+      publish.pollTimings = { budgetMs: 5_000, buildBudgetMs: 5_000, intervalMs: 0 };
+      publishHandler = publish;
 
       const handlers: OperationHandlers = new Map<
         Parameters<OperationHandlers['get']>[0],
@@ -318,6 +326,7 @@ describe('ConnectorOpsConsumer', () => {
       netlify.reset();
       publishProgress.length = 0;
       blobReads.length = 0;
+      onProgress = () => Promise.resolve();
       behaviour = () => Promise.resolve();
       await inTenant(async (tx) => {
         await tx.delete(schema.connectorBindings).where(eq(schema.connectorBindings.orgId, orgId));
@@ -506,18 +515,37 @@ describe('ConnectorOpsConsumer', () => {
       { body: Buffer.from('console.log("app")'), path: 'assets/copy.js' },
       { body: Buffer.from('body{}'), path: 'assets/style.css' },
     ];
+    /** The SPA fallback a release with an `index.html` is published with. */
+    const REDIRECTS = Buffer.from('/*    /index.html    200\n');
 
     function sha1(body: Buffer): string {
       return createHash('sha1').update(body).digest('hex');
     }
 
-    /** A succeeded release in the store, a bound Netlify site, and a queued publish of it. */
-    async function queuedPublish(): Promise<string> {
+    /** The release `queuedPublish` made last, so a test can land its build mid-wait. */
+    let release: { artifactSha: string; deploymentId: string };
+
+    /**
+     * A release in the store (succeeded, unless `state` says it is still building or failed), a
+     * bound Netlify site, and a queued publish of it.
+     */
+    async function queuedPublish(
+      state: 'building' | 'failed' | 'succeeded' = 'succeeded',
+    ): Promise<string> {
       await inTenant((tx) =>
         connections.connectWithToken(tx, orgId, userId, 'netlify', NETLIFY_TOKEN),
       );
       const projectId = projects[next++]!;
       const { artifactSha } = await upload(store, orgId, projectId, RELEASE);
+      const settled = {
+        building: { artifactSha: null, failureReason: null, finishedAt: null },
+        failed: {
+          artifactSha: null,
+          failureReason: 'build-failed' as const,
+          finishedAt: new Date(),
+        },
+        succeeded: { artifactSha, failureReason: null, finishedAt: new Date() },
+      }[state];
 
       return inTenant(async (tx) => {
         const [conn] = await tx
@@ -540,17 +568,17 @@ describe('ConnectorOpsConsumer', () => {
         const [deployment] = await tx
           .insert(schema.deployments)
           .values({
-            artifactSha,
+            ...settled,
             checkpointId: checkpoint!.id,
-            finishedAt: new Date(),
             orgId,
             projectId,
             requestedBy: userId,
             startedAt: new Date(),
-            state: 'succeeded',
+            state,
             template: 'vite-react',
           })
           .returning({ id: schema.deployments.id });
+        release = { artifactSha, deploymentId: deployment!.id };
         const [binding] = await tx
           .insert(schema.connectorBindings)
           .values({
@@ -598,14 +626,59 @@ describe('ConnectorOpsConsumer', () => {
       expect(blobReads).toHaveLength(5);
       expect(netlify.deploys).toHaveLength(1);
       expect(netlify.deploys[0]!.title).toBe(publishTitle(id));
-      expect(netlify.deploys[0]!.files).toEqual(
-        Object.fromEntries(RELEASE.map((file) => [`/${file.path}`, sha1(file.body)])),
-      );
+      // The release's files, plus the SPA fallback Kido's own host gives it.
+      expect(netlify.deploys[0]!.files).toEqual({
+        ...Object.fromEntries(RELEASE.map((file) => [`/${file.path}`, sha1(file.body)])),
+        '/_redirects': sha1(REDIRECTS),
+      });
       const uploaded = netlify.uploads.get('deploy-1')!;
       expect([...uploaded.values()].sort()).toEqual(
-        [sha1(RELEASE[0]!.body), sha1(RELEASE[1]!.body)].sort(),
+        [sha1(RELEASE[0]!.body), sha1(RELEASE[1]!.body), sha1(REDIRECTS)].sort(),
       );
       expect(uploaded.has('/assets/style.css')).toBe(false);
+    });
+
+    it('waits on a release still building, then publishes it once it lands', async () => {
+      const id = await queuedPublish('building');
+      // The build lands while the publish waits on it.
+      onProgress = async (tx, progress) => {
+        if (progress.providerState !== BUILDING_STATE) return;
+        await tx
+          .update(schema.deployments)
+          .set({ artifactSha: release.artifactSha, finishedAt: new Date(), state: 'succeeded' })
+          .where(eq(schema.deployments.id, release.deploymentId));
+      };
+
+      await run(id);
+
+      expect(publishProgress[0]).toEqual({ providerState: BUILDING_STATE });
+      expect(await operation(id)).toMatchObject({ providerState: 'ready', state: 'succeeded' });
+      expect(netlify.deploys).toHaveLength(1);
+    });
+
+    it('a release whose build fails closes the publish build-failed, with nothing sent', async () => {
+      const id = await queuedPublish('failed');
+
+      await run(id);
+
+      expect(await operation(id)).toMatchObject({ reason: 'build-failed', state: 'failed' });
+      expect(netlify.deploys).toHaveLength(0);
+      expect(blobReads).toHaveLength(0);
+    });
+
+    it('a build still going past the wait budget closes the publish timed-out', async () => {
+      const id = await queuedPublish('building');
+      const timings = publishHandler.pollTimings;
+      publishHandler.pollTimings = { ...timings, buildBudgetMs: 0 };
+
+      try {
+        await run(id);
+      } finally {
+        publishHandler.pollTimings = timings;
+      }
+
+      expect(await operation(id)).toMatchObject({ reason: 'timed-out', state: 'failed' });
+      expect(netlify.deploys).toHaveLength(0);
     });
 
     it('records external_ref right after create, before any upload', async () => {

@@ -19,7 +19,9 @@ import {
 } from '../hooks/use-deployments';
 import { useBindings, useNetlifyPublish, useNetlifyPublishes } from '../hooks/use-integrations';
 import { REASON_COPY } from '../lib/deploy-reasons';
+import { PUBLISH_REASON } from '../lib/netlify-publish';
 import { DeployConfirmDialog } from './deploy-confirm-dialog';
+import { NetlifyDeploy } from './netlify-deploy';
 
 const STATE: Record<
   DeploymentState,
@@ -195,6 +197,19 @@ export function DeployPanel({
         />
       )}
 
+      {deployable && orgId !== undefined && projectId !== undefined ? (
+        <NetlifyDeploy
+          canDeploy={canDeploy}
+          headRelease={
+            rows.find((row) => row.checkpointId === head?.id && row.state === 'succeeded')?.id
+          }
+          orgId={orgId}
+          projectId={projectId}
+        />
+      ) : null}
+
+      <h3 className="text-body-md border-line-subtle border-t pt-4 font-semibold">History</h3>
+
       {deployments.isSuccess && rows.length === 0 ? (
         <p className="text-body-sm text-subdued">No deploys yet.</p>
       ) : null}
@@ -329,27 +344,10 @@ function DeploymentLog({
   );
 }
 
-/** Netlify's own words for a publish (FR-017), with ours for before it starts. */
-const PUBLISH_STATE: Readonly<Record<string, string>> = {
-  error: 'Netlify: error',
-  failed: 'Publish failed',
-  processing: 'Netlify: processing',
-  queued: 'Publish queued',
-  ready: 'Published to Netlify',
-  running: 'Publishing…',
-  succeeded: 'Published to Netlify',
-  uploading: 'Netlify: uploading',
-};
-
-const PUBLISH_REASON: Readonly<Record<string, string>> = {
-  'in-flight': 'A publish is already running; try again when it finishes.',
-  'needs-reauth': 'The Netlify connection needs to be reconnected in organisation settings.',
-  'site-gone': 'The Netlify site no longer exists; choose another in Integrations.',
-};
-
 /**
- * Spec 030 US4: "Publish to Netlify" on a succeeded release, when the project is bound to a site,
- * and the latest publish of this release with Netlify's state (the timeline, FR-017).
+ * Spec 030 US4: "Publish to Netlify" on a succeeded release, when the project is bound to a site —
+ * how an older release goes back out to Netlify. The publish's progress shows once, in the Netlify
+ * section above (`NetlifyDeploy`); any publish in flight holds the button.
  */
 function NetlifyPublish({
   canDeploy,
@@ -367,46 +365,27 @@ function NetlifyPublish({
   const publishes = useNetlifyPublishes(orgId, projectId, binding !== undefined);
   const publish = useNetlifyPublish(orgId, projectId);
 
-  if (binding === undefined) return null;
+  if (binding?.state !== 'bound' || !canDeploy) return null;
 
-  const latest = publishes.data?.items.find((row) => row.deploymentId === deploymentId);
-  const inFlight =
-    latest !== undefined && (latest.state === 'queued' || latest.state === 'running');
-  const word =
-    latest === undefined
-      ? undefined
-      : latest.state === 'running' && latest.providerState !== null
-        ? latest.providerState
-        : latest.state;
-  const reason = latest?.state === 'failed' ? latest.reason : null;
+  const inFlight = (publishes.data?.items ?? []).some(
+    (row) => row.state === 'queued' || row.state === 'running',
+  );
   const refusal = ApiProblem.is(publish.error) ? publish.error.detail?.reason : undefined;
 
   return (
     <div className="flex flex-col gap-1">
-      <div className="flex flex-wrap items-center gap-2">
-        {canDeploy && binding.state === 'bound' ? (
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={publish.isPending || inFlight}
-            onClick={() => {
-              publish.mutate(deploymentId);
-            }}
-          >
-            Publish to Netlify
-          </Button>
-        ) : null}
-        {word === undefined ? null : (
-          <span className="text-body-sm text-subdued" role="status" aria-live="polite">
-            {PUBLISH_STATE[word] ?? `Netlify: ${word}`}
-          </span>
-        )}
+      <div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={publish.isPending || inFlight}
+          onClick={() => {
+            publish.mutate(deploymentId);
+          }}
+        >
+          Publish to Netlify
+        </Button>
       </div>
-      {reason === null ? null : (
-        <p className="text-body-sm text-danger">
-          {PUBLISH_REASON[reason] ?? 'The publish failed.'}
-        </p>
-      )}
       {publish.error === null ? null : (
         <p className="text-body-sm text-danger" role="alert">
           {typeof refusal === 'string' && refusal in PUBLISH_REASON

@@ -1,0 +1,1 @@
+ALTER TYPE "public"."connector_op_reason" ADD VALUE 'build-failed';

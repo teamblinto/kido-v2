@@ -336,19 +336,26 @@ export function useNetlifyPublishes(
   });
 }
 
-/** `POST …/connectors/netlify/publish`: `202` with the operation; its states follow. */
+/**
+ * `POST …/connectors/netlify/publish`: `202` with the operation; its states follow. Without a
+ * release the API builds the head first, so the deploy history is re-read too.
+ */
 export function useNetlifyPublish(
   orgId: string,
   projectId: string,
-): UseMutationResult<Operation, Error, string> {
+): UseMutationResult<Operation, Error, string | undefined> {
   const client = useQueryClient();
 
   return useMutation({
-    mutationFn: (deploymentId: string) =>
+    mutationFn: (deploymentId: string | undefined) =>
       apiRequest('POST', `${bindingsPath(orgId, projectId)}/netlify/publish`, {
-        body: { deploymentId },
+        body: deploymentId === undefined ? {} : { deploymentId },
         schema: operationSchema,
       }),
-    onSettled: () => client.invalidateQueries({ queryKey: publishesKey(orgId, projectId) }),
+    onSettled: () =>
+      Promise.all([
+        client.invalidateQueries({ queryKey: publishesKey(orgId, projectId) }),
+        client.invalidateQueries({ queryKey: ['deployments', orgId, projectId] }),
+      ]),
   });
 }

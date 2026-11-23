@@ -46,6 +46,8 @@ async function setup() {
         state: 'succeeded',
       },
       { artifactSha: null, id: 'd-failed', orgId: ORG, projectId: PROJECT, state: 'failed' },
+      { artifactSha: null, id: 'd-building', orgId: ORG, projectId: PROJECT, state: 'building' },
+      { artifactSha: null, id: 'd-cancelled', orgId: ORG, projectId: PROJECT, state: 'cancelled' },
     ]),
     store,
   );
@@ -79,5 +81,18 @@ describe('ReleaseReader', () => {
     await store.delete(blobKey(ORG, PROJECT, sha));
     // The other project's copy is not read in its place.
     await expect(reader.blob(ORG, PROJECT, sha)).resolves.toBeUndefined();
+  });
+});
+
+/** A publish that waits on its release's build reads where the build stands. */
+describe('ReleaseReader.progress', () => {
+  it('says building, succeeded or failed for this project, and nothing for another’s', async () => {
+    const { reader } = await setup();
+
+    await expect(reader.progress(tx, ORG, PROJECT, 'd-building')).resolves.toBe('building');
+    await expect(reader.progress(tx, ORG, PROJECT, DEPLOYMENT)).resolves.toBe('succeeded');
+    await expect(reader.progress(tx, ORG, PROJECT, 'd-failed')).resolves.toBe('failed');
+    await expect(reader.progress(tx, ORG, PROJECT, 'd-cancelled')).resolves.toBe('failed');
+    await expect(reader.progress(tx, ORG, PROJECT, OTHER_DEPLOYMENT)).resolves.toBeUndefined();
   });
 });

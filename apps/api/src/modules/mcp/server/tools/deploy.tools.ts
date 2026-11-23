@@ -176,11 +176,13 @@ export function registerDeployTools(kit: McpToolKit): void {
     'publish_to_netlify',
     {
       description:
-        'Publish a succeeded deployment to the Netlify site this project is bound to (see list_integrations; bind one with bind_integration). Runs in the background: the netlify binding’s latestOperation in list_integrations shows when it lands.',
+        'Publish the project to the Netlify site it is bound to (see list_integrations; bind one with bind_integration). Without deploymentId the latest checkpoint is built first (or the build in progress is joined) and published once it succeeds; with one, that deployment is published. Runs in the background: the netlify binding’s latestOperation in list_integrations shows when it lands.',
       input: z.object({
-        deploymentId: deploymentId.describe(
-          'A succeeded deployment of this project, from list_deployments.',
-        ),
+        deploymentId: deploymentId
+          .optional()
+          .describe(
+            'Optional. A succeeded or still-building deployment of this project, from list_deployments.',
+          ),
         projectId,
       }),
       openWorld: true,

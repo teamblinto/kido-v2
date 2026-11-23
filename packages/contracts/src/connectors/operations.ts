@@ -45,6 +45,8 @@ export const CONNECTOR_OP_REASONS = [
   'disconnected',
   'timed-out',
   'provider-refused',
+  /** A publish waited on its release's build, and the build failed or was cancelled. */
+  'build-failed',
 ] as const;
 
 export const connectorOpReasonSchema = z.enum(CONNECTOR_OP_REASONS);
@@ -59,7 +61,10 @@ export const operationSchema = z.strictObject({
   id: z.uuid(),
   kind: connectorOpKindSchema,
   projectId: z.uuid().nullable(),
-  /** Netlify: `uploading`, `processing`, `ready`, `error`, … — the provider's own word. */
+  /**
+   * Netlify: `uploading`, `processing`, `ready`, `error`, … — the provider's own word; `building`
+   * while a publish waits on its release's build.
+   */
   providerState: z.string().nullable(),
   reason: connectorOpReasonSchema.nullable(),
   /** Null when a platform flow (archive, sweep) requested it. */

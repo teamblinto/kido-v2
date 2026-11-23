@@ -118,6 +118,7 @@ export const connectorOpReason = pgEnum('connector_op_reason', [
   'disconnected',
   'timed-out',
   'provider-refused',
+  'build-failed',
 ]);
 
 export const repoLinkState = pgEnum('repo_link_state', ['linked', 'disconnected']);
